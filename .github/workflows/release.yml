@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Git tag to release (v0.1.0-rc.N or v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate-tag:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.flags.outputs.prerelease }}
+    steps:
+      - name: Validate release tag format
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.release_tag }}"
+          if [[ ! "$tag" =~ ^v0\.1\.0(-rc\.[0-9]+)?$ ]]; then
+            echo "Invalid release_tag: $tag"
+            echo "Expected v0.1.0 or v0.1.0-rc.N"
+            exit 1
+          fi
+
+      - name: Detect prerelease flag
+        id: flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.release_tag }}"
+          if [[ "$tag" == *"-rc."* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-publish:
+    name: Build and publish macOS arm64 assets
+    needs: validate-tag
+    runs-on: macos-14
+    environment: release
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.release_tag }}
+
+      - name: Verify checked out ref is tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$(git describe --tags --exact-match)"
+          expected="${{ github.event.inputs.release_tag }}"
+          if [[ "$tag" != "$expected" ]]; then
+            echo "Checked out tag '$tag' does not match requested '$expected'"
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Quality gates (debug)
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo audit --deny warnings
+          cargo test --all
+
+      - name: Quality gates (release mode)
+        run: |
+          cargo clippy --all-targets --release -- -D warnings
+          cargo test --all --release
+
+      - name: Build release binaries
+        run: |
+          cargo build --release -p desktop-runner --bin pod-voice
+          cargo build --release -p desktop-runner --bin desktop-runner
+          cargo build --release -p pod-gateway --bin pod-gateway
+
+      - name: Package release archive and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.release_tag }}"
+          mkdir -p dist
+          cp target/release/pod-voice dist/
+          cp target/release/desktop-runner dist/
+          cp target/release/pod-gateway dist/
+          archive="aice-${tag}-macos-arm64.tar.gz"
+          tar -C dist -czf "dist/${archive}" pod-voice desktop-runner pod-gateway
+          shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ needs.validate-tag.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

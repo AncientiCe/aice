@@ -70,6 +70,29 @@ Defined in `.cargo/config.toml`:
 - `cargo aice-audit` -> dependency audit
 - `cargo aice-test` -> full test suite
 
+## Releases (v0.1.0)
+
+- Distribution channel for `v0.1.0`: GitHub Releases (no crates.io publishing for this release).
+- Official binary support matrix: macOS arm64.
+- Runtime compatibility target for `0.1.x`: preserve current `config.example.json` defaults unless a change is explicitly called out in release notes.
+- Firmware status: `pod-firmware` remains experimental in `v0.1.0` and is shipped as source + docs only (no firmware artifact).
+
+Install from release assets:
+
+1. Download `aice-v0.1.0-macos-arm64.tar.gz` and `aice-v0.1.0-macos-arm64.tar.gz.sha256` from the GitHub release page.
+2. Verify checksum:
+
+```bash
+shasum -a 256 -c aice-v0.1.0-macos-arm64.tar.gz.sha256
+```
+
+3. Extract and run binaries:
+
+```bash
+tar -xzf aice-v0.1.0-macos-arm64.tar.gz
+./pod-voice
+```
+
 ## Skills
 
 Aice is designed for plug-and-play skills.
@@ -99,5 +122,7 @@ Authentication and Apple developer token setup are not required.
 
 - Local setup: [docs/setup/local-dev.md](docs/setup/local-dev.md)
 - Architecture: [docs/architecture/README.md](docs/architecture/README.md)
+- Release runbook: [docs/runbooks/release-v0.1.0.md](docs/runbooks/release-v0.1.0.md)
 - Experimental M5Stack deployment: [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md)
 - Pod networking: [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)

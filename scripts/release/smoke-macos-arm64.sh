@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT_DIR"
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "smoke-macos-arm64.sh must run on macOS."
+  exit 1
+fi
+
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "Expected arm64 host; found $(uname -m)."
+  exit 1
+fi
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required command: $cmd"
+    exit 1
+  fi
+}
+
+echo "==> Checking required tooling"
+require_cmd cargo
+require_cmd ollama
+require_cmd curl
+if ! command -v whisper-cli >/dev/null 2>&1 && [[ -z "${WHISPER_CLI_BIN:-}" ]]; then
+  echo "Missing whisper-cli and WHISPER_CLI_BIN is not set."
+  exit 1
+fi
+if ! command -v piper >/dev/null 2>&1 && [[ -z "${PIPER_BIN:-}" ]]; then
+  echo "Missing piper and PIPER_BIN is not set."
+  exit 1
+fi
+
+echo "==> Verifying required config and models"
+[[ -f config.json ]] || { echo "Missing config.json"; exit 1; }
+[[ -f models/whisper/ggml-base.en.bin ]] || { echo "Missing models/whisper/ggml-base.en.bin"; exit 1; }
+[[ -f models/piper/model.onnx ]] || { echo "Missing models/piper/model.onnx"; exit 1; }
+[[ -f models/piper/model.onnx.json ]] || { echo "Missing models/piper/model.onnx.json"; exit 1; }
+
+echo "==> Running local quality gates"
+cargo aice-fmt
+cargo aice-clippy
+cargo aice-audit
+cargo aice-test
+
+echo "==> Checking pod-gateway health endpoint"
+LOG_FILE="$(mktemp -t aice-pod-gateway.XXXXXX.log)"
+cargo run -p pod-gateway --bin pod-gateway >"$LOG_FILE" 2>&1 &
+GW_PID=$!
+trap 'kill "$GW_PID" >/dev/null 2>&1 || true; rm -f "$LOG_FILE"' EXIT
+sleep 4
+curl -fsS http://127.0.0.1:8780/healthz >/dev/null
+kill "$GW_PID" >/dev/null 2>&1 || true
+wait "$GW_PID" 2>/dev/null || true
+trap - EXIT
+rm -f "$LOG_FILE"
+
+cat <<'EOF'
+==> Scripted checks passed.
+
+Manual RC validation still required:
+1. Run `cargo aice-pod-voice` and complete one real voice turn (speech -> STT -> LLM -> TTS).
+2. Execute at least one skill intent (weather or media) and confirm spoken response.
+3. Trigger one policy denial (emergency stop or budget exhausted) and confirm chat fallback.
+4. Validate metrics/log emission for both success and failure paths.
+EOF
