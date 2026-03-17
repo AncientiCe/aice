@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, release/**]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, release/**]
 
 jobs:
   quality:
@@ -41,7 +41,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Audit
-        run: cargo install cargo-audit && cargo audit
+        run: cargo install cargo-audit && cargo audit --deny warnings
 
       - name: Test
         run: cargo test --all
