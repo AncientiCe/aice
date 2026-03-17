@@ -916,6 +916,7 @@ mod tests {
         save_persisted_user_token, MusicKitBridge,
     };
 
+    #[cfg(windows)]
     #[test]
     fn edge_candidates_include_standard_install_locations() {
         let candidates = edge_executable_candidates();
@@ -927,6 +928,12 @@ mod tests {
         assert!(joined
             .to_lowercase()
             .contains("microsoft\\edge\\application\\msedge.exe"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn edge_candidates_can_be_empty_off_windows() {
+        let _ = edge_executable_candidates();
     }
 
     #[test]
