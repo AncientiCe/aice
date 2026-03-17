@@ -8,7 +8,7 @@ Standardize how `v0.1.0-rc.1` and `v0.1.0` are cut, validated, published, and ro
 
 - Distribution channel: GitHub Releases only.
 - Official binary support for `v0.1.0`: macOS arm64.
-- Release assets: `pod-voice`, `desktop-runner`, `pod-gateway` tarball and SHA256 checksum.
+- Release assets: `pod-voice` and `desktop-runner` tarball and SHA256 checksum.
 - Firmware (`pod-firmware`) remains experimental and source-driven for `v0.1.0` (no firmware release artifact).
 - Backward compatibility target: preserve current runtime and config defaults from `config.example.json` for the `0.1.x` line unless explicitly documented in release notes.
 
@@ -40,7 +40,7 @@ Equivalent raw commands:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-cargo audit
+cargo audit --deny warnings
 cargo test --all
 ```
 
@@ -75,7 +75,7 @@ Required checks:
 
 1. Startup preflight with local dependencies (`ollama`, `whisper-cli`, `piper`) present.
 2. `pod-voice` end-to-end voice turn (`speech -> STT -> LLM -> TTS`).
-3. `pod-gateway` health and pod ingress/egress validation.
+3. `desktop-runner` binary starts and responds to `--help`.
 4. At least one real skill path (weather or media) and one policy-denied path.
 5. Metrics/log review confirms expected success and error emissions.
 
@@ -114,4 +114,4 @@ If RC or GA artifact is bad:
 2. Revert or fix on `release/v0.1.0`.
 3. Re-run quality gates and smoke checks.
 4. Cut a new RC tag (`v0.1.0-rc.2`, `v0.1.0-rc.3`, ...).
-5. Use [Pod Gateway Disaster Recovery](./pod-gateway-disaster-recovery.md) for runtime incident handling.
+5. Use [Pod Gateway Disaster Recovery](./pod-gateway-disaster-recovery.md) only if your deployment depends on pod transport.
