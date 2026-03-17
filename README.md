@@ -5,7 +5,7 @@ Aice is a private, local voice runtime for home automation and media control.
 Core flow is built for low latency:
 `speech -> STT -> model -> TTS` with streaming where possible.
 
-No cloud lock-in is required for the runtime loop. You run it on your own PC or mini computer.
+No cloud lock-in is required for the runtime loop. You run it on your own machine.
 
 ## Product direction
 
@@ -13,9 +13,29 @@ No cloud lock-in is required for the runtime loop. You run it on your own PC or 
 - `pod-gateway` remains available as an advanced/internal transport service.
 - Hardware direction: Signal Pod is the target device.
 - M5Stack ATOM Echo is supported as an experimental test device.
-- Skills are pluggable by design (`core-skills`), including Apple Music on Windows and smart-home integrations.
+- Skills are pluggable by design (`core-skills`), including macOS Music.app control and smart-home integrations.
+- Recommended host for home deployments: Mac mini on macOS.
 
 ## Quick start
+
+First-time setup on macOS (install + verification, step by step):
+[docs/setup/local-dev.md#0-first-time-macos-setup-checklist](docs/setup/local-dev.md#0-first-time-macos-setup-checklist)
+
+Download all required models in one command:
+
+```bash
+./scripts/download-required-models.sh
+```
+
+Override model selections (example):
+
+```bash
+OLLAMA_MODEL=llama3.2 \
+WHISPER_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin \
+PIPER_ONNX_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx \
+PIPER_JSON_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx.json \
+./scripts/download-required-models.sh
+```
 
 1. Create config:
 
@@ -56,18 +76,16 @@ Aice is designed for plug-and-play skills.
 
 Current notable integrations:
 
-- Apple Music control on Windows (MusicKit bridge)
+- Music.app control on macOS (AppleScript bridge)
 - Smart-home lighting via Hue
 - Weather, time, distance, assistant, memory, and computer control skill interfaces
 
-## Apple Music (Windows)
+## macOS Music.app
 
-Apple Music control uses MusicKit bridge playback and developer-token-based catalog operations.
-The old Rust OAuth helper binaries were removed; authentication is handled in the MusicKit runtime path.
+The media skill uses native Music.app control via AppleScript on macOS.
+Authentication and Apple developer token setup are not required.
 
-**Status:** `incomplete` (high setup complexity).  
-Apple Music integration currently requires Apple developer setup (`team_id`, `key_id`, `.p8` private key).  
-This requirement applies only to the Apple Music skill; the core local Jarvis runtime works without it.
+**Host recommendation:** Run this project on a home Mac mini.
 
 ## Repository layout
 

@@ -7,8 +7,8 @@ use core_observability::{
     init_json_logging, record_memory_load, record_memory_load_duration, register_metrics,
 };
 use core_skills::{
-    AppleMusicAuthConfig, AppleMusicWindowsSkill, HueSmartHomeSkill, OpenMeteoDistanceSkill,
-    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, SqliteMemorySkill,
+    HueSmartHomeSkill, MacOsMusicSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill,
+    OpenMeteoWeatherSkill, SqliteMemorySkill,
 };
 use core_stt::WhisperSttStream;
 use core_tts::PiperTtsSink;
@@ -87,19 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         None
     };
-    let media_skill = if config.media.apple_music.enabled {
-        let auth = AppleMusicAuthConfig {
-            team_id: config.media.apple_music.team_id.clone(),
-            key_id: config.media.apple_music.key_id.clone(),
-            private_key_path: config
-                .media
-                .apple_music
-                .private_key_path
-                .as_ref()
-                .map(std::path::PathBuf::from),
-            storefront: config.media.apple_music.storefront.clone(),
-        };
-        Some(AppleMusicWindowsSkill::with_auth(auth))
+    let media_skill = if config.media.macos_music.enabled {
+        Some(MacOsMusicSkill::new())
     } else {
         None
     };

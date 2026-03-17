@@ -468,23 +468,7 @@ impl DesktopRuntime {
             return Ok(RuntimeTurnOutcome::Interrupted);
         }
 
-        let mut parsed_media_cmd = Self::parse_media_command(&user_text);
-        if parsed_media_cmd.is_none() && self.config.llm.normalize_command_transcripts {
-            if let Ok(rewritten) =
-                Self::normalize_transcript_for_media_command_with_llm(llm, &user_text).await
-            {
-                if rewritten != user_text {
-                    parsed_media_cmd = Self::parse_media_command(&rewritten);
-                    if parsed_media_cmd.is_some() {
-                        info!(
-                            original_user_text = %user_text,
-                            rewritten_user_text = %rewritten,
-                            "media transcript normalized by llm"
-                        );
-                    }
-                }
-            }
-        }
+        let parsed_media_cmd = Self::parse_media_command(&user_text);
 
         if let Some(media_cmd) = parsed_media_cmd {
             if let Some(skill) = media_skill {
@@ -513,7 +497,7 @@ impl DesktopRuntime {
                         warn!(error = %e, "direct media command failed");
                         return Self::speak_with_cancel(
                             tts,
-                            "I could not control Apple Music for that command.",
+                            "I could not control Music.app for that command.",
                             cancel_rx,
                         )
                         .await;
@@ -905,39 +889,6 @@ impl DesktopRuntime {
             }
         }
         Ok(RuntimeTurnOutcome::Complete)
-    }
-
-    async fn normalize_transcript_for_media_command_with_llm<L>(
-        llm: &L,
-        transcript: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
-    where
-        L: LlmStream,
-    {
-        let prompt = format!(
-            "Rewrite this STT transcript into the most likely user media command.\n\
-             Rules:\n\
-             - Output ONLY the command text, no explanation.\n\
-             - Prefer forms like: play <target>, pause, stop, next, previous, resume, shuffle on, shuffle off.\n\
-             - Keep playlist/song names as intended.\n\
-             Transcript: \"{}\"",
-            transcript.trim()
-        );
-        let mut stream = llm
-            .chat_stream(
-                &prompt,
-                &[],
-                Some(
-                    "You are a command normalizer for noisy speech-to-text. Output only corrected command text.",
-                ),
-            )
-            .await?;
-        use futures::StreamExt;
-        let mut out = String::new();
-        while let Some(token) = stream.next().await {
-            out.push_str(&token);
-        }
-        Ok(out.trim().trim_matches('"').to_string())
     }
 
     fn weather_answer_prompt(user_text: &str, weather: &WeatherResult) -> String {
@@ -1453,26 +1404,6 @@ impl DesktopRuntime {
 #[cfg(test)]
 mod tests {
     use super::DesktopRuntime;
-    use async_trait::async_trait;
-    use core_orchestrator::LlmStream;
-    use futures::stream;
-
-    struct FixedLlm(&'static str);
-
-    #[async_trait]
-    impl LlmStream for FixedLlm {
-        async fn chat_stream(
-            &self,
-            _user_text: &str,
-            _history: &[(String, String)],
-            _system_prompt_override: Option<&str>,
-        ) -> Result<
-            Box<dyn futures::Stream<Item = String> + Send + Unpin>,
-            Box<dyn std::error::Error + Send + Sync>,
-        > {
-            Ok(Box::new(stream::iter(vec![self.0.to_string()])))
-        }
-    }
 
     #[test]
     fn detects_console_interrupt_stt_error_message() {
@@ -1517,21 +1448,6 @@ mod tests {
         let cmd = cmd.expect("media command");
         assert_eq!(cmd.action, "shuffle_off");
         assert!(cmd.target.is_none());
-    }
-
-    #[test]
-    fn llm_normalizer_rewrites_media_command_text() {
-        let llm = FixedLlm("play favorites playlist");
-        let rt = tokio::runtime::Runtime::new().expect("runtime");
-        let out = rt
-            .block_on(
-                DesktopRuntime::normalize_transcript_for_media_command_with_llm(
-                    &llm,
-                    "lay favorites late list",
-                ),
-            )
-            .expect("normalized");
-        assert_eq!(out, "play favorites playlist");
     }
 
     #[test]
