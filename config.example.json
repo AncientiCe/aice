@@ -4,8 +4,7 @@
   "llm": {
     "short_replies": true,
     "max_output_tokens": 96,
-    "system_prompt": null,
-    "normalize_command_transcripts": true
+    "system_prompt": null
   },
   "pod_bind": "0.0.0.0:8765",
   "audio": {
@@ -56,12 +55,8 @@
     }
   },
   "media": {
-    "apple_music": {
-      "enabled": false,
-      "team_id": null,
-      "key_id": null,
-      "private_key_path": null,
-      "storefront": "us"
+    "macos_music": {
+      "enabled": false
     }
   },
   "memory": {

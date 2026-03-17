@@ -9,10 +9,7 @@ pub use skill_computer::{ComputerResult, ComputerSkill, ComputerSkillError, Mock
 pub use skill_distance::{
     DistanceResult, DistanceSkill, DistanceSkillError, MockDistanceSkill, OpenMeteoDistanceSkill,
 };
-pub use skill_media::{
-    AppleMusicAuthConfig, AppleMusicAuthManager, AppleMusicWindowsSkill, MediaResult, MediaSkill,
-    MediaSkillError, MockMediaSkill,
-};
+pub use skill_media::{MacOsMusicSkill, MediaResult, MediaSkill, MediaSkillError, MockMediaSkill};
 pub use skill_memory::{
     MemoryFact, MemoryResult, MemorySkill, MemorySkillError, MockMemorySkill, SqliteMemorySkill,
 };

@@ -1,12 +1,9 @@
 //! Media orchestration skill: playback, multi-room, source.
 
-mod apple_windows;
-mod auth;
-mod musickit_bridge;
+mod macos_music;
 mod types;
 
-pub use apple_windows::AppleMusicWindowsSkill;
-pub use auth::{AppleMusicAuthConfig, AppleMusicAuthManager};
+pub use macos_music::MacOsMusicSkill;
 pub use types::{MediaResult, MediaSkill, MediaSkillError};
 
 /// Mock implementation retained for existing tests that inject explicit outcomes.

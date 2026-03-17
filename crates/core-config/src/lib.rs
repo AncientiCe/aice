@@ -3,7 +3,7 @@
 mod config;
 
 pub use config::{
-    AppleMusicConfig, AssistantProfileConfig, AudioRuntimeConfig, Config, HueConfig, LlmConfig,
+    AssistantProfileConfig, AudioRuntimeConfig, Config, HueConfig, LlmConfig, MacOsMusicConfig,
     MediaConfig, MemoryConfig, SearchProviderConfig, ServiceConfig, SmartHomeConfig, SttConfig,
     TtsConfig, WakeWordConfig,
 };

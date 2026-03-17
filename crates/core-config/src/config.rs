@@ -80,47 +80,19 @@ pub struct SmartHomeConfig {
     pub hue: HueConfig,
 }
 
-/// Apple Music settings for media skill.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct AppleMusicConfig {
-    /// Enable Apple Music media skill.
+/// macOS Music.app settings for media skill.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MacOsMusicConfig {
+    /// Enable macOS Music.app media skill.
     #[serde(default)]
     pub enabled: bool,
-    /// Optional developer team id for MusicKit developer token.
-    #[serde(default)]
-    pub team_id: Option<String>,
-    /// Optional key id for MusicKit developer token.
-    #[serde(default)]
-    pub key_id: Option<String>,
-    /// Optional path to private .p8 key used for developer token signing.
-    #[serde(default)]
-    pub private_key_path: Option<String>,
-    /// Storefront for catalog search, e.g. "us".
-    #[serde(default = "default_apple_storefront")]
-    pub storefront: String,
-}
-
-fn default_apple_storefront() -> String {
-    "us".to_string()
-}
-
-impl Default for AppleMusicConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            team_id: None,
-            key_id: None,
-            private_key_path: None,
-            storefront: default_apple_storefront(),
-        }
-    }
 }
 
 /// Media feature settings.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MediaConfig {
     #[serde(default)]
-    pub apple_music: AppleMusicConfig,
+    pub macos_music: MacOsMusicConfig,
 }
 
 fn default_search_timeout_secs() -> u64 {
@@ -271,9 +243,6 @@ pub struct LlmConfig {
     /// Optional explicit system prompt override.
     #[serde(default)]
     pub system_prompt: Option<String>,
-    /// Use LLM to normalize noisy STT command text before command parsing.
-    #[serde(default = "default_normalize_command_transcripts")]
-    pub normalize_command_transcripts: bool,
 }
 
 impl Default for LlmConfig {
@@ -282,7 +251,6 @@ impl Default for LlmConfig {
             short_replies: default_short_replies(),
             max_output_tokens: default_max_output_tokens(),
             system_prompt: None,
-            normalize_command_transcripts: default_normalize_command_transcripts(),
         }
     }
 }
@@ -293,10 +261,6 @@ fn default_short_replies() -> bool {
 
 fn default_max_output_tokens() -> u32 {
     96
-}
-
-fn default_normalize_command_transcripts() -> bool {
-    true
 }
 
 /// Assistant profile: persona, units, and user identity for prompt context.
@@ -497,7 +461,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppleMusicConfig, Config};
+    use super::{Config, MacOsMusicConfig};
     use std::io::Write;
     use std::path::Path;
 
@@ -509,7 +473,6 @@ mod tests {
         assert_eq!(config.model, "llama3.2");
         assert!(config.llm.short_replies);
         assert_eq!(config.llm.max_output_tokens, 96);
-        assert!(config.llm.normalize_command_transcripts);
         assert_eq!(config.pod_bind, "0.0.0.0:8765");
         assert_eq!(config.audio.turn_window_ms, 1500);
         assert_eq!(config.audio.speech_end_silence_ms, 650);
@@ -554,7 +517,6 @@ mod tests {
         assert_eq!(config.model, "tinyllama");
         assert!(!config.llm.short_replies);
         assert_eq!(config.llm.max_output_tokens, 256);
-        assert!(config.llm.normalize_command_transcripts);
         assert_eq!(
             config.llm.system_prompt.as_deref(),
             Some("You are concise.")
@@ -638,20 +600,47 @@ mod tests {
     }
 
     #[test]
-    fn apple_music_config_serialization_omits_deprecated_oauth_fields() {
-        let cfg = AppleMusicConfig::default();
-        let value = serde_json::to_value(cfg).expect("serialize apple music config");
+    fn macos_music_config_serialization_has_no_auth_fields() {
+        let cfg = MacOsMusicConfig::default();
+        let value = serde_json::to_value(cfg).expect("serialize macos music config");
         let obj = value.as_object().expect("config object");
-        assert!(obj.contains_key("team_id"));
-        assert!(obj.contains_key("key_id"));
-        assert!(obj.contains_key("private_key_path"));
-        assert!(obj.contains_key("storefront"));
-        assert!(!obj.contains_key("auth_url"));
-        assert!(!obj.contains_key("token_url"));
-        assert!(!obj.contains_key("client_id"));
-        assert!(!obj.contains_key("client_secret"));
-        assert!(!obj.contains_key("redirect_url"));
-        assert!(!obj.contains_key("scope"));
-        assert!(!obj.contains_key("user_token_path"));
+        assert_eq!(obj.len(), 1);
+        assert!(obj.contains_key("enabled"));
+    }
+
+    #[test]
+    fn media_config_serializes_macos_music_key() {
+        let cfg = Config::default();
+        let value = serde_json::to_value(cfg).expect("serialize root config");
+        let media = value
+            .get("media")
+            .and_then(|v| v.as_object())
+            .expect("media object");
+        assert!(media.contains_key("macos_music"));
+        assert!(!media.contains_key("apple_music"));
+    }
+
+    #[test]
+    fn load_parses_macos_music_config() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("aice_config_macos_music.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(
+            br#"{
+                "media": {
+                    "macos_music": {
+                        "enabled": true
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+
+        let config = Config::load(&path).unwrap();
+        assert!(config.media.macos_music.enabled);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

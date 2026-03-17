@@ -229,7 +229,7 @@ flowchart TD
 
 ## 8. Cross-platform and quality
 
-- **Desktop:** `core-audio` uses cpal for capture (16 kHz mono i16); works on Windows, macOS, Linux.
+- **Desktop:** `core-audio` uses cpal for capture (16 kHz mono i16); Aice home deployments are macOS-first (Mac mini recommended).
 - **Pod gateway:** WebSocket server; reconnect is supported (new connection = new session); `Identify` message sets device_id for subsequent audio from that connection. Parse errors skip the message and continue.
 - **Quality gates:** Every change must pass `cargo fmt`, `cargo clippy`, `cargo audit`, `cargo test`.
 - **Observability:** JSON logs (tracing), metrics (voice_* counters/histograms), correlation IDs in logs for sessions/turns.
@@ -251,7 +251,7 @@ Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, 
 
 ---
 
-## 10. Real skill integrations (Hue, Apple Music, SQLite memory)
+## 10. Real skill integrations (Hue, macOS Music.app, SQLite memory)
 
 **Purpose:** Production integrations for smart-home, media, and memory are wired as concrete skills in runtime (desktop + pod-voice), not `None`.
 
@@ -259,18 +259,18 @@ Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, 
 flowchart LR
     Transcript[Transcript] --> Intent[IntentClassifier]
     Intent -->|skill_smart_home| Hue[HueSmartHomeSkill]
-    Intent -->|skill_media| Apple[AppleMusicWindowsSkill]
+    Intent -->|skill_media| Music[MacOsMusicSkill]
     Intent -->|skill_memory| MemSkill[SqliteMemorySkill]
     Transcript --> MemIngest[SqliteMemorySkill ingest_turn]
     Hue --> Prompt[SkillPromptContext]
-    Apple --> Prompt
+    Music --> Prompt
     MemSkill --> Prompt
     Prompt --> LLM[AnswerComposerLLM]
     LLM --> TTS[TTS]
 ```
 
 **Notes:**
-- **Inputs:** `smart_home.hue.*`, `media.apple_music.*`, `memory.sqlite_path` from config.
+- **Inputs:** `smart_home.hue.*`, `media.macos_music.*`, `memory.sqlite_path` from config.
 - **Outputs:** Skill payload context for voice answer generation; SQLite-backed memory facts and turn ingestion.
 - **Failure paths:** Missing provider config keeps a skill disabled; skill execution errors fall back to chat path with existing metrics/error logs.
 
@@ -290,29 +290,24 @@ sequenceDiagram
     Bridge-->>Runtime: updated state
 ```
 
-### 10.2 Apple Music search and hidden MusicKit JS playback bridge
+### 10.2 macOS Music.app control via AppleScript
 
 ```mermaid
 sequenceDiagram
     participant Runtime
-    participant Catalog as Apple Music Catalog API
-    participant Bridge as Local MusicKit Bridge
-    participant Player as Hidden MusicKit JS Window
-    Runtime->>Catalog: search track by user target
-    Catalog-->>Runtime: best match (song id + metadata)
-    Runtime->>Bridge: enqueue play/pause/stop/next/prev
-    Bridge->>Player: poll command
-    Player->>Player: MusicKit configure + queue + playback
-    Player->>Bridge: post status(now_playing,state)
-    Bridge-->>Runtime: latest status for voice response
+    participant Skill as MacOsMusicSkill
+    participant Music as macOS Music.app
+    Runtime->>Skill: execute(action,target)
+    Skill->>Music: osascript AppleScript command
+    Music-->>Skill: state/track result
+    Skill-->>Runtime: MediaResult(summary,state,now_playing)
 ```
 
 **Notes:**
-- **Inputs:** Apple developer token + linked user token + storefront (`media.apple_music.*` config).
-- **Outputs:** Full-song playback commands routed to MusicKit JS runtime; status feedback (`playing`, `paused`, `stopped`, `error`) for runtime responses.
-- **Library-first resolution:** For both song and playlist intents, runtime asks the local MusicKit JS bridge to query `me/library/search` (same logged-in MusicKit session), then falls back to catalog search when no library match is found.
-- **Failure paths:** Missing token/config returns typed auth errors; bridge startup/browser launch failures return playback errors and do not fall back to Windows media keys.
-- **Current project status:** Apple Music integration is marked `incomplete` because setup complexity is high and requires Apple developer credentials.
+- **Inputs:** `media.macos_music.enabled` and media command action/target from intent routing.
+- **Outputs:** Music.app transport/search commands and runtime status responses (`playing`, `paused`, `stopped`, `unknown`).
+- **Playback behavior:** `play <query>` first attempts Music.app library playback via AppleScript, with iTunes catalog lookup only for spoken metadata fallback.
+- **Failure paths:** Non-macOS targets return typed unsupported-action errors; AppleScript failures are returned as playback errors.
 
 ### 10.2.1 Media shuffle transport commands
 
@@ -320,22 +315,19 @@ sequenceDiagram
 sequenceDiagram
     participant User
     participant Runtime
-    participant Skill as AppleMusicWindowsSkill
-    participant Bridge as MusicKitBridge
-    participant Player as Hidden MusicKit JS
+    participant Skill as MacOsMusicSkill
+    participant Music as Music.app
     User->>Runtime: "computer turn on shuffle"
     Runtime->>Skill: execute(action="shuffle_on")
-    Skill->>Bridge: enqueue ShuffleOn
-    Bridge->>Player: poll /command
-    Player->>Player: setShuffleMode(1) fallback variants
-    Player->>Bridge: post /status state=playing
-    Bridge-->>Runtime: latest status
+    Skill->>Music: osascript set shuffle enabled true
+    Music-->>Skill: updated state
+    Skill-->>Runtime: MediaResult(state=playing)
 ```
 
 **Notes:**
 - **Inputs:** Voice phrases (`shuffle`, `shuffle on`, `turn on shuffle`, `turn off shuffle`).
-- **Outputs:** Bridge commands `ShuffleOn` / `ShuffleOff` applied in the single MusicKit runtime instance.
-- **Failure paths:** If MusicKit runtime does not expose shuffle controls, player reports a typed error and runtime keeps existing playback state.
+- **Outputs:** AppleScript-driven `shuffle_on` / `shuffle_off` in Music.app.
+- **Failure paths:** If Music.app does not accept shuffle toggles, skill reports playback error and runtime preserves fallback behavior.
 
 ### 10.3 SQLite memory store/recall
 
@@ -373,27 +365,24 @@ flowchart LR
 - **Outputs:** Fewer truncated transcripts for headset speech; flush waits for pause/silence (not active-speech chunk windows).
 - **Failure paths:** If `speech_end_silence_ms` is configured too high, perceived response latency increases; if too low, partial phrase truncation can reappear.
 
-### 11.1 LLM command transcript normalization
+### 11.1 Deterministic media command parsing
 
-**Purpose:** When noisy STT text is not parseable as a media command, runtime asks the LLM to rewrite the transcript into likely command text, then retries command parsing.
+**Purpose:** Keep user speech text unmodified. Runtime executes media commands only when direct parsing matches explicit command phrases.
 
 ```mermaid
 flowchart LR
     STT[Raw transcript] --> Parse{Direct media parse}
     Parse -->|success| Execute[Execute media command]
-    Parse -->|fail| Normalize[LLM normalize command text]
-    Normalize --> Retry{Parse normalized text}
-    Retry -->|success| Execute
-    Retry -->|fail| Intent[Normal intent/chat routing]
+    Parse -->|fail| Intent[Normal intent/chat routing]
 ```
 
 **Notes:**
-- **Inputs:** `llm.normalize_command_transcripts` (default `true`).
-- **Outputs:** Better command recovery for malformed transcripts (e.g. phrase splitting/misheard command words).
+- **Inputs:** Raw STT transcript only (no transcript rewrite step).
+- **Outputs:** No semantic remapping of user speech; reduced false-positive command execution.
 
 ### 11.2 Ctrl+C hard shutdown path
 
-**Purpose:** Ensure Ctrl+C always shuts down the app and force-closes MusicKit browser child processes (including forced-exit path).
+**Purpose:** Ensure Ctrl+C always shuts down the app and runs media-skill cleanup (including forced-exit path).
 
 ```mermaid
 sequenceDiagram
@@ -402,17 +391,17 @@ sequenceDiagram
     participant Handler as ctrlc handler
     participant Main as desktop-runner main
     participant Runtime
-    participant Media as MusicKitBridge
+    participant Media as MacOsMusicSkill
     User->>OS: Ctrl+C
     OS->>Handler: SIGINT/CTRL_C_EVENT
-    Handler->>Media: shutdown() (kill browser process tree)
+    Handler->>Media: shutdown()
     Handler->>Main: shutdown channel send
     Main->>Runtime: cancel broadcast
     Main->>Media: shutdown()
     Main->>Main: process::exit(0)
     User->>OS: Ctrl+C again (fallback)
     OS->>Handler: second signal
-    Handler->>Media: shutdown() (kill browser process tree)
+    Handler->>Media: shutdown()
     Handler->>Main: process::exit(130)
 ```
 
