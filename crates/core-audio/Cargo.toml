@@ -1,0 +1,12 @@
+[package]
+name = "core-audio"
+version = "0.1.0"
+edition = "2021"
+description = "Audio capture and playback abstraction"
+
+[dependencies]
+cpal = "0.15"
+rodio = "0.17"
+thiserror = "1.0"
+tracing = "0.1"
+core-observability = { path = "../core-observability" }

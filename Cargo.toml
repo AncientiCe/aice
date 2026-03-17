@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core-audio",
+    "crates/core-vad",
+    "crates/core-stt",
+    "crates/core-llm",
+    "crates/core-tts",
+    "crates/core-orchestrator",
+    "crates/core-config",
+    "crates/core-observability",
+    "crates/core-policy",
+    "crates/core-search",
+    "crates/core-skills",
+    "crates/pod-protocol",
+    "apps/desktop-runner",
+    "apps/pod-gateway",
+]

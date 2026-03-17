@@ -1,0 +1,10 @@
+[package]
+name = "skill-assistant"
+version = "0.1.0"
+edition = "2021"
+description = "Personal assistant skill: calendar, reminders, messages"
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1.0"

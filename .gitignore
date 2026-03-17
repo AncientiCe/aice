@@ -1,0 +1,50 @@
+# Rust / Cargo
+/target/
+Cargo.lock
+.cargo-home/
+
+# Logs produced by prod-start.ps1
+/logs/
+
+# Local config and runtime state (may contain secrets)
+config.json
+*.local.json
+*.secrets.json
+*.secret.json
+.aice/
+memory.json
+memory.sqlite
+memory.sqlite-*
+apple_music_token.json
+
+# Secret material
+*.pem
+*.p8
+*.p12
+*.key
+.env
+.env.*
+!.env.example
+
+# Pod firmware: credentials file - edit locally, never commit
+pod-firmware/include/pod_config.h
+
+# PlatformIO build artifacts
+pod-firmware/.pio/
+pod-firmware/.vscode/
+
+# Models and downloaded tools
+models/
+tools/
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Temporary / OS
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+tmp_*
+/Examples/

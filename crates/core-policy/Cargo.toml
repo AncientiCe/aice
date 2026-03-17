@@ -1,0 +1,9 @@
+[package]
+name = "core-policy"
+version = "0.1.0"
+edition = "2021"
+description = "Autonomy policy engine: risk tiers, allow/deny rules, emergency stop, action budgets"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "1.0"

@@ -1,0 +1,15 @@
+[package]
+name = "core-skills"
+version = "0.1.0"
+edition = "2021"
+description = "Skill registry and re-exports for voice assistant skills"
+
+[dependencies]
+skill-assistant = { path = "skill-assistant" }
+skill-computer = { path = "skill-computer" }
+skill-distance = { path = "skill-distance" }
+skill-media = { path = "skill-media" }
+skill-memory = { path = "skill-memory" }
+skill-smart-home = { path = "skill-smart-home" }
+skill-time = { path = "skill-time" }
+skill-weather = { path = "skill-weather" }

@@ -1,0 +1,19 @@
+[package]
+name = "pod-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "Server for M5Stack pod audio and control"
+
+[[bin]]
+name = "pod-gateway"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+serde_json = "1.0"
+core-config = { path = "../../crates/core-config" }
+core-observability = { path = "../../crates/core-observability" }
+pod-protocol = { path = "../../crates/pod-protocol" }
+tracing = "0.1"

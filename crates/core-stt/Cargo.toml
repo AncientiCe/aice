@@ -1,0 +1,19 @@
+[package]
+name = "core-stt"
+version = "0.1.0"
+edition = "2021"
+description = "Streaming speech-to-text adapter"
+
+[features]
+default = []
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync"] }
+thiserror = "1.0"
+core-observability = { path = "../core-observability" }
+core-orchestrator = { path = "../core-orchestrator" }
+whisper-rs = { version = "0.16", optional = true }
+hound = "3.5.1"
+tempfile = "3.27.0"

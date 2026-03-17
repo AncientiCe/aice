@@ -1,0 +1,75 @@
+{
+  "ollama_url": "http://127.0.0.1:11434",
+  "model": "llama3.2",
+  "llm": {
+    "short_replies": true,
+    "max_output_tokens": 96,
+    "system_prompt": null,
+    "normalize_command_transcripts": true
+  },
+  "pod_bind": "0.0.0.0:8765",
+  "audio": {
+    "input_device": null,
+    "output_device": null,
+    "chunk_timeout_ms": 250,
+    "turn_window_ms": 3000,
+    "idle_sleep_ms": 20,
+    "speech_end_silence_ms": 650,
+    "speech_rms_threshold": 0.008
+  },
+  "stt": {
+    "whisper_model_path": "models/whisper/ggml-base.en.bin"
+  },
+  "tts": {
+    "piper_model_path": "models/piper/model.onnx",
+    "piper_config_path": null
+  },
+  "service": {
+    "health_bind": "127.0.0.1:8780",
+    "restart_backoff_secs": 3
+  },
+  "wake_word": {
+    "enabled": true,
+    "phrases": ["computer", "assistant", "word"],
+    "sensitivity": 0.5,
+    "cooldown_secs": 6
+  },
+  "search_provider": {
+    "url": "",
+    "api_key": null,
+    "timeout_secs": 10
+  },
+  "default_location": "London",
+  "assistant_profile": {
+    "name": "Jarvis",
+    "persona": "Private home assistant. Concise and helpful.",
+    "unit_system": "metric",
+    "time_format": "24h",
+    "user_name": null
+  },
+  "smart_home": {
+    "hue": {
+      "enabled": false,
+      "bridge_host": null,
+      "app_key": null,
+      "default_light_name": "Philips Hue White & Colour Ambience LED Table Light"
+    }
+  },
+  "media": {
+    "apple_music": {
+      "enabled": false,
+      "team_id": null,
+      "key_id": null,
+      "private_key_path": null,
+      "storefront": "us"
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "path": "memory.json",
+    "max_recent_turns": 10,
+    "max_facts": 50,
+    "autosave": true,
+    "sqlite_path": "memory.sqlite"
+  }
+}

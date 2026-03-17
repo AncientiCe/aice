@@ -1,0 +1,17 @@
+[package]
+name = "core-tts"
+version = "0.1.0"
+edition = "2021"
+description = "Streaming text-to-speech adapter"
+
+[features]
+default = []
+
+[dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync"] }
+thiserror = "1.0"
+core-observability = { path = "../core-observability" }
+core-orchestrator = { path = "../core-orchestrator" }
+tempfile = "3.27.0"
+rodio = "0.17"
