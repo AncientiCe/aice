@@ -102,7 +102,6 @@ jobs:
         run: |
           cargo build --release -p desktop-runner --bin pod-voice
           cargo build --release -p desktop-runner --bin desktop-runner
-          cargo build --release -p pod-gateway --bin pod-gateway
 
       - name: Package release archive and checksums
         shell: bash
@@ -112,9 +111,8 @@ jobs:
           mkdir -p dist
           cp target/release/pod-voice dist/
           cp target/release/desktop-runner dist/
-          cp target/release/pod-gateway dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
-          tar -C dist -czf "dist/${archive}" pod-voice desktop-runner pod-gateway
+          tar -C dist -czf "dist/${archive}" pod-voice desktop-runner
           shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets

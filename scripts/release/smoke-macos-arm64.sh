@@ -25,7 +25,6 @@ require_cmd() {
 echo "==> Checking required tooling"
 require_cmd cargo
 require_cmd ollama
-require_cmd curl
 if ! command -v whisper-cli >/dev/null 2>&1 && [[ -z "${WHISPER_CLI_BIN:-}" ]]; then
   echo "Missing whisper-cli and WHISPER_CLI_BIN is not set."
   exit 1
@@ -47,17 +46,12 @@ cargo aice-clippy
 cargo aice-audit
 cargo aice-test
 
-echo "==> Checking pod-gateway health endpoint"
-LOG_FILE="$(mktemp -t aice-pod-gateway.XXXXXX.log)"
-cargo run -p pod-gateway --bin pod-gateway >"$LOG_FILE" 2>&1 &
-GW_PID=$!
-trap 'kill "$GW_PID" >/dev/null 2>&1 || true; rm -f "$LOG_FILE"' EXIT
-sleep 4
-curl -fsS http://127.0.0.1:8780/healthz >/dev/null
-kill "$GW_PID" >/dev/null 2>&1 || true
-wait "$GW_PID" 2>/dev/null || true
-trap - EXIT
-rm -f "$LOG_FILE"
+echo "==> Building release binaries in scope"
+cargo build --release -p desktop-runner --bin pod-voice
+cargo build --release -p desktop-runner --bin desktop-runner
+
+echo "==> Verifying desktop-runner binary starts"
+./target/release/desktop-runner --help >/dev/null
 
 cat <<'EOF'
 ==> Scripted checks passed.
