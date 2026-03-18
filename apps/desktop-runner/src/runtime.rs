@@ -9,8 +9,8 @@ use core_observability::{
     record_memory_fact_recall, record_memory_fact_recall_duration, record_memory_fact_store,
     record_memory_fact_store_duration, record_memory_save, record_memory_save_duration,
     record_memory_save_error, record_memory_skill, record_policy_denied, record_smart_home_execute,
-    record_smart_home_execute_duration, record_smart_home_skill, record_time_skill,
-    record_weather_skill,
+    record_smart_home_execute_duration, record_smart_home_skill, record_stage_duration,
+    record_time_skill, record_weather_skill, Stage,
 };
 use core_orchestrator::{
     parse_need_search, IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink,
@@ -46,6 +46,72 @@ pub enum RuntimeTurnOutcome {
     EmptyInput,
     /// User interrupted (barge-in).
     Interrupted,
+}
+
+#[derive(Debug, Default, Clone)]
+struct TurnTimings {
+    mic_to_stt: Option<Duration>,
+    stt: Option<Duration>,
+    llm: Option<Duration>,
+    tts: Option<Duration>,
+    tts_flush: Option<Duration>,
+    total: Option<Duration>,
+}
+
+impl TurnTimings {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn ms(duration: Option<Duration>) -> Option<u128> {
+        duration.map(|d| d.as_millis())
+    }
+
+    fn mic_to_stt_ms(&self) -> Option<u128> {
+        Self::ms(self.mic_to_stt)
+    }
+
+    fn stt_ms(&self) -> Option<u128> {
+        Self::ms(self.stt)
+    }
+
+    fn llm_ms(&self) -> Option<u128> {
+        Self::ms(self.llm)
+    }
+
+    fn tts_ms(&self) -> Option<u128> {
+        Self::ms(self.tts)
+    }
+
+    fn tts_flush_ms(&self) -> Option<u128> {
+        Self::ms(self.tts_flush)
+    }
+
+    fn total_ms(&self) -> Option<u128> {
+        Self::ms(self.total)
+    }
+
+    fn record_stage_metrics(&self) {
+        if let Some(stt) = self.stt {
+            record_stage_duration(Stage::Stt, stt);
+        }
+        if let Some(llm) = self.llm {
+            record_stage_duration(Stage::Llm, llm);
+        }
+        if let Some(tts) = self.tts {
+            record_stage_duration(Stage::Tts, tts);
+        }
+        if let Some(total) = self.total {
+            record_stage_duration(Stage::Orchestrator, total);
+        }
+    }
+}
+
+struct StreamLlmTtsOutcome {
+    outcome: RuntimeTurnOutcome,
+    llm_duration: Duration,
+    tts_duration: Duration,
+    tts_flush_duration: Duration,
 }
 
 enum LocalCommand {
@@ -150,12 +216,17 @@ impl DesktopRuntime {
         T: TtsSink,
         E: ExternalSearch,
     {
-        let now = Instant::now();
+        let turn_started_at = Instant::now();
+        let now = turn_started_at;
         if self.wake_gate.is_enabled() && !self.wake_gate.should_listen(now) {
             return Ok(RuntimeTurnOutcome::GateClosed);
         }
 
+        let stt_started_at = Instant::now();
         let user_text = stt.flush().await?;
+        let mut timings = TurnTimings::new();
+        timings.stt = Some(stt_started_at.elapsed());
+        timings.mic_to_stt = Some(turn_started_at.elapsed());
         let skills = SkillRunContext {
             intent_classifier: None,
             weather_skill: None,
@@ -170,8 +241,17 @@ impl DesktopRuntime {
             memory: None,
             policy: None,
         };
-        self.run_turn_from_user_text(user_text, llm, tts, search, &mut cancel_rx, &skills)
-            .await
+        self.run_turn_from_user_text(
+            user_text,
+            llm,
+            tts,
+            search,
+            &mut cancel_rx,
+            &skills,
+            turn_started_at,
+            timings,
+        )
+        .await
     }
 
     /// Run one turn with optional intent classifier and weather skill (for tests or custom wiring).
@@ -192,14 +272,28 @@ impl DesktopRuntime {
         T: TtsSink,
         E: ExternalSearch,
     {
-        let now = Instant::now();
+        let turn_started_at = Instant::now();
+        let now = turn_started_at;
         if self.wake_gate.is_enabled() && !self.wake_gate.should_listen(now) {
             return Ok(RuntimeTurnOutcome::GateClosed);
         }
 
+        let stt_started_at = Instant::now();
         let user_text = stt.flush().await?;
-        self.run_turn_from_user_text(user_text, llm, tts, search, &mut cancel_rx, skills)
-            .await
+        let mut timings = TurnTimings::new();
+        timings.stt = Some(stt_started_at.elapsed());
+        timings.mic_to_stt = Some(turn_started_at.elapsed());
+        self.run_turn_from_user_text(
+            user_text,
+            llm,
+            tts,
+            search,
+            &mut cancel_rx,
+            skills,
+            turn_started_at,
+            timings,
+        )
+        .await
     }
 
     /// Continuously capture and process turns until `max_turns` is reached (or forever when `None`).
@@ -236,6 +330,7 @@ impl DesktopRuntime {
         let mut consecutive_timeouts: u64 = 0;
         let mut silence_after_voice_ms: u64 = 0;
         let mut observed_voice = false;
+        let mut mic_turn_started_at: Option<Instant> = None;
 
         loop {
             let mut flush_partial_on_timeout = false;
@@ -245,6 +340,9 @@ impl DesktopRuntime {
                     if !chunk.is_empty() {
                         let chunk_ms = Self::chunk_duration_ms(chunk.len());
                         if Self::is_voiced_chunk(&chunk, speech_rms_threshold) {
+                            if !observed_voice {
+                                mic_turn_started_at = Some(Instant::now());
+                            }
                             observed_voice = true;
                             silence_after_voice_ms = 0;
                             buffered_samples += chunk.len();
@@ -301,9 +399,11 @@ impl DesktopRuntime {
             silence_after_voice_ms = 0;
             observed_voice = false;
 
+            let stt_started_at = Instant::now();
             let transcript = match stt.flush().await {
                 Ok(t) => t,
                 Err(e) => {
+                    mic_turn_started_at = None;
                     if Self::is_console_interrupt_stt_error(e.as_ref()) {
                         info!("stt interrupted by console control event; stopping runtime loop");
                         return Ok(stats);
@@ -315,6 +415,10 @@ impl DesktopRuntime {
                     return Err(e);
                 }
             };
+            let mut timings = TurnTimings::new();
+            timings.stt = Some(stt_started_at.elapsed());
+            let turn_started_at = mic_turn_started_at.take().unwrap_or(stt_started_at);
+            timings.mic_to_stt = Some(turn_started_at.elapsed());
             let mut user_text = transcript.trim().to_string();
             if user_text.is_empty() {
                 stats.turns_empty += 1;
@@ -335,6 +439,8 @@ impl DesktopRuntime {
                             options.search,
                             &mut options.cancel_rx,
                             &options.skills,
+                            turn_started_at,
+                            timings,
                         )
                         .await?
                     {
@@ -381,6 +487,8 @@ impl DesktopRuntime {
                     options.search,
                     &mut options.cancel_rx,
                     &options.skills,
+                    turn_started_at,
+                    timings,
                 )
                 .await?
             {
@@ -402,6 +510,7 @@ impl DesktopRuntime {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_turn_from_user_text<L, T, E>(
         &mut self,
         user_text: String,
@@ -410,6 +519,8 @@ impl DesktopRuntime {
         search: Option<&E>,
         cancel_rx: &mut broadcast::Receiver<()>,
         skills: &SkillRunContext<'_>,
+        turn_started_at: Instant,
+        mut timings: TurnTimings,
     ) -> Result<RuntimeTurnOutcome, Box<dyn std::error::Error + Send + Sync>>
     where
         L: LlmStream,
@@ -428,7 +539,12 @@ impl DesktopRuntime {
         let resolved_location = skills.resolved_location;
         let memory = skills.memory.as_ref();
         if user_text.trim().is_empty() {
-            return Ok(RuntimeTurnOutcome::EmptyInput);
+            return Ok(Self::finish_turn(
+                "empty_input",
+                RuntimeTurnOutcome::EmptyInput,
+                turn_started_at,
+                &mut timings,
+            ));
         }
 
         info!(user_text = %user_text.trim(), "turn");
@@ -450,22 +566,50 @@ impl DesktopRuntime {
                 let _ = skill.execute(Some("stop"), None).await;
             }
             tts.request_stop_playback();
-            return Ok(RuntimeTurnOutcome::Complete);
+            return Ok(Self::finish_turn(
+                "stop",
+                RuntimeTurnOutcome::Complete,
+                turn_started_at,
+                &mut timings,
+            ));
         }
 
         if let Some(local_command) = Self::local_command(&user_text) {
             return match local_command {
                 LocalCommand::Speak(local_response) => {
                     self.register_assistant_utterance(&local_response, Instant::now());
-                    Self::speak_with_cancel(tts, &local_response, cancel_rx).await
+                    let t0 = Instant::now();
+                    let outcome = Self::speak_with_cancel(tts, &local_response, cancel_rx).await?;
+                    timings.tts = Some(t0.elapsed());
+                    Ok(Self::finish_turn(
+                        "local_command_speak",
+                        outcome,
+                        turn_started_at,
+                        &mut timings,
+                    ))
                 }
-                LocalCommand::PlayChocobo => Self::play_chocobo_with_cancel(tts, cancel_rx).await,
+                LocalCommand::PlayChocobo => {
+                    let t0 = Instant::now();
+                    let outcome = Self::play_chocobo_with_cancel(tts, cancel_rx).await?;
+                    timings.tts = Some(t0.elapsed());
+                    Ok(Self::finish_turn(
+                        "local_command_chocobo",
+                        outcome,
+                        turn_started_at,
+                        &mut timings,
+                    ))
+                }
             };
         }
 
         if cancel_rx.try_recv().is_ok() {
             tts.request_stop_playback();
-            return Ok(RuntimeTurnOutcome::Interrupted);
+            return Ok(Self::finish_turn(
+                "cancel_before_processing",
+                RuntimeTurnOutcome::Interrupted,
+                turn_started_at,
+                &mut timings,
+            ));
         }
 
         let parsed_media_cmd = Self::parse_media_command(&user_text);
@@ -488,19 +632,35 @@ impl DesktopRuntime {
                             result.summary
                         };
                         self.register_assistant_utterance(&spoken, Instant::now());
-                        return Self::speak_with_cancel(tts, &spoken, cancel_rx).await;
+                        let t0 = Instant::now();
+                        let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                        timings.tts = Some(t0.elapsed());
+                        return Ok(Self::finish_turn(
+                            "media_direct",
+                            outcome,
+                            turn_started_at,
+                            &mut timings,
+                        ));
                     }
                     Err(e) => {
                         record_media_skill("error");
                         record_media_execute("error", action_label);
                         record_media_execute_duration(action_label, t0.elapsed());
                         warn!(error = %e, "direct media command failed");
-                        return Self::speak_with_cancel(
+                        let t0 = Instant::now();
+                        let outcome = Self::speak_with_cancel(
                             tts,
                             "I could not control Music.app for that command.",
                             cancel_rx,
                         )
-                        .await;
+                        .await?;
+                        timings.tts = Some(t0.elapsed());
+                        return Ok(Self::finish_turn(
+                            "media_direct_error",
+                            outcome,
+                            turn_started_at,
+                            &mut timings,
+                        ));
                     }
                 }
             }
@@ -590,8 +750,17 @@ impl DesktopRuntime {
                             info!(skill = "weather", "skill_executed");
                             record_weather_skill("success");
                             let prompt = Self::weather_answer_prompt(&user_text, &weather);
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_weather",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_weather_skill("error");
@@ -618,8 +787,17 @@ impl DesktopRuntime {
                             info!(skill = "time", "skill_executed");
                             record_time_skill("success");
                             let prompt = Self::time_answer_prompt(&user_text, &time_result);
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_time",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_time_skill("error");
@@ -652,8 +830,17 @@ impl DesktopRuntime {
                             info!(skill = "distance", "skill_executed");
                             record_distance_skill("success");
                             let prompt = Self::distance_answer_prompt(&user_text, &dist_result);
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_distance",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_distance_skill("error");
@@ -684,8 +871,17 @@ impl DesktopRuntime {
                             record_smart_home_execute_duration(action_label, t0.elapsed());
                             let prompt =
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_smart_home",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_smart_home_skill("error");
@@ -714,8 +910,17 @@ impl DesktopRuntime {
                             record_assistant_skill("success");
                             let prompt =
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_assistant",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_assistant_skill("error");
@@ -751,7 +956,15 @@ impl DesktopRuntime {
                                 result.summary.clone()
                             };
                             self.register_assistant_utterance(&spoken, Instant::now());
-                            return Self::speak_with_cancel(tts, &spoken, cancel_rx).await;
+                            let tts_started = Instant::now();
+                            let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                            timings.tts = Some(tts_started.elapsed());
+                            return Ok(Self::finish_turn(
+                                "skill_media",
+                                outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_media_skill("error");
@@ -783,8 +996,17 @@ impl DesktopRuntime {
                             record_memory_fact_recall_duration(t0.elapsed());
                             let prompt =
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_memory",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_memory_skill("error");
@@ -813,8 +1035,17 @@ impl DesktopRuntime {
                             record_computer_skill("success");
                             let prompt =
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
-                            return Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None)
-                                .await;
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_computer",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
                         }
                         Err(e) => {
                             record_computer_skill("error");
@@ -832,25 +1063,41 @@ impl DesktopRuntime {
         } else {
             vec![]
         };
+        let llm_started_at = Instant::now();
         let mut stream = llm.chat_stream(&user_text, &history, None).await?;
         use futures::StreamExt;
         let mut full_response = String::new();
+        let mut tts_push_duration = Duration::ZERO;
         loop {
             tokio::select! {
                 token = stream.next() => {
                     let Some(token) = token else { break };
                     if !token.is_empty() {
                         full_response.push_str(&token);
+                        let t0 = Instant::now();
                         tts.push_text(&token).await?;
+                        tts_push_duration += t0.elapsed();
                     }
                 }
                 _ = cancel_rx.recv() => {
                     tts.request_stop_playback();
-                    return Ok(RuntimeTurnOutcome::Interrupted);
+                    timings.llm = Some(llm_started_at.elapsed());
+                    timings.tts = Some(tts_push_duration);
+                    return Ok(Self::finish_turn(
+                        "chat_interrupted",
+                        RuntimeTurnOutcome::Interrupted,
+                        turn_started_at,
+                        &mut timings,
+                    ));
                 }
             }
         }
+        timings.llm = Some(llm_started_at.elapsed());
+        let flush_started_at = Instant::now();
         tts.flush().await?;
+        let flush_duration = flush_started_at.elapsed();
+        timings.tts_flush = Some(flush_duration);
+        timings.tts = Some(tts_push_duration + flush_duration);
         self.register_assistant_utterance(&full_response, Instant::now());
         if let Some((local_answer, query)) = parse_need_search(&full_response) {
             let do_search = if let Some(ref confirm) = self.user_confirm {
@@ -866,7 +1113,16 @@ impl DesktopRuntime {
                     local_answer
                 };
                 self.register_assistant_utterance(&to_speak, Instant::now());
-                return Self::speak_with_cancel(tts, &to_speak, cancel_rx).await;
+                let t0 = Instant::now();
+                let outcome = Self::speak_with_cancel(tts, &to_speak, cancel_rx).await?;
+                timings.tts = Some(t0.elapsed());
+                timings.tts_flush = None;
+                return Ok(Self::finish_turn(
+                    "chat_search_followup",
+                    outcome,
+                    turn_started_at,
+                    &mut timings,
+                ));
             }
         }
         // Persist turn to memory and optionally save to disk.
@@ -888,7 +1144,34 @@ impl DesktopRuntime {
                 }
             }
         }
-        Ok(RuntimeTurnOutcome::Complete)
+        Ok(Self::finish_turn(
+            "chat",
+            RuntimeTurnOutcome::Complete,
+            turn_started_at,
+            &mut timings,
+        ))
+    }
+
+    fn finish_turn(
+        path: &str,
+        outcome: RuntimeTurnOutcome,
+        turn_started_at: Instant,
+        timings: &mut TurnTimings,
+    ) -> RuntimeTurnOutcome {
+        timings.total = Some(turn_started_at.elapsed());
+        timings.record_stage_metrics();
+        info!(
+            path,
+            outcome = ?outcome,
+            mic_to_stt_ms = timings.mic_to_stt_ms(),
+            stt_ms = timings.stt_ms(),
+            llm_ms = timings.llm_ms(),
+            tts_ms = timings.tts_ms(),
+            tts_flush_ms = timings.tts_flush_ms(),
+            journey_ms = timings.total_ms(),
+            "turn_timing"
+        );
+        outcome
     }
 
     fn weather_answer_prompt(user_text: &str, weather: &WeatherResult) -> String {
@@ -948,31 +1231,47 @@ impl DesktopRuntime {
         cancel_rx: &mut broadcast::Receiver<()>,
         user_prompt: &str,
         system_prompt_override: Option<&str>,
-    ) -> Result<RuntimeTurnOutcome, Box<dyn std::error::Error + Send + Sync>>
+    ) -> Result<StreamLlmTtsOutcome, Box<dyn std::error::Error + Send + Sync>>
     where
         L: LlmStream,
         T: TtsSink,
     {
+        let llm_started_at = Instant::now();
         let mut stream = llm
             .chat_stream(user_prompt, &[], system_prompt_override)
             .await?;
         use futures::StreamExt;
+        let mut tts_push_duration = Duration::ZERO;
         loop {
             tokio::select! {
                 token = stream.next() => {
                     let Some(token) = token else { break };
                     if !token.is_empty() {
+                        let t0 = Instant::now();
                         tts.push_text(&token).await?;
+                        tts_push_duration += t0.elapsed();
                     }
                 }
                 _ = cancel_rx.recv() => {
                     tts.request_stop_playback();
-                    return Ok(RuntimeTurnOutcome::Interrupted);
+                    return Ok(StreamLlmTtsOutcome {
+                        outcome: RuntimeTurnOutcome::Interrupted,
+                        llm_duration: llm_started_at.elapsed(),
+                        tts_duration: tts_push_duration,
+                        tts_flush_duration: Duration::ZERO,
+                    });
                 }
             }
         }
+        let flush_started_at = Instant::now();
         tts.flush().await?;
-        Ok(RuntimeTurnOutcome::Complete)
+        let tts_flush_duration = flush_started_at.elapsed();
+        Ok(StreamLlmTtsOutcome {
+            outcome: RuntimeTurnOutcome::Complete,
+            llm_duration: llm_started_at.elapsed(),
+            tts_duration: tts_push_duration + tts_flush_duration,
+            tts_flush_duration,
+        })
     }
 
     /// Push text to TTS in chunks; if cancel_rx fires, stop and return Interrupted.
@@ -1403,7 +1702,8 @@ impl DesktopRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::DesktopRuntime;
+    use super::{DesktopRuntime, TurnTimings};
+    use std::time::Duration;
 
     #[test]
     fn detects_console_interrupt_stt_error_message() {
@@ -1469,5 +1769,34 @@ mod tests {
     #[test]
     fn chunk_duration_ms_matches_16k_pipeline() {
         assert_eq!(DesktopRuntime::chunk_duration_ms(320), 20);
+    }
+
+    #[test]
+    fn turn_timings_roll_up_total_and_stage_ms() {
+        let mut timings = TurnTimings::new();
+        timings.mic_to_stt = Some(Duration::from_millis(120));
+        timings.stt = Some(Duration::from_millis(45));
+        timings.llm = Some(Duration::from_millis(300));
+        timings.tts = Some(Duration::from_millis(210));
+        timings.tts_flush = Some(Duration::from_millis(30));
+        timings.total = Some(Duration::from_millis(705));
+
+        assert_eq!(timings.mic_to_stt_ms(), Some(120));
+        assert_eq!(timings.stt_ms(), Some(45));
+        assert_eq!(timings.llm_ms(), Some(300));
+        assert_eq!(timings.tts_ms(), Some(210));
+        assert_eq!(timings.tts_flush_ms(), Some(30));
+        assert_eq!(timings.total_ms(), Some(705));
+    }
+
+    #[test]
+    fn turn_timings_default_to_none_before_recording() {
+        let timings = TurnTimings::new();
+        assert_eq!(timings.mic_to_stt_ms(), None);
+        assert_eq!(timings.stt_ms(), None);
+        assert_eq!(timings.llm_ms(), None);
+        assert_eq!(timings.tts_ms(), None);
+        assert_eq!(timings.tts_flush_ms(), None);
+        assert_eq!(timings.total_ms(), None);
     }
 }
