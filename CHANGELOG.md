@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project follows Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- Public-repo baseline documents: `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md`.
+
+### Changed
+
+- README public-consumer guidance: stability/support matrix, experimental scope boundaries, and repository safety rules for local state and credentials.
+- Publication checklist hardening: explicit guidance for secret handling before public visibility changes.
+
 ## [v0.1.0-rc.1] - 2026-03-17
 
 ### Added
