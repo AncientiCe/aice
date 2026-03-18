@@ -7,6 +7,8 @@ Core flow is built for low latency:
 
 No cloud lock-in is required for the runtime loop. You run it on your own machine.
 
+License: Apache-2.0 (see [LICENSE](LICENSE)).
+
 ## Product direction
 
 - Primary runtime: `pod-voice` (single process, voice loop + pod transport).
@@ -15,6 +17,25 @@ No cloud lock-in is required for the runtime loop. You run it on your own machin
 - M5Stack ATOM Echo is supported as an experimental test device.
 - Skills are pluggable by design (`core-skills`), including macOS Music.app control and smart-home integrations.
 - Recommended host for home deployments: Mac mini on macOS.
+
+## Stability and support matrix
+
+- Stable runtime path: `apps/desktop-runner` via `pod-voice` on macOS arm64.
+- Advanced path: `apps/pod-gateway` is available for transport-focused deployments and experimentation.
+- Experimental hardware path: `pod-firmware` and M5Stack ATOM Echo integration are not covered by binary release guarantees.
+- Compatibility policy: `0.1.x` preserves current `config.example.json` defaults unless release notes state otherwise.
+
+## Public repository safety
+
+- Never commit local runtime state or credentials (`config.json`, `.env*`, `memory.json`, `memory.sqlite`, `*.pem`, `*.key`).
+- Start from `config.example.json` and keep machine-local overrides out of git.
+- If a secret is committed by mistake, rotate it and remove it from git history before publishing tags/releases.
+
+## For public consumers
+
+- Best effort stability is focused on `pod-voice` and the documented macOS setup flow.
+- Experimental components may change faster and can break between releases.
+- Prefer release-tagged assets/runbooks over arbitrary `main` snapshots for production-like usage.
 
 ## Quick start
 
@@ -126,3 +147,6 @@ Authentication and Apple developer token setup are not required.
 - Experimental M5Stack deployment: [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md)
 - Pod networking: [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
