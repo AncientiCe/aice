@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use core_audio::{AudioCapture, CaptureError};
 use core_config::Config;
 use core_orchestrator::{IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink};
+use core_policy::{ActionRequest, PolicyDecision, PolicyEngine};
 use core_search::MockSearch;
 use core_skills::{
     DistanceResult, DistanceSkillError, MediaResult, MessageResult, MessageSkillError,
@@ -20,6 +21,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+pub trait TestResultExt<T, E> {
+    fn must(self) -> T;
+    fn must_err(self) -> E;
+}
+
+impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+    fn must(self) -> T {
+        match self {
+            Ok(value) => value,
+            Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+        }
+    }
+
+    fn must_err(self) -> E {
+        match self {
+            Ok(_) => panic!("expected Err(..) in test, got Ok"),
+            Err(error) => error,
+        }
+    }
+}
 
 struct MockStt(String);
 
@@ -151,7 +173,7 @@ impl RecordLlm {
         }
     }
     fn last_user_text(&self) -> String {
-        self.last_user_text.lock().unwrap().clone()
+        self.last_user_text.lock().must().clone()
     }
 }
 
@@ -166,7 +188,7 @@ impl LlmStream for RecordLlm {
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
     > {
-        *self.last_user_text.lock().unwrap() = user_text.to_string();
+        *self.last_user_text.lock().must() = user_text.to_string();
         Ok(Box::new(stream::iter(vec![self.response.clone()])))
     }
 }
@@ -183,7 +205,7 @@ impl HistoryCountLlm {
     }
 
     fn last_history_len(&self) -> usize {
-        *self.last_history_len.lock().unwrap()
+        *self.last_history_len.lock().must()
     }
 }
 
@@ -198,8 +220,52 @@ impl LlmStream for HistoryCountLlm {
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
     > {
-        *self.last_history_len.lock().unwrap() = history.len();
+        *self.last_history_len.lock().must() = history.len();
         Ok(Box::new(stream::iter(vec!["ok".to_string()])))
+    }
+}
+
+struct QueueLlm {
+    responses: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl QueueLlm {
+    fn new(items: Vec<&str>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(
+                items.into_iter().map(|s| s.to_string()).collect(),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmStream for QueueLlm {
+    async fn chat_stream(
+        &self,
+        _user_text: &str,
+        _history: &[(String, String)],
+        _system_prompt_override: Option<&str>,
+    ) -> Result<
+        Box<dyn futures::Stream<Item = String> + Send + Unpin>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let mut guard = self.responses.lock().await;
+        let next = guard.pop_front().unwrap_or_default();
+        Ok(Box::new(stream::iter(vec![next])))
+    }
+}
+
+#[derive(Default)]
+struct DenyPolicy;
+
+impl PolicyEngine for DenyPolicy {
+    fn emergency_stop(&self) -> bool {
+        false
+    }
+
+    fn allow_action(&self, _request: &ActionRequest) -> PolicyDecision {
+        PolicyDecision::Deny("denied by test policy".to_string())
     }
 }
 
@@ -298,7 +364,7 @@ async fn runtime_gate_closed_when_wake_enabled_and_not_activated() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, search.as_ref(), rx)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::GateClosed);
     assert!(tts.text().is_empty());
@@ -317,7 +383,7 @@ async fn runtime_empty_input_returns_empty_input() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::EmptyInput);
 }
@@ -335,7 +401,7 @@ async fn runtime_stop_voice_command_stops_playback_and_does_not_call_llm() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -373,7 +439,7 @@ async fn runtime_stop_variants_all_trigger_stop() {
         let outcome = runtime
             .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
             .await
-            .unwrap();
+            .must();
 
         assert_eq!(
             outcome,
@@ -405,7 +471,7 @@ async fn runtime_needs_search_user_yes_speaks_search_result() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, Some(&search), rx)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(tts.text().contains("42"));
@@ -431,7 +497,7 @@ async fn runtime_needs_search_user_no_speaks_local_only() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, Some(&search), rx)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(tts.text().contains("Maybe"));
@@ -450,7 +516,7 @@ async fn runtime_speak_cancel_returns_interrupted() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
         .await
-        .unwrap();
+        .must();
     assert_eq!(outcome, RuntimeTurnOutcome::Interrupted);
 }
 
@@ -467,7 +533,7 @@ async fn runtime_local_time_query_bypasses_llm() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(tts.text().contains("The current time is"));
@@ -480,12 +546,12 @@ async fn runtime_play_chocobo_bypasses_llm_and_streams_raw_pcm() {
         .prefix("aice-chocobo-")
         .suffix(".c")
         .tempfile()
-        .unwrap();
+        .must();
     std::fs::write(
         temp.path(),
         "const unsigned char audio_chocobo[] = { 0x01, 0x00, 0x02, 0x00 };",
     )
-    .unwrap();
+    .must();
     std::env::set_var("AICE_CHOCOBO_C_PATH", temp.path());
 
     let config = Config::default();
@@ -499,7 +565,7 @@ async fn runtime_play_chocobo_bypasses_llm_and_streams_raw_pcm() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
         .await
-        .unwrap();
+        .must();
 
     std::env::remove_var("AICE_CHOCOBO_C_PATH");
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
@@ -514,12 +580,12 @@ async fn runtime_play_chocobo_variant_phrase_bypasses_llm() {
         .prefix("aice-chocobo-")
         .suffix(".c")
         .tempfile()
-        .unwrap();
+        .must();
     std::fs::write(
         temp.path(),
         "const unsigned char audio_chocobo[] = { 0x10, 0x00, 0x20, 0x00 };",
     )
-    .unwrap();
+    .must();
     std::env::set_var("AICE_CHOCOBO_C_PATH", temp.path());
 
     let config = Config::default();
@@ -533,7 +599,7 @@ async fn runtime_play_chocobo_variant_phrase_bypasses_llm() {
     let outcome = runtime
         .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
         .await
-        .unwrap();
+        .must();
 
     std::env::remove_var("AICE_CHOCOBO_C_PATH");
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
@@ -581,6 +647,7 @@ async fn runtime_continuous_loop_processes_multiple_turns() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -594,8 +661,8 @@ async fn runtime_continuous_loop_processes_multiple_turns() {
         ),
     )
     .await
-    .expect("runtime_continuous_loop_processes_multiple_turns timed out")
-    .unwrap();
+    .must()
+    .must();
 
     assert_eq!(stats.turns_completed, 2);
     assert!(tts.text().contains("ok"));
@@ -650,6 +717,7 @@ async fn runtime_continuous_loop_activates_on_wake_phrase() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -663,8 +731,8 @@ async fn runtime_continuous_loop_activates_on_wake_phrase() {
         ),
     )
     .await
-    .expect("runtime_continuous_loop_activates_on_wake_phrase timed out")
-    .unwrap();
+    .must()
+    .must();
 
     assert_eq!(stats.turns_completed, 1);
     assert_eq!(stats.wake_activations, 1);
@@ -716,6 +784,7 @@ async fn runtime_continuous_loop_allows_computer_pause_when_gate_closed() {
                     media_skill: Some(&media_skill),
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -728,7 +797,7 @@ async fn runtime_continuous_loop_allows_computer_pause_when_gate_closed() {
             },
         )
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(stats.turns_completed, 1);
     assert!(
@@ -770,6 +839,7 @@ async fn runtime_continuous_loop_counts_interruption() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -782,7 +852,7 @@ async fn runtime_continuous_loop_counts_interruption() {
             },
         )
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(stats.turns_interrupted, 1);
 }
@@ -822,6 +892,7 @@ async fn runtime_continuous_flushes_partial_turn_on_timeout() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -836,8 +907,8 @@ async fn runtime_continuous_flushes_partial_turn_on_timeout() {
     )
     .await;
 
-    let stats = result.expect("runtime should not hang waiting for full turn window");
-    let stats = stats.expect("runtime error");
+    let stats = result.must();
+    let stats = stats.must();
     assert_eq!(stats.turns_completed, 1);
 }
 
@@ -876,6 +947,7 @@ async fn runtime_continuous_waits_for_silence_threshold_before_flush() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -936,6 +1008,7 @@ async fn runtime_continuous_does_not_flush_on_turn_window_while_voice_continues(
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -998,6 +1071,7 @@ async fn runtime_continuous_flushes_after_silent_audio_pause() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -1011,8 +1085,8 @@ async fn runtime_continuous_flushes_after_silent_audio_pause() {
         ),
     )
     .await
-    .expect("runtime should complete once silence pause is observed")
-    .expect("runtime error");
+    .must()
+    .must();
 
     assert_eq!(result.turns_completed, 1);
 }
@@ -1059,6 +1133,7 @@ async fn runtime_continuous_streams_silent_chunks_after_voice_starts() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -1072,8 +1147,8 @@ async fn runtime_continuous_streams_silent_chunks_after_voice_starts() {
         ),
     )
     .await
-    .expect("runtime should complete after silence threshold")
-    .expect("runtime error");
+    .must()
+    .must();
 
     assert_eq!(result.turns_completed, 1);
     assert_eq!(
@@ -1119,6 +1194,7 @@ async fn runtime_continuous_higher_silence_threshold_increases_completion_time()
                         media_skill: None,
                         memory_skill: None,
                         computer_skill: None,
+                        app_switcher_skill: None,
                         reminder_skill: None,
                         message_skill: None,
                         timer_skill: None,
@@ -1132,8 +1208,8 @@ async fn runtime_continuous_higher_silence_threshold_increases_completion_time()
             ),
         )
         .await
-        .expect("runtime should complete")
-        .expect("runtime error");
+        .must()
+        .must();
         started.elapsed()
     }
 
@@ -1192,6 +1268,7 @@ async fn runtime_ignores_recent_assistant_echo_without_wake_phrase() {
                 media_skill: Some(&media_skill),
                 memory_skill: None,
                 computer_skill: None,
+                app_switcher_skill: None,
                 reminder_skill: None,
                 message_skill: None,
                 timer_skill: None,
@@ -1205,7 +1282,7 @@ async fn runtime_ignores_recent_assistant_echo_without_wake_phrase() {
     );
     let stats = tokio::time::timeout(std::time::Duration::from_millis(400), run)
         .await
-        .expect_err("second echo turn should be ignored and not complete");
+        .must_err();
     let _ = stats;
 }
 
@@ -1257,6 +1334,7 @@ async fn runtime_does_not_ignore_stop_as_echo() {
                     media_skill: Some(&media_skill),
                     memory_skill: None,
                     computer_skill: None,
+                    app_switcher_skill: None,
                     reminder_skill: None,
                     message_skill: None,
                     timer_skill: None,
@@ -1270,8 +1348,8 @@ async fn runtime_does_not_ignore_stop_as_echo() {
         ),
     )
     .await
-    .expect("runtime_does_not_ignore_stop_as_echo timed out")
-    .unwrap();
+    .must()
+    .must();
 
     assert_eq!(stats.turns_completed, 2);
     assert!(tts.stops_requested >= 1);
@@ -1315,6 +1393,7 @@ async fn runtime_requires_wake_phrase_for_each_turn_when_wake_enabled() {
                 media_skill: Some(&media_skill),
                 memory_skill: None,
                 computer_skill: None,
+                app_switcher_skill: None,
                 reminder_skill: None,
                 message_skill: None,
                 timer_skill: None,
@@ -1329,7 +1408,7 @@ async fn runtime_requires_wake_phrase_for_each_turn_when_wake_enabled() {
 
     let _ = tokio::time::timeout(std::time::Duration::from_millis(400), run)
         .await
-        .expect_err("second turn without wake phrase should not be processed");
+        .must_err();
 }
 
 // --- Intent + weather skill tests ---
@@ -1370,6 +1449,7 @@ async fn intent_weather_uses_default_location_and_streams_llm_answer() {
         media_skill: None,
         memory_skill: None,
         computer_skill: None,
+        app_switcher_skill: None,
         reminder_skill: None,
         message_skill: None,
         timer_skill: None,
@@ -1384,7 +1464,7 @@ async fn intent_weather_uses_default_location_and_streams_llm_answer() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -1437,6 +1517,7 @@ async fn intent_weather_with_explicit_location_calls_skill_with_location() {
         media_skill: None,
         memory_skill: None,
         computer_skill: None,
+        app_switcher_skill: None,
         reminder_skill: None,
         message_skill: None,
         timer_skill: None,
@@ -1451,7 +1532,7 @@ async fn intent_weather_with_explicit_location_calls_skill_with_location() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(tts.text().contains("22"));
@@ -1476,6 +1557,7 @@ async fn intent_chat_routes_to_chat_path() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1490,7 +1572,7 @@ async fn intent_chat_routes_to_chat_path() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert_eq!(llm.last_user_text(), "tell me a joke");
@@ -1515,6 +1597,7 @@ async fn no_intent_classifier_uses_chat_path() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1529,7 +1612,7 @@ async fn no_intent_classifier_uses_chat_path() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(tts.text().contains("Hi there"));
@@ -1562,6 +1645,7 @@ async fn intent_time_uses_default_location_and_streams_llm_answer() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1576,7 +1660,7 @@ async fn intent_time_uses_default_location_and_streams_llm_answer() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -1615,6 +1699,7 @@ async fn intent_distance_destination_only_uses_default_origin() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1629,7 +1714,7 @@ async fn intent_distance_destination_only_uses_default_origin() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -1666,6 +1751,7 @@ async fn intent_distance_geocoding_no_results_speaks_short_clarification_without
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1680,7 +1766,7 @@ async fn intent_distance_geocoding_no_results_speaks_short_clarification_without
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     let spoken = tts.text();
@@ -1726,6 +1812,7 @@ async fn intent_distance_missing_places_speaks_short_clarification_without_llm()
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1740,7 +1827,7 @@ async fn intent_distance_missing_places_speaks_short_clarification_without_llm()
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     let spoken = tts.text();
@@ -1793,6 +1880,7 @@ async fn intent_smart_home_uses_skill_and_streams_llm_answer() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1807,7 +1895,7 @@ async fn intent_smart_home_uses_skill_and_streams_llm_answer() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -1842,6 +1930,7 @@ async fn chat_turn_with_memory_appends_and_persists_history() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1856,7 +1945,7 @@ async fn chat_turn_with_memory_appends_and_persists_history() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     let guard = memory.lock().await;
@@ -1898,6 +1987,7 @@ async fn chat_turn_caps_history_to_two_recent_turns_for_llm() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1912,7 +2002,7 @@ async fn chat_turn_caps_history_to_two_recent_turns_for_llm() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert_eq!(
@@ -1952,6 +2042,7 @@ async fn intent_reminder_no_when_routes_to_skill() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: Some(&reminder_skill),
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -1966,7 +2057,7 @@ async fn intent_reminder_no_when_routes_to_skill() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -2005,6 +2096,7 @@ async fn intent_reminder_with_when_routes_to_skill() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: Some(&reminder_skill),
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -2019,7 +2111,7 @@ async fn intent_reminder_with_when_routes_to_skill() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -2061,6 +2153,7 @@ async fn intent_timer_named_routes_to_skill() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: Some(&timer_skill),
@@ -2075,7 +2168,7 @@ async fn intent_timer_named_routes_to_skill() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -2117,6 +2210,7 @@ async fn intent_message_routes_to_skill_and_speaks_deterministic_success() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: Some(&message_skill),
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -2131,7 +2225,7 @@ async fn intent_message_routes_to_skill_and_speaks_deterministic_success() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert_eq!(tts.text(), "Sent your message to Jane Doe.");
@@ -2161,6 +2255,7 @@ async fn intent_message_contact_not_found_speaks_deterministic_apology() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: Some(&message_skill),
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -2175,7 +2270,7 @@ async fn intent_message_contact_not_found_speaks_deterministic_apology() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert_eq!(tts.text(), "I'm sorry, I couldn't tell who 'your wife' is.");
@@ -2206,6 +2301,7 @@ async fn intent_message_send_failed_speaks_deterministic_error_without_llm() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: Some(&message_skill),
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -2220,7 +2316,7 @@ async fn intent_message_send_failed_speaks_deterministic_error_without_llm() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert_eq!(
@@ -2258,6 +2354,7 @@ async fn intent_timer_unnamed_routes_to_skill() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: Some(&timer_skill),
@@ -2272,7 +2369,7 @@ async fn intent_timer_unnamed_routes_to_skill() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -2317,6 +2414,7 @@ async fn intent_shopping_list_add_routes_to_skill() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
         message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
@@ -2331,7 +2429,7 @@ async fn intent_shopping_list_add_routes_to_skill() {
     let outcome = runtime
         .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
         .await
-        .unwrap();
+        .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(
@@ -2341,4 +2439,239 @@ async fn intent_shopping_list_add_routes_to_skill() {
         llm.last_user_text()
     );
     assert!(tts.text().contains("Added"));
+}
+
+// --- App switcher skill tests ---
+
+#[tokio::test]
+async fn intent_app_switcher_switch_routes_to_skill() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("switch to safari".to_string());
+    let app_switcher_result = core_skills::AppSwitcherResult {
+        summary: "Done. I switched to Safari.".to_string(),
+        action_done: "activate Safari".to_string(),
+        target: Some("Safari".to_string()),
+    };
+    let app_switcher_skill = core_skills::MockAppSwitcherSkill::ok(app_switcher_result.clone());
+    let llm = RecordLlm::new("Switched to Safari.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillAppSwitcher {
+        action: Some("switch".to_string()),
+        target: Some("Safari".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: Some(&app_switcher_skill),
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text()
+            .contains(&app_switcher_result.to_prompt_context()),
+        "LLM should receive app switcher context, got: {}",
+        llm.last_user_text()
+    );
+}
+
+#[tokio::test]
+async fn intent_app_switcher_force_quit_requires_confirmation_and_yes_executes() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = QueueStt::new(vec!["force quit safari", "yes do it"]);
+    let app_switcher_result = core_skills::AppSwitcherResult {
+        summary: "Done. I force-quit Safari.".to_string(),
+        action_done: "force quit Safari".to_string(),
+        target: Some("Safari".to_string()),
+    };
+    let app_switcher_skill = core_skills::MockAppSwitcherSkill::ok(app_switcher_result.clone());
+    let llm = QueueLlm::new(vec![
+        r#"{"confirm":"yes"}"#,
+        "I force-quit Safari as requested.",
+    ]);
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillAppSwitcher {
+        action: Some("force_quit".to_string()),
+        target: Some("Safari".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: Some(&app_switcher_skill),
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx1) = tokio::sync::broadcast::channel(1);
+    let (_tx2, rx2) = tokio::sync::broadcast::channel(1);
+
+    let first_outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx1, &skills)
+        .await
+        .must();
+    assert_eq!(first_outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        tts.text().to_lowercase().contains("confirm"),
+        "first turn should ask confirmation, got: {}",
+        tts.text()
+    );
+
+    let second_outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx2, &skills)
+        .await
+        .must();
+    assert_eq!(second_outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        tts.text().to_lowercase().contains("force-quit"),
+        "second turn should execute force quit after yes confirmation, got: {}",
+        tts.text()
+    );
+}
+
+#[tokio::test]
+async fn intent_app_switcher_force_quit_confirmation_no_cancels() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = QueueStt::new(vec!["force quit safari", "no"]);
+    let app_switcher_result = core_skills::AppSwitcherResult {
+        summary: "Done. I force-quit Safari.".to_string(),
+        action_done: "force quit Safari".to_string(),
+        target: Some("Safari".to_string()),
+    };
+    let app_switcher_skill = core_skills::MockAppSwitcherSkill::ok(app_switcher_result);
+    let llm = QueueLlm::new(vec![r#"{"confirm":"no"}"#]);
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillAppSwitcher {
+        action: Some("force_quit".to_string()),
+        target: Some("Safari".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: Some(&app_switcher_skill),
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx1) = tokio::sync::broadcast::channel(1);
+    let (_tx2, rx2) = tokio::sync::broadcast::channel(1);
+
+    let first_outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx1, &skills)
+        .await
+        .must();
+    assert_eq!(first_outcome, RuntimeTurnOutcome::Complete);
+
+    let second_outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx2, &skills)
+        .await
+        .must();
+    assert_eq!(second_outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        tts.text().to_lowercase().contains("cancelled"),
+        "second turn should cancel force quit after no confirmation, got: {}",
+        tts.text()
+    );
+}
+
+#[tokio::test]
+async fn intent_app_switcher_force_quit_policy_denied_falls_back_to_chat() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("force quit safari".to_string());
+    let app_switcher_result = core_skills::AppSwitcherResult {
+        summary: "Done. I force-quit Safari.".to_string(),
+        action_done: "force quit Safari".to_string(),
+        target: Some("Safari".to_string()),
+    };
+    let app_switcher_skill = core_skills::MockAppSwitcherSkill::ok(app_switcher_result);
+    let llm = RecordLlm::new("I cannot do that right now.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillAppSwitcher {
+        action: Some("force_quit".to_string()),
+        target: Some("Safari".to_string()),
+    });
+    let deny_policy = DenyPolicy;
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: Some(&app_switcher_skill),
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: Some(&deny_policy),
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text().contains("force quit safari"),
+        "policy denial should fall back to chat path"
+    );
 }

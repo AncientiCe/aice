@@ -136,7 +136,7 @@ flowchart LR
 
 ---
 
-## 6. Intent classification and skills (weather, time, distance, smart home, assistant, media, memory, computer, volume)
+## 6. Intent classification and skills (weather, time, distance, smart home, assistant, media, memory, computer, screenshot, app switcher, volume)
 
 **Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, location is resolved at startup (IP geolocation or config default) or from the user’s request (e.g. “weather in Rome”). The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
 
@@ -153,6 +153,8 @@ flowchart LR
     PolicyCheck -->|allow| MediaSkill[MediaSkill]
     PolicyCheck -->|allow| MemorySkill[MemorySkill]
     PolicyCheck -->|allow| ComputerSkill[ComputerSkill]
+    PolicyCheck -->|allow| ScreenshotSkill[ScreenshotSkill]
+    PolicyCheck -->|allow| AppSwitcherSkill[AppSwitcherSkill]
     PolicyCheck -->|deny| ChatLLM
     StartupLocation[StartupLocationContext] --> WeatherSkill
     StartupLocation --> TimeSkill
@@ -165,6 +167,8 @@ flowchart LR
     MediaSkill --> SkillPayload
     MemorySkill --> SkillPayload
     ComputerSkill --> SkillPayload
+    ScreenshotSkill --> SkillPayload
+    AppSwitcherSkill --> SkillPayload
     SkillPayload --> AnswerLLM[AnswerComposerLLM]
     ChatLLM --> TokenStream[TokenStream]
     AnswerLLM --> TokenStream
@@ -173,7 +177,7 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, smart_home, assistant, media, memory, computer), resolved location, and optional `PolicyEngine`.
+- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, smart_home, assistant, media, memory, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
 - **Outputs:** Streamed TTS to desktop or pod; metrics `voice_intent_classifier_total`, `voice_intent_routed_total{intent}`, `voice_*_skill_total` per skill, `voice_policy_denied_total`; audit log events `skill_executed` and policy denial warnings.
 - **Failure paths:** Classification parse failure or skill error fall back to chat path; policy denial (emergency stop or budget exhausted) falls back to chat; missing location/places when required uses startup/default or falls back to chat.
 
@@ -347,3 +351,19 @@ Full skill journey, inputs, outputs, failure paths, and metrics are documented a
 **Purpose:** System output volume control is handled by a dedicated skill and documented in its own skill doc.
 
 Full skill journey, inputs, outputs, failure paths, and metrics are documented at [volume](../skills/volume.md).
+
+---
+
+## 16. Screenshot Skill (Local macOS Capture)
+
+**Purpose:** Screenshot capture is handled by a dedicated skill and documented in its own skill doc.
+
+Full skill journey, inputs, outputs, failure paths, and metrics are documented at [screenshot](../skills/screenshot.md).
+
+---
+
+## 17. App Switcher Skill (macOS App Focus and Control)
+
+**Purpose:** App switching actions are handled by a dedicated skill and documented in its own skill doc.
+
+Full skill journey, inputs, outputs, failure paths, and metrics are documented at [app-switcher](../skills/app-switcher.md).

@@ -12,6 +12,7 @@ members = [
     "crates/core-policy",
     "crates/core-search",
     "crates/core-skills",
+    "crates/core-skills/skill-app-switcher",
     "crates/pod-protocol",
     "apps/desktop-runner",
     "apps/pod-gateway",

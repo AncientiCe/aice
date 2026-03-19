@@ -5,6 +5,7 @@ edition = "2021"
 description = "Skill registry and re-exports for voice assistant skills"
 
 [dependencies]
+skill-app-switcher = { path = "skill-app-switcher" }
 skill-assistant = { path = "skill-assistant" }
 skill-computer = { path = "skill-computer" }
 skill-distance = { path = "skill-distance" }
@@ -12,6 +13,7 @@ skill-media = { path = "skill-media" }
 skill-message = { path = "skill-message" }
 skill-memory = { path = "skill-memory" }
 skill-reminder = { path = "skill-reminder" }
+skill-screenshot = { path = "skill-screenshot" }
 skill-shopping-list = { path = "skill-shopping-list" }
 skill-smart-home = { path = "skill-smart-home" }
 skill-time = { path = "skill-time" }

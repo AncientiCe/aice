@@ -341,6 +341,18 @@ impl TtsSink for PiperTtsSink {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+            }
+        }
+    }
     use super::normalize_wav_to_pcm16k_mono;
 
     fn build_pcm16_wav(sample_rate: u32, channels: u16, samples_interleaved: &[i16]) -> Vec<u8> {
@@ -394,7 +406,7 @@ mod tests {
         let src: Vec<i16> = (0..2205).map(|i| ((i % 200) as i16) - 100).collect(); // ~100ms mono
         let wav = build_pcm16_wav(input_rate, 1, &src);
 
-        let pcm = normalize_wav_to_pcm16k_mono(&wav).expect("normalize");
+        let pcm = normalize_wav_to_pcm16k_mono(&wav).must();
         let out = decode_i16_le(&pcm);
 
         // 2205 samples at 22.05kHz is 100ms => expect ~1600 samples at 16kHz.
@@ -411,7 +423,7 @@ mod tests {
         }
         let wav = build_pcm16_wav(input_rate, 2, &interleaved);
 
-        let pcm = normalize_wav_to_pcm16k_mono(&wav).expect("normalize");
+        let pcm = normalize_wav_to_pcm16k_mono(&wav).must();
         let out = decode_i16_le(&pcm);
         assert_eq!(out.len(), 160);
         // Average of +1000 and -1000 should be around 0.
@@ -428,7 +440,7 @@ mod tests {
         }
         let wav = build_pcm16_wav(input_rate, 1, &src);
 
-        let pcm = normalize_wav_to_pcm16k_mono(&wav).expect("normalize");
+        let pcm = normalize_wav_to_pcm16k_mono(&wav).must();
         let out = decode_i16_le(&pcm);
         assert_eq!(out.len(), src.len());
 

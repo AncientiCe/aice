@@ -1,18 +1,20 @@
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
-fn workspace_root() -> PathBuf {
+fn workspace_root() -> Result<PathBuf, io::Error> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| io::Error::other("workspace root not found"))
 }
 
 #[test]
-fn cargo_aliases_include_canonical_local_jarvis_commands() {
-    let config_path = workspace_root().join(".cargo").join("config.toml");
-    let content = fs::read_to_string(config_path).expect("read .cargo/config.toml");
+fn cargo_aliases_include_canonical_local_jarvis_commands() -> Result<(), Box<dyn std::error::Error>>
+{
+    let config_path = workspace_root()?.join(".cargo").join("config.toml");
+    let content = fs::read_to_string(config_path)?;
     for alias in [
         "aice-pod-voice",
         "aice-desktop",
@@ -27,17 +29,18 @@ fn cargo_aliases_include_canonical_local_jarvis_commands() {
             "missing cargo alias: {alias}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn repository_has_no_powershell_scripts() {
-    let scripts_dir = workspace_root().join("scripts");
+fn repository_has_no_powershell_scripts() -> Result<(), Box<dyn std::error::Error>> {
+    let scripts_dir = workspace_root()?.join("scripts");
     if !scripts_dir.exists() {
-        return;
+        return Ok(());
     }
     let mut ps1_files = Vec::new();
-    for entry in fs::read_dir(scripts_dir).expect("read scripts dir") {
-        let path = entry.expect("dir entry").path();
+    for entry in fs::read_dir(scripts_dir)? {
+        let path = entry?.path();
         if path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -52,4 +55,5 @@ fn repository_has_no_powershell_scripts() {
         "PowerShell scripts should be removed: {:?}",
         ps1_files
     );
+    Ok(())
 }

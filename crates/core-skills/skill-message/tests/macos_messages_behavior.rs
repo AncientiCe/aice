@@ -2,13 +2,47 @@
 
 use skill_message::{MacOsMessagesSkill, MessageSkill, MessageSkillError};
 
+pub trait TestOptionExt<T> {
+    fn must(self) -> T;
+}
+
+impl<T> TestOptionExt<T> for Option<T> {
+    fn must(self) -> T {
+        match self {
+            Some(value) => value,
+            None => panic!("expected Some(..) in test"),
+        }
+    }
+}
+
+pub trait TestResultExt<T, E> {
+    fn must(self) -> T;
+    fn must_err(self) -> E;
+}
+
+impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+    fn must(self) -> T {
+        match self {
+            Ok(value) => value,
+            Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+        }
+    }
+
+    fn must_err(self) -> E {
+        match self {
+            Ok(_) => panic!("expected Err(..) in test, got Ok"),
+            Err(error) => error,
+        }
+    }
+}
+
 #[tokio::test]
 async fn dry_run_sends_message_and_returns_result() {
     let skill = MacOsMessagesSkill::new_for_tests();
     let result = skill
         .execute("my wife", "How are you feeling?")
         .await
-        .expect("dry-run send should succeed");
+        .must();
 
     assert_eq!(result.recipient_name, "my wife");
     assert_eq!(result.recipient_handle, "my wife");
@@ -19,10 +53,7 @@ async fn dry_run_sends_message_and_returns_result() {
 #[tokio::test]
 async fn dry_run_rejects_empty_contact() {
     let skill = MacOsMessagesSkill::new_for_tests();
-    let err = skill
-        .execute("", "How are you?")
-        .await
-        .expect_err("empty contact must fail");
+    let err = skill.execute("", "How are you?").await.must_err();
 
     assert!(matches!(err, MessageSkillError::Execution(_)));
 }
@@ -30,10 +61,7 @@ async fn dry_run_rejects_empty_contact() {
 #[tokio::test]
 async fn dry_run_rejects_empty_message() {
     let skill = MacOsMessagesSkill::new_for_tests();
-    let err = skill
-        .execute("my wife", "")
-        .await
-        .expect_err("empty message must fail");
+    let err = skill.execute("my wife", "").await.must_err();
 
     assert!(matches!(err, MessageSkillError::Execution(_)));
 }
@@ -88,7 +116,7 @@ fn parse_contacts_output_parses_service_and_buddy_lines() {
     let parsed =
         MacOsMessagesSkill::parse_resolve_contact_output_for_tests("Jane Doe|+15551234567");
     assert!(parsed.is_some());
-    let parsed = parsed.expect("parse result");
+    let parsed = parsed.must();
     assert_eq!(parsed.0, "Jane Doe");
     assert_eq!(parsed.1, "+15551234567");
 }

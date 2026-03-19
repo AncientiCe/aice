@@ -182,6 +182,31 @@ impl ReminderSkill for MacOsReminderSkill {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestOptionExt<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+            }
+        }
+    }
     use super::MacOsReminderSkill;
     use chrono::{NaiveDateTime, Timelike};
 
@@ -195,7 +220,7 @@ mod tests {
     fn parse_iso_datetime_handles_full_datetime() {
         let dt = MacOsReminderSkill::parse_iso_datetime("2026-03-20T17:00");
         assert!(dt.is_some());
-        let dt = dt.unwrap();
+        let dt = dt.must();
         assert_eq!(dt.hour(), 17);
         assert_eq!(dt.minute(), 0);
     }
@@ -204,7 +229,7 @@ mod tests {
     fn parse_iso_datetime_handles_date_only_as_midnight() {
         let dt = MacOsReminderSkill::parse_iso_datetime("2026-03-20");
         assert!(dt.is_some());
-        let dt = dt.unwrap();
+        let dt = dt.must();
         assert_eq!(dt.hour(), 0);
         assert_eq!(dt.minute(), 0);
     }
@@ -223,7 +248,7 @@ mod tests {
 
     #[test]
     fn build_create_script_with_date_includes_date_components() {
-        let dt = NaiveDateTime::parse_from_str("2026-03-20 17:00", "%Y-%m-%d %H:%M").unwrap();
+        let dt = NaiveDateTime::parse_from_str("2026-03-20 17:00", "%Y-%m-%d %H:%M").must();
         let script = MacOsReminderSkill::build_create_script("Buy milk", Some(dt));
         assert!(script.contains("Buy milk"));
         assert!(script.contains("due date"));

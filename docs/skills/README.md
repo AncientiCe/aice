@@ -5,12 +5,14 @@ One document per skill. Each document contains a Mermaid journey diagram, input/
 | Skill | Crate | Status | Document |
 |-------|-------|--------|----------|
 | Assistant | `skill-assistant` | Trait only (no macOS impl) | [assistant.md](assistant.md) |
+| App Switcher | `skill-app-switcher` | `MacOsAppSwitcherSkill` | [app-switcher.md](app-switcher.md) |
 | Computer | `skill-computer` | `MacOsComputerSkill` | [computer.md](computer.md) |
 | Distance | `skill-distance` | `OpenMeteoDistanceSkill` | [distance.md](distance.md) |
 | Media | `skill-media` | `MacOsMusicSkill` | [media.md](media.md) |
 | Message | `skill-message` | `MacOsMessagesSkill` | [message.md](message.md) |
 | Memory | `skill-memory` | `SqliteMemorySkill` | [memory.md](memory.md) |
 | Reminder | `skill-reminder` | `MacOsReminderSkill` | [reminder.md](reminder.md) |
+| Screenshot | `skill-screenshot` | `MacOsScreenshotSkill` | [screenshot.md](screenshot.md) |
 | Shopping List | `skill-shopping-list` | `MacOsNotesShoppingListSkill` | [shopping-list.md](shopping-list.md) |
 | Smart Home | `skill-smart-home` | `HueSmartHomeSkill` | [smart-home.md](smart-home.md) |
 | Time | `skill-time` | `OpenMeteoTimeSkill` | [time.md](time.md) |

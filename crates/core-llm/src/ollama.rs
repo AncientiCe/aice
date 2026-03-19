@@ -214,6 +214,19 @@ impl LlmStream for OllamaLlmStream {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestOptionExt<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
     use super::OllamaLlmStream;
 
     #[test]
@@ -225,9 +238,7 @@ mod tests {
             64,
             Some("You are concise.".to_string()),
         );
-        let prompt = llm
-            .compose_system_prompt(None)
-            .expect("prompt should be present");
+        let prompt = llm.compose_system_prompt(None).must();
         assert!(prompt.contains("You are concise."));
         assert!(prompt.contains("Do not use Markdown"));
     }
@@ -243,7 +254,7 @@ mod tests {
         );
         let prompt = llm
             .compose_system_prompt(Some("classification only"))
-            .expect("override prompt should be present");
+            .must();
         assert_eq!(prompt, "classification only");
     }
 
@@ -256,9 +267,7 @@ mod tests {
             64,
             Some("You are helpful.".to_string()),
         );
-        let prompt = llm
-            .compose_system_prompt(None)
-            .expect("prompt should be present");
+        let prompt = llm.compose_system_prompt(None).must();
         assert!(prompt.contains("You are helpful."));
         assert!(prompt.contains("Do not use Markdown"));
     }

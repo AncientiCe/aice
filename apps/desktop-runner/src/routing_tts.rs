@@ -1,12 +1,14 @@
 //! TTS sink that routes to local playback or to pod egress.
 
 use async_trait::async_trait;
-use core_observability::{record_pod_egress_send_error, record_pod_tts_chunk};
+use core_observability::{
+    record_pod_egress_device_lock_poison, record_pod_egress_send_error, record_pod_tts_chunk,
+};
 use core_orchestrator::TtsSink;
 use core_tts::PiperTtsSink;
 use pod_gateway::PodEgressCommand;
 use pod_protocol::{AudioPayload, GatewayToPod};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::sleep;
@@ -107,18 +109,29 @@ impl RoutingTtsSink {
             }
         }
     }
+
+    fn egress_device_id_guard(&self, operation: &str) -> MutexGuard<'_, Option<String>> {
+        match self.egress_device_id.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                record_pod_egress_device_lock_poison(operation);
+                tracing::warn!(operation, "egress device lock poisoned, recovering");
+                poisoned.into_inner()
+            }
+        }
+    }
 }
 
 #[async_trait]
 impl TtsSink for RoutingTtsSink {
     fn set_egress_device(&mut self, device_id: Option<String>) {
-        *self.egress_device_id.lock().expect("lock") = device_id;
+        *self.egress_device_id_guard("set_egress_device") = device_id;
     }
 
     fn request_stop_playback(&mut self) {
         if let (Some(tx), Some(id)) = (
             &self.egress_tx,
-            self.egress_device_id.lock().expect("lock").clone(),
+            self.egress_device_id_guard("request_stop_playback").clone(),
         ) {
             let _ = tx.send(PodEgressCommand::ToDevice {
                 device_id: id,
@@ -136,7 +149,7 @@ impl TtsSink for RoutingTtsSink {
     }
 
     async fn flush(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let device_id = self.egress_device_id.lock().expect("lock").clone();
+        let device_id = self.egress_device_id_guard("flush").clone();
         let text = std::mem::take(&mut self.buffer);
         if text.trim().is_empty() {
             return Ok(());
@@ -155,7 +168,7 @@ impl TtsSink for RoutingTtsSink {
         &mut self,
         pcm: &[u8],
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let device_id = self.egress_device_id.lock().expect("lock").clone();
+        let device_id = self.egress_device_id_guard("play_pcm_bytes").clone();
         if let (Some(tx), Some(id)) = (&self.egress_tx, device_id) {
             self.send_pcm_to_pod(tx, &id, pcm, "raw").await;
             Ok(true)

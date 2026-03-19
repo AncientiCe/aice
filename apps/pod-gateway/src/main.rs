@@ -34,10 +34,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         });
     }
-    let addr: SocketAddr = config
-        .pod_bind
-        .parse()
-        .unwrap_or_else(|_| "0.0.0.0:8765".parse().unwrap());
+    let addr: SocketAddr = config.pod_bind.parse().unwrap_or_else(|error| {
+        tracing::warn!(
+            pod_bind = %config.pod_bind,
+            %error,
+            "invalid pod_bind, defaulting to 0.0.0.0:8765"
+        );
+        SocketAddr::from(([0, 0, 0, 0], 8765))
+    });
     let listener = TcpListener::bind(addr).await?;
     let (tx, mut rx) = mpsc::unbounded_channel::<PodIngestEvent>();
     let (egress_tx, egress_rx) = mpsc::unbounded_channel();

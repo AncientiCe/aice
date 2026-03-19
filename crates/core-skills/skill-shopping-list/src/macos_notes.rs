@@ -438,12 +438,25 @@ impl ShoppingListSkill for MacOsNotesShoppingListSkill {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestOptionExt<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
     use super::MacOsNotesShoppingListSkill;
     use chrono::NaiveDate;
 
     #[test]
     fn note_title_formats_correctly() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 19).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 19).must();
         assert_eq!(
             MacOsNotesShoppingListSkill::note_title(date),
             "Shopping List 19 Mar 2026"
@@ -452,7 +465,7 @@ mod tests {
 
     #[test]
     fn note_title_formats_single_digit_day() {
-        let date = NaiveDate::from_ymd_opt(2026, 3, 5).unwrap();
+        let date = NaiveDate::from_ymd_opt(2026, 3, 5).must();
         assert_eq!(
             MacOsNotesShoppingListSkill::note_title(date),
             "Shopping List 5 Mar 2026"
@@ -649,6 +662,6 @@ mod tests {
     #[test]
     fn resolve_date_iso_string() {
         let d = MacOsNotesShoppingListSkill::resolve_date(Some("2026-03-25"));
-        assert_eq!(d, NaiveDate::from_ymd_opt(2026, 3, 25).unwrap());
+        assert_eq!(d, NaiveDate::from_ymd_opt(2026, 3, 25).must());
     }
 }

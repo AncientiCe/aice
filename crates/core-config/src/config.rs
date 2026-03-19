@@ -461,6 +461,39 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestOptionExt<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+        fn must_err(self) -> E;
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+            }
+        }
+
+        fn must_err(self) -> E {
+            match self {
+                Ok(_) => panic!("expected Err(..) in test, got Ok"),
+                Err(error) => error,
+            }
+        }
+    }
     use super::{Config, MacOsMusicConfig};
     use std::io::Write;
     use std::path::Path;
@@ -468,7 +501,7 @@ mod tests {
     #[test]
     fn load_returns_defaults_when_file_missing() {
         let path = Path::new("nonexistent_config_that_does_not_exist_12345.json");
-        let config = Config::load(path).unwrap();
+        let config = Config::load(path).must();
         assert_eq!(config.ollama_url, "http://127.0.0.1:11434");
         assert_eq!(config.model, "llama3.2");
         assert!(config.llm.short_replies);
@@ -496,7 +529,7 @@ mod tests {
     fn load_parses_valid_json_and_overrides_defaults() {
         let dir = std::env::temp_dir();
         let path = dir.join("aice_config_test_valid.json");
-        let mut f = std::fs::File::create(&path).unwrap();
+        let mut f = std::fs::File::create(&path).must();
         f.write_all(
             br#"{
                 "ollama_url":"http://localhost:11434",
@@ -509,11 +542,11 @@ mod tests {
                 "service":{"health_bind":"127.0.0.1:9898","restart_backoff_secs":5}
             }"#,
         )
-        .unwrap();
-        f.sync_all().unwrap();
+        .must();
+        f.sync_all().must();
         drop(f);
 
-        let config = Config::load(&path).unwrap();
+        let config = Config::load(&path).must();
         assert_eq!(config.ollama_url, "http://localhost:11434");
         assert_eq!(config.model, "tinyllama");
         assert!(!config.llm.short_replies);
@@ -542,7 +575,7 @@ mod tests {
     fn load_parses_assistant_profile_and_memory() {
         let dir = std::env::temp_dir();
         let path = dir.join("aice_config_profile_memory.json");
-        let mut f = std::fs::File::create(&path).unwrap();
+        let mut f = std::fs::File::create(&path).must();
         f.write_all(
             br#"{
                 "assistant_profile": {
@@ -562,11 +595,11 @@ mod tests {
                 }
             }"#,
         )
-        .unwrap();
-        f.sync_all().unwrap();
+        .must();
+        f.sync_all().must();
         drop(f);
 
-        let config = Config::load(&path).unwrap();
+        let config = Config::load(&path).must();
         assert_eq!(config.assistant_profile.name.as_deref(), Some("Jarvis"));
         assert_eq!(
             config.assistant_profile.persona.as_deref(),
@@ -588,14 +621,14 @@ mod tests {
     fn load_returns_error_for_invalid_json() {
         let dir = std::env::temp_dir();
         let path = dir.join("aice_config_test_invalid.json");
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(b"{ invalid json }").unwrap();
-        f.sync_all().unwrap();
+        let mut f = std::fs::File::create(&path).must();
+        f.write_all(b"{ invalid json }").must();
+        f.sync_all().must();
         drop(f);
 
         let result = Config::load(&path);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(result.must_err().kind(), std::io::ErrorKind::InvalidData);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -603,8 +636,8 @@ mod tests {
     #[test]
     fn macos_music_config_serialization_has_no_auth_fields() {
         let cfg = MacOsMusicConfig::default();
-        let value = serde_json::to_value(cfg).expect("serialize macos music config");
-        let obj = value.as_object().expect("config object");
+        let value = serde_json::to_value(cfg).must();
+        let obj = value.as_object().must();
         assert_eq!(obj.len(), 1);
         assert!(obj.contains_key("enabled"));
     }
@@ -612,11 +645,8 @@ mod tests {
     #[test]
     fn media_config_serializes_macos_music_key() {
         let cfg = Config::default();
-        let value = serde_json::to_value(cfg).expect("serialize root config");
-        let media = value
-            .get("media")
-            .and_then(|v| v.as_object())
-            .expect("media object");
+        let value = serde_json::to_value(cfg).must();
+        let media = value.get("media").and_then(|v| v.as_object()).must();
         assert!(media.contains_key("macos_music"));
         assert!(!media.contains_key("apple_music"));
     }
@@ -625,7 +655,7 @@ mod tests {
     fn load_parses_macos_music_config() {
         let dir = std::env::temp_dir();
         let path = dir.join("aice_config_macos_music.json");
-        let mut f = std::fs::File::create(&path).unwrap();
+        let mut f = std::fs::File::create(&path).must();
         f.write_all(
             br#"{
                 "media": {
@@ -635,11 +665,11 @@ mod tests {
                 }
             }"#,
         )
-        .unwrap();
-        f.sync_all().unwrap();
+        .must();
+        f.sync_all().must();
         drop(f);
 
-        let config = Config::load(&path).unwrap();
+        let config = Config::load(&path).must();
         assert!(config.media.macos_music.enabled);
 
         let _ = std::fs::remove_file(&path);

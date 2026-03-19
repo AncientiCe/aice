@@ -297,12 +297,24 @@ impl TimerSkill for MacOsClockTimerSkill {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+            }
+        }
+    }
     use super::MacOsClockTimerSkill;
 
     #[test]
     fn parse_duration_five_minutes() {
         assert_eq!(
-            MacOsClockTimerSkill::parse_duration_seconds("5 minutes").unwrap(),
+            MacOsClockTimerSkill::parse_duration_seconds("5 minutes").must(),
             300
         );
     }
@@ -310,7 +322,7 @@ mod tests {
     #[test]
     fn parse_duration_one_hour() {
         assert_eq!(
-            MacOsClockTimerSkill::parse_duration_seconds("1 hour").unwrap(),
+            MacOsClockTimerSkill::parse_duration_seconds("1 hour").must(),
             3600
         );
     }
@@ -318,7 +330,7 @@ mod tests {
     #[test]
     fn parse_duration_one_hour_thirty_minutes() {
         assert_eq!(
-            MacOsClockTimerSkill::parse_duration_seconds("1 hour 30 minutes").unwrap(),
+            MacOsClockTimerSkill::parse_duration_seconds("1 hour 30 minutes").must(),
             5400
         );
     }
@@ -326,7 +338,7 @@ mod tests {
     #[test]
     fn parse_duration_ninety_seconds() {
         assert_eq!(
-            MacOsClockTimerSkill::parse_duration_seconds("90 seconds").unwrap(),
+            MacOsClockTimerSkill::parse_duration_seconds("90 seconds").must(),
             90
         );
     }
@@ -334,7 +346,7 @@ mod tests {
     #[test]
     fn parse_duration_complex() {
         assert_eq!(
-            MacOsClockTimerSkill::parse_duration_seconds("2 hours 15 minutes 30 seconds").unwrap(),
+            MacOsClockTimerSkill::parse_duration_seconds("2 hours 15 minutes 30 seconds").must(),
             2 * 3600 + 15 * 60 + 30
         );
     }

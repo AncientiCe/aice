@@ -2,6 +2,10 @@
 //!
 //! Consumers (e.g. desktop-runner) depend only on `core-skills` to use any registered skill.
 
+pub use skill_app_switcher::{
+    AppSwitcherResult, AppSwitcherSkill, AppSwitcherSkillError, MacOsAppSwitcherSkill,
+    MockAppSwitcherSkill,
+};
 pub use skill_assistant::{
     AssistantItem, AssistantResult, AssistantSkill, AssistantSkillError, MockAssistantSkill,
 };
@@ -20,6 +24,10 @@ pub use skill_message::{
 };
 pub use skill_reminder::{
     MacOsReminderSkill, MockReminderSkill, ReminderResult, ReminderSkill, ReminderSkillError,
+};
+pub use skill_screenshot::{
+    MacOsScreenshotSkill, MockScreenshotSkill, ScreenshotResult, ScreenshotSkill,
+    ScreenshotSkillError,
 };
 pub use skill_shopping_list::{
     MacOsNotesShoppingListSkill, MockShoppingListSkill, ShoppingListResult, ShoppingListSkill,

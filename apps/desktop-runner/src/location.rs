@@ -204,7 +204,9 @@ mod tests {
             Some(&loc),
             None::<&MemoryStore>,
         );
-        let s = out.unwrap();
+        let Some(s) = out else {
+            panic!("expected prompt to be present");
+        };
         assert!(s.contains("You are helpful."));
         assert!(s.contains("User location: London, UK"));
         assert!(s.contains("metric"));
@@ -217,7 +219,9 @@ mod tests {
         let mut store = MemoryStore::new(&limits);
         store.set_profile("user_name", "Ancie");
         let out = build_effective_system_prompt(&config, None, None, Some(&store));
-        let s = out.unwrap();
+        let Some(s) = out else {
+            panic!("expected prompt to be present");
+        };
         assert!(s.contains("Remembered preferences:"));
         assert!(s.contains("user_name: Ancie"));
     }
@@ -234,7 +238,9 @@ mod tests {
             lat: 51.5072,
             lon: -0.1276,
         });
-        let picked = pick_startup_location(ip, cfg).expect("picked location");
+        let Some(picked) = pick_startup_location(ip, cfg) else {
+            panic!("expected startup location");
+        };
         assert_eq!(picked.display_name, "Berlin, Germany");
     }
 
@@ -245,7 +251,9 @@ mod tests {
             lat: 51.5072,
             lon: -0.1276,
         });
-        let picked = pick_startup_location(None, cfg).expect("picked location");
+        let Some(picked) = pick_startup_location(None, cfg) else {
+            panic!("expected startup location");
+        };
         assert_eq!(picked.display_name, "London, United Kingdom");
     }
 }
