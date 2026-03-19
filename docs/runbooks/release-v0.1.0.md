@@ -39,7 +39,7 @@ Equivalent raw commands:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
 cargo audit --deny warnings
 cargo test --all
 ```

@@ -124,6 +124,14 @@ Fix any failure before marking the task complete.
 
 ---
 
+## 12. No Unsafe `unwrap`/`expect`
+
+- **Do not use `unwrap()` or `expect()` in production code.** These can panic and crash the process.
+- Handle failures safely using explicit error propagation (`Result`/`?`), recoverable branches, or well-defined fallbacks.
+- If a value is logically guaranteed, prove it through types/validation rather than runtime panics.
+
+---
+
 ## Quick Reference
 
 | Rule | Action |
@@ -139,4 +147,5 @@ Fix any failure before marking the task complete.
 | No placeholders | No placeholders ever; only real implementations |
 | No manual STT interpretation | Never parse/match STT transcripts manually; all intent classification goes through the LLM |
 | Benchmark logging | Every timing run/log review must be appended to `docs/benchmarks/turn-timings.md` with UTC timestamp |
+| No unsafe unwrap/expect | Never use `unwrap()`/`expect()` in production code; handle errors safely |
 | System impact | Consider callers, storage, API, sync, outbox, observability |

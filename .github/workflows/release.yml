@@ -89,13 +89,13 @@ jobs:
       - name: Quality gates (debug)
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
           cargo audit --deny warnings
           cargo test --all
 
       - name: Quality gates (release mode)
         run: |
-          cargo clippy --all-targets --release -- -D warnings
+          cargo clippy --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
           cargo test --all --release
 
       - name: Build release binaries
