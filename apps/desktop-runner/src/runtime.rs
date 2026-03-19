@@ -56,6 +56,7 @@ struct TurnTimings {
     mic_to_stt: Option<Duration>,
     speech_voiced: Option<Duration>,
     stt: Option<Duration>,
+    skill: Option<Duration>,
     llm_first_token: Option<Duration>,
     llm: Option<Duration>,
     tts_first_audio: Option<Duration>,
@@ -79,6 +80,10 @@ impl TurnTimings {
 
     fn stt_ms(&self) -> Option<u128> {
         Self::ms(self.stt)
+    }
+
+    fn skill_ms(&self) -> Option<u128> {
+        Self::ms(self.skill)
     }
 
     fn speech_voiced_ms(&self) -> Option<u128> {
@@ -813,8 +818,10 @@ impl DesktopRuntime {
                     tracing::warn!("policy denied weather skill, falling back to chat");
                 } else {
                     let location_override = location.as_deref();
+                    let skill_started_at = Instant::now();
                     match skill.execute(location_override, resolved_location).await {
                         Ok(weather) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -836,6 +843,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             record_weather_skill("error");
                             tracing::warn!(error = %e, "weather skill failed, falling back to chat");
                         }
@@ -852,8 +860,10 @@ impl DesktopRuntime {
                     tracing::warn!("policy denied time skill, falling back to chat");
                 } else {
                     let location_override = location.as_deref();
+                    let skill_started_at = Instant::now();
                     match skill.execute(location_override, resolved_location).await {
                         Ok(time_result) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -875,6 +885,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             record_time_skill("error");
                             tracing::warn!(error = %e, "time skill failed, falling back to chat");
                         }
@@ -894,11 +905,13 @@ impl DesktopRuntime {
                     record_policy_denied("skill_distance");
                     tracing::warn!("policy denied distance skill, falling back to chat");
                 } else {
+                    let skill_started_at = Instant::now();
                     match skill
                         .execute(origin.as_deref(), destination.as_deref(), resolved_location)
                         .await
                     {
                         Ok(dist_result) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -920,6 +933,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             record_distance_skill("error");
                             if let Some(reply) = Self::distance_error_reply(&e) {
                                 let t0 = Instant::now();
@@ -952,6 +966,7 @@ impl DesktopRuntime {
                     let t0 = Instant::now();
                     match skill.execute(target.as_deref(), action.as_deref()).await {
                         Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -976,6 +991,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(t0.elapsed());
                             record_smart_home_skill("error");
                             record_smart_home_execute("error", action_label);
                             record_smart_home_execute_duration(action_label, t0.elapsed());
@@ -993,8 +1009,10 @@ impl DesktopRuntime {
                     record_policy_denied("skill_assistant");
                     tracing::warn!("policy denied assistant skill, falling back to chat");
                 } else {
+                    let skill_started_at = Instant::now();
                     match skill.execute(kind.as_deref()).await {
                         Ok(result) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -1017,6 +1035,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             record_assistant_skill("error");
                             tracing::warn!(error = %e, "assistant skill failed, falling back to chat");
                         }
@@ -1036,6 +1055,7 @@ impl DesktopRuntime {
                     let t0 = Instant::now();
                     match skill.execute(action.as_deref(), target.as_deref()).await {
                         Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -1061,6 +1081,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(t0.elapsed());
                             record_media_skill("error");
                             record_media_execute("error", action_label);
                             record_media_execute_duration(action_label, t0.elapsed());
@@ -1081,6 +1102,7 @@ impl DesktopRuntime {
                     let t0 = Instant::now();
                     match skill.execute(query.as_deref(), *store).await {
                         Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -1105,6 +1127,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(t0.elapsed());
                             record_memory_skill("error");
                             record_memory_fact_recall("error");
                             record_memory_fact_recall_duration(t0.elapsed());
@@ -1122,8 +1145,10 @@ impl DesktopRuntime {
                     record_policy_denied("skill_computer");
                     tracing::warn!("policy denied computer skill, falling back to chat");
                 } else {
+                    let skill_started_at = Instant::now();
                     match skill.execute(action.as_deref(), target.as_deref()).await {
                         Ok(result) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             if let Some(p) = policy {
                                 p.record_action();
                             }
@@ -1146,6 +1171,7 @@ impl DesktopRuntime {
                             ));
                         }
                         Err(e) => {
+                            timings.skill = Some(skill_started_at.elapsed());
                             record_computer_skill("error");
                             tracing::warn!(error = %e, "computer skill failed, falling back to chat");
                         }
@@ -1288,6 +1314,7 @@ impl DesktopRuntime {
             mic_to_stt_ms = timings.mic_to_stt_ms(),
             speech_voiced_ms = timings.speech_voiced_ms(),
             stt_ms = timings.stt_ms(),
+            skill_ms = timings.skill_ms(),
             endpointing_wait_ms = timings.endpointing_wait_ms(),
             llm_first_token_ms = timings.llm_first_token_ms(),
             llm_ms = timings.llm_ms(),
@@ -1943,6 +1970,7 @@ mod tests {
         timings.mic_to_stt = Some(Duration::from_millis(120));
         timings.speech_voiced = Some(Duration::from_millis(40));
         timings.stt = Some(Duration::from_millis(45));
+        timings.skill = Some(Duration::from_millis(88));
         timings.llm_first_token = Some(Duration::from_millis(70));
         timings.llm = Some(Duration::from_millis(300));
         timings.tts_first_audio = Some(Duration::from_millis(55));
@@ -1953,6 +1981,7 @@ mod tests {
         assert_eq!(timings.mic_to_stt_ms(), Some(120));
         assert_eq!(timings.speech_voiced_ms(), Some(40));
         assert_eq!(timings.stt_ms(), Some(45));
+        assert_eq!(timings.skill_ms(), Some(88));
         assert_eq!(timings.endpointing_wait_ms(), Some(35));
         assert_eq!(timings.llm_first_token_ms(), Some(70));
         assert_eq!(timings.llm_stream_tail_ms(), Some(230));
@@ -1970,6 +1999,7 @@ mod tests {
         assert_eq!(timings.mic_to_stt_ms(), None);
         assert_eq!(timings.speech_voiced_ms(), None);
         assert_eq!(timings.stt_ms(), None);
+        assert_eq!(timings.skill_ms(), None);
         assert_eq!(timings.endpointing_wait_ms(), None);
         assert_eq!(timings.llm_first_token_ms(), None);
         assert_eq!(timings.llm_stream_tail_ms(), None);
