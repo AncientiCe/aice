@@ -4,13 +4,15 @@ use chrono::Local;
 use core_audio::{AudioCapture, CaptureError, SAMPLE_RATE};
 use core_config::Config;
 use core_observability::{
-    record_assistant_skill, record_computer_skill, record_distance_skill, record_intent_classifier,
-    record_intent_routed, record_media_execute, record_media_execute_duration, record_media_skill,
-    record_memory_fact_recall, record_memory_fact_recall_duration, record_memory_fact_store,
-    record_memory_fact_store_duration, record_memory_save, record_memory_save_duration,
-    record_memory_save_error, record_memory_skill, record_policy_denied, record_smart_home_execute,
-    record_smart_home_execute_duration, record_smart_home_skill, record_stage_duration,
-    record_time_skill, record_weather_skill, Stage,
+    record_assistant_skill, record_computer_skill, record_distance_skill,
+    record_endpointing_wait_duration, record_intent_classifier, record_intent_routed,
+    record_llm_first_token_latency, record_media_execute, record_media_execute_duration,
+    record_media_skill, record_memory_fact_recall, record_memory_fact_recall_duration,
+    record_memory_fact_store, record_memory_fact_store_duration, record_memory_save,
+    record_memory_save_duration, record_memory_save_error, record_memory_skill,
+    record_policy_denied, record_smart_home_execute, record_smart_home_execute_duration,
+    record_smart_home_skill, record_speech_voiced_duration, record_stage_duration,
+    record_time_skill, record_turn_time_to_first_audio, record_weather_skill, Stage,
 };
 use core_orchestrator::{
     parse_need_search, IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink,
@@ -51,8 +53,11 @@ pub enum RuntimeTurnOutcome {
 #[derive(Debug, Default, Clone)]
 struct TurnTimings {
     mic_to_stt: Option<Duration>,
+    speech_voiced: Option<Duration>,
     stt: Option<Duration>,
+    llm_first_token: Option<Duration>,
     llm: Option<Duration>,
+    tts_first_audio: Option<Duration>,
     tts: Option<Duration>,
     tts_flush: Option<Duration>,
     total: Option<Duration>,
@@ -75,6 +80,45 @@ impl TurnTimings {
         Self::ms(self.stt)
     }
 
+    fn speech_voiced_ms(&self) -> Option<u128> {
+        Self::ms(self.speech_voiced)
+    }
+
+    fn endpointing_wait_ms(&self) -> Option<u128> {
+        let mic = self.mic_to_stt?;
+        let speech = self.speech_voiced?;
+        let stt = self.stt?;
+        Some(
+            mic.as_millis()
+                .saturating_sub(speech.as_millis().saturating_add(stt.as_millis())),
+        )
+    }
+
+    fn llm_first_token_ms(&self) -> Option<u128> {
+        Self::ms(self.llm_first_token)
+    }
+
+    fn llm_stream_tail_ms(&self) -> Option<u128> {
+        let llm = self.llm?;
+        let first = self.llm_first_token?;
+        Some(llm.as_millis().saturating_sub(first.as_millis()))
+    }
+
+    fn tts_first_audio_ms(&self) -> Option<u128> {
+        Self::ms(self.tts_first_audio)
+    }
+
+    fn time_to_first_audio_ms(&self) -> Option<u128> {
+        let mic = self.mic_to_stt?;
+        let llm_first = self.llm_first_token?;
+        let tts_first = self.tts_first_audio?;
+        Some(
+            mic.as_millis()
+                .saturating_add(llm_first.as_millis())
+                .saturating_add(tts_first.as_millis()),
+        )
+    }
+
     fn llm_ms(&self) -> Option<u128> {
         Self::ms(self.llm)
     }
@@ -95,6 +139,18 @@ impl TurnTimings {
         if let Some(stt) = self.stt {
             record_stage_duration(Stage::Stt, stt);
         }
+        if let Some(speech) = self.speech_voiced {
+            record_speech_voiced_duration(speech);
+        }
+        if let Some(wait_ms) = self.endpointing_wait_ms() {
+            record_endpointing_wait_duration(Duration::from_millis(wait_ms as u64));
+        }
+        if let Some(first) = self.llm_first_token {
+            record_llm_first_token_latency(first);
+        }
+        if let Some(ttfa_ms) = self.time_to_first_audio_ms() {
+            record_turn_time_to_first_audio(Duration::from_millis(ttfa_ms as u64));
+        }
         if let Some(llm) = self.llm {
             record_stage_duration(Stage::Llm, llm);
         }
@@ -109,7 +165,9 @@ impl TurnTimings {
 
 struct StreamLlmTtsOutcome {
     outcome: RuntimeTurnOutcome,
+    llm_first_token_latency: Option<Duration>,
     llm_duration: Duration,
+    tts_first_audio_latency: Option<Duration>,
     tts_duration: Duration,
     tts_flush_duration: Duration,
 }
@@ -331,6 +389,7 @@ impl DesktopRuntime {
         let mut silence_after_voice_ms: u64 = 0;
         let mut observed_voice = false;
         let mut mic_turn_started_at: Option<Instant> = None;
+        let mut voiced_samples: usize = 0;
 
         loop {
             let mut flush_partial_on_timeout = false;
@@ -345,6 +404,7 @@ impl DesktopRuntime {
                             }
                             observed_voice = true;
                             silence_after_voice_ms = 0;
+                            voiced_samples += chunk.len();
                             buffered_samples += chunk.len();
                             stt.push_audio(&chunk).await?;
                         } else if observed_voice {
@@ -423,6 +483,12 @@ impl DesktopRuntime {
             timings.stt = Some(stt_started_at.elapsed());
             let turn_started_at = mic_turn_started_at.take().unwrap_or(stt_started_at);
             timings.mic_to_stt = Some(turn_started_at.elapsed());
+            if voiced_samples > 0 {
+                timings.speech_voiced = Some(Duration::from_millis(Self::chunk_duration_ms(
+                    voiced_samples,
+                )));
+            }
+            voiced_samples = 0;
             let mut user_text = transcript.trim().to_string();
             if user_text.is_empty() {
                 stats.turns_empty += 1;
@@ -756,7 +822,9 @@ impl DesktopRuntime {
                             let prompt = Self::weather_answer_prompt(&user_text, &weather);
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -793,7 +861,9 @@ impl DesktopRuntime {
                             let prompt = Self::time_answer_prompt(&user_text, &time_result);
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -836,7 +906,9 @@ impl DesktopRuntime {
                             let prompt = Self::distance_answer_prompt(&user_text, &dist_result);
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -877,7 +949,9 @@ impl DesktopRuntime {
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -916,7 +990,9 @@ impl DesktopRuntime {
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -1002,7 +1078,9 @@ impl DesktopRuntime {
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -1041,7 +1119,9 @@ impl DesktopRuntime {
                                 Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
                             let stream_outcome =
                                 Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
                             timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
                             timings.tts = Some(stream_outcome.tts_duration);
                             timings.tts_flush = Some(stream_outcome.tts_flush_duration);
                             return Ok(Self::finish_turn(
@@ -1063,7 +1143,11 @@ impl DesktopRuntime {
         // Chat path: stream LLM response with optional conversation history.
         let history: Vec<(String, String)> = if let Some(mem) = memory {
             let guard = mem.lock().await;
-            guard.history()
+            let mut history = guard.history();
+            if history.len() > 2 {
+                history = history.split_off(history.len() - 2);
+            }
+            history
         } else {
             vec![]
         };
@@ -1072,20 +1156,31 @@ impl DesktopRuntime {
         use futures::StreamExt;
         let mut full_response = String::new();
         let mut tts_push_duration = Duration::ZERO;
+        let mut first_token_latency: Option<Duration> = None;
+        let mut first_tts_audio_latency: Option<Duration> = None;
         loop {
             tokio::select! {
                 token = stream.next() => {
                     let Some(token) = token else { break };
                     if !token.is_empty() {
+                        if first_token_latency.is_none() {
+                            first_token_latency = Some(llm_started_at.elapsed());
+                        }
                         full_response.push_str(&token);
                         let t0 = Instant::now();
                         tts.push_text(&token).await?;
-                        tts_push_duration += t0.elapsed();
+                        let push_elapsed = t0.elapsed();
+                        if first_tts_audio_latency.is_none() {
+                            first_tts_audio_latency = Some(push_elapsed);
+                        }
+                        tts_push_duration += push_elapsed;
                     }
                 }
                 _ = cancel_rx.recv() => {
                     tts.request_stop_playback();
+                    timings.llm_first_token = first_token_latency;
                     timings.llm = Some(llm_started_at.elapsed());
+                    timings.tts_first_audio = first_tts_audio_latency;
                     timings.tts = Some(tts_push_duration);
                     return Ok(Self::finish_turn(
                         "chat_interrupted",
@@ -1096,7 +1191,9 @@ impl DesktopRuntime {
                 }
             }
         }
+        timings.llm_first_token = first_token_latency;
         timings.llm = Some(llm_started_at.elapsed());
+        timings.tts_first_audio = first_tts_audio_latency;
         let flush_started_at = Instant::now();
         tts.flush().await?;
         let flush_duration = flush_started_at.elapsed();
@@ -1168,8 +1265,15 @@ impl DesktopRuntime {
             path,
             outcome = ?outcome,
             mic_to_stt_ms = timings.mic_to_stt_ms(),
+            speech_voiced_ms = timings.speech_voiced_ms(),
             stt_ms = timings.stt_ms(),
+            endpointing_wait_ms = timings.endpointing_wait_ms(),
+            llm_first_token_ms = timings.llm_first_token_ms(),
             llm_ms = timings.llm_ms(),
+            llm_network_and_prefill_ms = timings.llm_first_token_ms(),
+            llm_stream_tail_ms = timings.llm_stream_tail_ms(),
+            tts_first_audio_ms = timings.tts_first_audio_ms(),
+            time_to_first_audio_ms = timings.time_to_first_audio_ms(),
             tts_ms = timings.tts_ms(),
             tts_flush_ms = timings.tts_flush_ms(),
             journey_ms = timings.total_ms(),
@@ -1184,17 +1288,14 @@ impl DesktopRuntime {
         let asks_tomorrow = user_lower.contains("tomorrow") || user_lower.contains("tomorrow's");
         let only_current_note = if asks_tomorrow {
             format!(
-                "\n\nThis data is CURRENT conditions only (no forecast for tomorrow). \
-                If the user asked about tomorrow, say you only have current conditions for {} \
-                and give the current conditions. Do not invent percentages, probabilities, or future forecast.",
+                "\nCurrent-only data (no forecast). If asked about tomorrow, state that limitation for {} and answer with current conditions only.",
                 weather.location_display
             )
         } else {
-            "\n\nUse only the data provided. Do not invent percentages or probabilities."
-                .to_string()
+            "\nUse only the provided data.".to_string()
         };
         format!(
-            "The user asked: \"{}\"\n\nHere is the weather data: {}.{}\n\nReply in 1-2 short sentences for voice, using only this data.",
+            "User: \"{}\"\nWeather data: {}.{}\nReply in at most 2 short voice-friendly sentences.",
             user_text.trim(),
             context,
             only_current_note
@@ -1204,7 +1305,7 @@ impl DesktopRuntime {
     fn time_answer_prompt(user_text: &str, time_result: &TimeResult) -> String {
         let context = time_result.to_prompt_context();
         format!(
-            "The user asked: \"{}\"\n\nHere is the time data: {}.\n\nReply in 1-2 short sentences for voice, using this data.",
+            "User: \"{}\"\nTime data: {}.\nReply in at most 2 short voice-friendly sentences.",
             user_text.trim(),
             context
         )
@@ -1222,7 +1323,7 @@ impl DesktopRuntime {
     /// Generic prompt for skill results (smart home, assistant, media, memory, computer).
     fn skill_answer_prompt(user_text: &str, context: &str) -> String {
         format!(
-            "The user asked: \"{}\"\n\nHere is the data: {}.\n\nReply in 1-2 short sentences for voice, using this data.",
+            "User: \"{}\"\nData: {}.\nReply in at most 2 short voice-friendly sentences.",
             user_text.trim(),
             context
         )
@@ -1246,21 +1347,32 @@ impl DesktopRuntime {
             .await?;
         use futures::StreamExt;
         let mut tts_push_duration = Duration::ZERO;
+        let mut first_token_latency: Option<Duration> = None;
+        let mut first_tts_audio_latency: Option<Duration> = None;
         loop {
             tokio::select! {
                 token = stream.next() => {
                     let Some(token) = token else { break };
                     if !token.is_empty() {
+                        if first_token_latency.is_none() {
+                            first_token_latency = Some(llm_started_at.elapsed());
+                        }
                         let t0 = Instant::now();
                         tts.push_text(&token).await?;
-                        tts_push_duration += t0.elapsed();
+                        let push_elapsed = t0.elapsed();
+                        if first_tts_audio_latency.is_none() {
+                            first_tts_audio_latency = Some(push_elapsed);
+                        }
+                        tts_push_duration += push_elapsed;
                     }
                 }
                 _ = cancel_rx.recv() => {
                     tts.request_stop_playback();
                     return Ok(StreamLlmTtsOutcome {
                         outcome: RuntimeTurnOutcome::Interrupted,
+                        llm_first_token_latency: first_token_latency,
                         llm_duration: llm_started_at.elapsed(),
+                        tts_first_audio_latency: first_tts_audio_latency,
                         tts_duration: tts_push_duration,
                         tts_flush_duration: Duration::ZERO,
                     });
@@ -1272,7 +1384,9 @@ impl DesktopRuntime {
         let tts_flush_duration = flush_started_at.elapsed();
         Ok(StreamLlmTtsOutcome {
             outcome: RuntimeTurnOutcome::Complete,
+            llm_first_token_latency: first_token_latency,
             llm_duration: llm_started_at.elapsed(),
+            tts_first_audio_latency: first_tts_audio_latency,
             tts_duration: tts_push_duration + tts_flush_duration,
             tts_flush_duration,
         })
@@ -1779,14 +1893,23 @@ mod tests {
     fn turn_timings_roll_up_total_and_stage_ms() {
         let mut timings = TurnTimings::new();
         timings.mic_to_stt = Some(Duration::from_millis(120));
+        timings.speech_voiced = Some(Duration::from_millis(40));
         timings.stt = Some(Duration::from_millis(45));
+        timings.llm_first_token = Some(Duration::from_millis(70));
         timings.llm = Some(Duration::from_millis(300));
+        timings.tts_first_audio = Some(Duration::from_millis(55));
         timings.tts = Some(Duration::from_millis(210));
         timings.tts_flush = Some(Duration::from_millis(30));
         timings.total = Some(Duration::from_millis(705));
 
         assert_eq!(timings.mic_to_stt_ms(), Some(120));
+        assert_eq!(timings.speech_voiced_ms(), Some(40));
         assert_eq!(timings.stt_ms(), Some(45));
+        assert_eq!(timings.endpointing_wait_ms(), Some(35));
+        assert_eq!(timings.llm_first_token_ms(), Some(70));
+        assert_eq!(timings.llm_stream_tail_ms(), Some(230));
+        assert_eq!(timings.tts_first_audio_ms(), Some(55));
+        assert_eq!(timings.time_to_first_audio_ms(), Some(245));
         assert_eq!(timings.llm_ms(), Some(300));
         assert_eq!(timings.tts_ms(), Some(210));
         assert_eq!(timings.tts_flush_ms(), Some(30));
@@ -1797,10 +1920,25 @@ mod tests {
     fn turn_timings_default_to_none_before_recording() {
         let timings = TurnTimings::new();
         assert_eq!(timings.mic_to_stt_ms(), None);
+        assert_eq!(timings.speech_voiced_ms(), None);
         assert_eq!(timings.stt_ms(), None);
+        assert_eq!(timings.endpointing_wait_ms(), None);
+        assert_eq!(timings.llm_first_token_ms(), None);
+        assert_eq!(timings.llm_stream_tail_ms(), None);
+        assert_eq!(timings.tts_first_audio_ms(), None);
+        assert_eq!(timings.time_to_first_audio_ms(), None);
         assert_eq!(timings.llm_ms(), None);
         assert_eq!(timings.tts_ms(), None);
         assert_eq!(timings.tts_flush_ms(), None);
         assert_eq!(timings.total_ms(), None);
+    }
+
+    #[test]
+    fn endpointing_wait_is_clamped_to_zero() {
+        let mut timings = TurnTimings::new();
+        timings.mic_to_stt = Some(Duration::from_millis(100));
+        timings.speech_voiced = Some(Duration::from_millis(80));
+        timings.stt = Some(Duration::from_millis(40));
+        assert_eq!(timings.endpointing_wait_ms(), Some(0));
     }
 }

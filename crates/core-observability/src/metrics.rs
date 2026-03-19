@@ -32,6 +32,10 @@ const VOICE_ERRORS_TOTAL: &str = "voice_errors_total";
 const VOICE_STAGE_DURATION_SECONDS: &str = "voice_stage_duration_seconds";
 const VOICE_FIRST_TOKEN_LATENCY_SECONDS: &str = "voice_first_token_latency_seconds";
 const VOICE_FIRST_AUDIO_LATENCY_SECONDS: &str = "voice_first_audio_latency_seconds";
+const VOICE_SPEECH_VOICED_DURATION_SECONDS: &str = "voice_speech_voiced_duration_seconds";
+const VOICE_ENDPOINTING_WAIT_DURATION_SECONDS: &str = "voice_endpointing_wait_duration_seconds";
+const VOICE_LLM_FIRST_TOKEN_LATENCY_SECONDS: &str = "voice_llm_first_token_latency_seconds";
+const VOICE_TURN_TIME_TO_FIRST_AUDIO_SECONDS: &str = "voice_turn_time_to_first_audio_seconds";
 const VOICE_INTERRUPTIONS_TOTAL: &str = "voice_interruptions_total";
 const VOICE_CANCELLATION_SUCCESS_TOTAL: &str = "voice_cancellation_success_total";
 const POD_CONNECTIONS_TOTAL: &str = "pod_connections_total";
@@ -77,6 +81,10 @@ pub fn register_metrics() {
     histogram!(VOICE_STAGE_DURATION_SECONDS, 0.0_f64, "stage" => "unknown");
     histogram!(VOICE_FIRST_TOKEN_LATENCY_SECONDS, 0.0_f64);
     histogram!(VOICE_FIRST_AUDIO_LATENCY_SECONDS, 0.0_f64);
+    histogram!(VOICE_SPEECH_VOICED_DURATION_SECONDS, 0.0_f64);
+    histogram!(VOICE_ENDPOINTING_WAIT_DURATION_SECONDS, 0.0_f64);
+    histogram!(VOICE_LLM_FIRST_TOKEN_LATENCY_SECONDS, 0.0_f64);
+    histogram!(VOICE_TURN_TIME_TO_FIRST_AUDIO_SECONDS, 0.0_f64);
     counter!(VOICE_INTERRUPTIONS_TOTAL, 0);
     counter!(VOICE_CANCELLATION_SUCCESS_TOTAL, 0);
     counter!(POD_CONNECTIONS_TOTAL, 0, "device_id" => "unknown");
@@ -145,6 +153,35 @@ pub fn record_first_token_latency(duration: Duration) {
 /// Record latency from first token to first TTS push (time to first audio).
 pub fn record_first_audio_latency(duration: Duration) {
     histogram!(VOICE_FIRST_AUDIO_LATENCY_SECONDS, duration.as_secs_f64());
+}
+
+/// Record voiced speech duration (voice-only, excluding pauses/silence).
+pub fn record_speech_voiced_duration(duration: Duration) {
+    histogram!(VOICE_SPEECH_VOICED_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+/// Record endpointing wait (post-speech pause before STT flush starts).
+pub fn record_endpointing_wait_duration(duration: Duration) {
+    histogram!(
+        VOICE_ENDPOINTING_WAIT_DURATION_SECONDS,
+        duration.as_secs_f64()
+    );
+}
+
+/// Record LLM first-token latency from request start.
+pub fn record_llm_first_token_latency(duration: Duration) {
+    histogram!(
+        VOICE_LLM_FIRST_TOKEN_LATENCY_SECONDS,
+        duration.as_secs_f64()
+    );
+}
+
+/// Record turn-level latency from speech start to first audio milestone.
+pub fn record_turn_time_to_first_audio(duration: Duration) {
+    histogram!(
+        VOICE_TURN_TIME_TO_FIRST_AUDIO_SECONDS,
+        duration.as_secs_f64()
+    );
 }
 
 /// Record that the user interrupted (barge-in).
