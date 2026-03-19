@@ -34,21 +34,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     register_metrics();
     let config = Config::load(Path::new("config.json"))?;
 
-    let addr: SocketAddr = config
-        .pod_bind
-        .parse()
-        .unwrap_or_else(|_| "0.0.0.0:8765".parse().unwrap());
+    let addr: SocketAddr = config.pod_bind.parse().unwrap_or_else(|error| {
+        tracing::warn!(
+            pod_bind = %config.pod_bind,
+            %error,
+            "invalid pod_bind, defaulting to 0.0.0.0:8765"
+        );
+        SocketAddr::from(([0, 0, 0, 0], 8765))
+    });
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "pod gateway listening");
 
     let (gateway_tx, mut gateway_rx) = tokio_mpsc::unbounded_channel();
     let (sync_tx, sync_rx) = mpsc::sync_channel::<pod_gateway::PodIngestEvent>(256);
+    let bridge_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            std::io::Error::other(format!("failed to build bridge runtime: {error}"))
+        })?;
     thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("bridge runtime");
-        while let Some(event) = rt.block_on(async { gateway_rx.recv().await }) {
+        while let Some(event) = bridge_runtime.block_on(async { gateway_rx.recv().await }) {
             let _ = sync_tx.send(event);
         }
     });
@@ -170,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 media_skill: media_skill.as_ref().map(|s| s as _),
                 memory_skill: memory_skill.as_ref().map(|s| s as _),
                 computer_skill: None,
+                app_switcher_skill: None,
                 reminder_skill: Some(&reminder_skill),
                 message_skill: Some(&message_skill),
                 timer_skill: Some(&timer_skill),

@@ -102,14 +102,21 @@ mod tests {
         let exit_code = Arc::new(Mutex::new(None));
         let exit_code_clone = Arc::clone(&exit_code);
         let exit = move |code: i32| {
-            *exit_code_clone.lock().expect("exit lock") = Some(code);
+            if let Ok(mut guard) = exit_code_clone.lock() {
+                *guard = Some(code);
+            } else {
+                panic!("failed to acquire exit lock");
+            }
         };
 
         run_ctrlc_action_for_test(0, &tx, &cleanup, &exit);
 
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
         assert_eq!(rx.try_recv(), Ok(()));
-        assert_eq!(*exit_code.lock().expect("exit lock"), None);
+        match exit_code.lock() {
+            Ok(guard) => assert_eq!(*guard, None),
+            Err(_) => panic!("failed to acquire exit lock"),
+        };
     }
 
     #[test]
@@ -123,13 +130,20 @@ mod tests {
         let exit_code = Arc::new(Mutex::new(None));
         let exit_code_clone = Arc::clone(&exit_code);
         let exit = move |code: i32| {
-            *exit_code_clone.lock().expect("exit lock") = Some(code);
+            if let Ok(mut guard) = exit_code_clone.lock() {
+                *guard = Some(code);
+            } else {
+                panic!("failed to acquire exit lock");
+            }
         };
 
         run_ctrlc_action_for_test(1, &tx, &cleanup, &exit);
 
         assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(*exit_code.lock().expect("exit lock"), Some(130));
+        match exit_code.lock() {
+            Ok(guard) => assert_eq!(*guard, Some(130)),
+            Err(_) => panic!("failed to acquire exit lock"),
+        };
         assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
     }
 }

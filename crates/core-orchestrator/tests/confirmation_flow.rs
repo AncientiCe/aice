@@ -4,6 +4,40 @@ use core_orchestrator::{parse_need_search, ConversationEngine, LlmStream, SttStr
 use core_search::{ExternalSearch, MockSearch};
 use futures::stream;
 
+pub trait TestOptionExt<T> {
+    fn must(self) -> T;
+}
+
+impl<T> TestOptionExt<T> for Option<T> {
+    fn must(self) -> T {
+        match self {
+            Some(value) => value,
+            None => panic!("expected Some(..) in test"),
+        }
+    }
+}
+
+pub trait TestResultExt<T, E> {
+    fn must(self) -> T;
+    fn must_err(self) -> E;
+}
+
+impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+    fn must(self) -> T {
+        match self {
+            Ok(value) => value,
+            Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+        }
+    }
+
+    fn must_err(self) -> E {
+        match self {
+            Ok(_) => panic!("expected Err(..) in test, got Ok"),
+            Err(error) => error,
+        }
+    }
+}
+
 struct MockStt(&'static str);
 
 #[async_trait::async_trait]
@@ -44,14 +78,14 @@ async fn flow_uncertain_then_user_yes_calls_search() {
 
     let response = ConversationEngine::run_turn_collect(&mut stt, &llm, &history)
         .await
-        .expect("collect ok");
-    let (local_answer, query) = parse_need_search(&response).expect("NEED_SEARCH parsed");
+        .must();
+    let (local_answer, query) = parse_need_search(&response).must();
     assert_eq!(local_answer, "I'm not sure.");
     assert_eq!(query, "what is X");
 
     // User said Yes: execute search and use result
     let search = MockSearch::new("X is something.");
-    let result = search.execute(&query).await.expect("search ok");
+    let result = search.execute(&query).await.must();
     assert_eq!(result, "X is something.");
 }
 
@@ -63,8 +97,8 @@ async fn flow_uncertain_then_user_no_does_not_call_search() {
 
     let response = ConversationEngine::run_turn_collect(&mut stt, &llm, &history)
         .await
-        .expect("collect ok");
-    let (local_answer, _) = parse_need_search(&response).unwrap();
+        .must();
+    let (local_answer, _) = parse_need_search(&response).must();
     // User said No: only use local_answer; search must not be called (caller's responsibility)
     assert_eq!(local_answer, "Maybe.");
 }
@@ -77,6 +111,6 @@ async fn flow_confident_no_marker_no_search_path() {
 
     let response = ConversationEngine::run_turn_collect(&mut stt, &llm, &history)
         .await
-        .expect("collect ok");
+        .must();
     assert!(parse_need_search(&response).is_none());
 }

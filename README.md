@@ -1,4 +1,6 @@
 # Aice: Local-First Streaming Jarvis
+[![CI](https://github.com/AncientiCe/aice/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/ci.yml) [![Release Build Check](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml) [![Latest Release](https://img.shields.io/github/v/release/AncientiCe/aice)](https://github.com/AncientiCe/aice/releases) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Aice social card](docs/assets/aice-social-card.png)
 
 Aice is a private, local voice runtime for home automation and media control.
 

@@ -11,6 +11,40 @@ use futures::stream;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
+pub trait TestOptionExt<T> {
+    fn must(self) -> T;
+}
+
+impl<T> TestOptionExt<T> for Option<T> {
+    fn must(self) -> T {
+        match self {
+            Some(value) => value,
+            None => panic!("expected Some(..) in test"),
+        }
+    }
+}
+
+pub trait TestResultExt<T, E> {
+    fn must(self) -> T;
+    fn must_err(self) -> E;
+}
+
+impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+    fn must(self) -> T {
+        match self {
+            Ok(value) => value,
+            Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+        }
+    }
+
+    fn must_err(self) -> E {
+        match self {
+            Ok(_) => panic!("expected Err(..) in test, got Ok"),
+            Err(error) => error,
+        }
+    }
+}
+
 struct MockStt {
     transcript: String,
 }
@@ -103,7 +137,7 @@ async fn e2e_mock_stt_llm_tts_produces_complete_turn() {
 
     let outcome = ConversationEngine::run_turn(&mut stt, &llm, &mut tts, &history)
         .await
-        .expect("run_turn should not fail");
+        .must();
 
     assert_eq!(outcome, TurnOutcome::Complete);
     assert_eq!(tts.full_text(), "Hi there");
@@ -176,10 +210,7 @@ async fn barge_in_cancel_produces_interrupted_and_fewer_tts_pushes() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     let _ = tx.send(());
-    let outcome = run
-        .await
-        .unwrap()
-        .expect("run_turn_with_cancel should not fail");
+    let outcome = run.await.must().must();
 
     assert_eq!(outcome, TurnOutcome::Interrupted);
     let count = tts.lock().await.received.len();
@@ -221,15 +252,15 @@ async fn need_search_parse_then_user_confirm_yes_executes_search() {
 
     let response = ConversationEngine::run_turn_collect(&mut stt, &llm, &history)
         .await
-        .expect("collect should not fail");
+        .must();
 
-    let (local_answer, query) = parse_need_search(&response).expect("should parse NEED_SEARCH");
+    let (local_answer, query) = parse_need_search(&response).must();
     assert_eq!(local_answer, "I'm not sure.");
     assert_eq!(query, "weather today");
 
     // Simulate user said Yes: execute search.
     let search = MockSearch::new("Sunny, 72°F");
-    let result = search.execute(&query).await.expect("search should succeed");
+    let result = search.execute(&query).await.must();
     assert_eq!(result, "Sunny, 72°F");
 }
 
@@ -243,9 +274,9 @@ async fn need_search_user_says_no_use_local_answer_only() {
 
     let response = ConversationEngine::run_turn_collect(&mut stt, &llm, &history)
         .await
-        .expect("collect should not fail");
+        .must();
 
-    let (local_answer, _query) = parse_need_search(&response).unwrap();
+    let (local_answer, _query) = parse_need_search(&response).must();
     // User said No: we only use local_answer, never call search.
     assert_eq!(local_answer, "Maybe.");
 }

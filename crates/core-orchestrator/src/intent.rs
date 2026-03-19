@@ -38,6 +38,13 @@ pub enum IntentDecision {
         action: Option<String>,
         target: Option<String>,
     },
+    /// Screenshot: save a local screenshot file.
+    SkillScreenshot { filename: Option<String> },
+    /// App switcher: switch apps, hide, quit, and force-quit actions.
+    SkillAppSwitcher {
+        action: Option<String>,
+        target: Option<String>,
+    },
     /// Reminder: create a macOS Reminders entry; title required, when is optional ISO date-time.
     SkillReminder {
         title: Option<String>,
@@ -105,6 +112,12 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         #[serde(default)]
         computer_target: Option<String>,
         #[serde(default)]
+        screenshot_filename: Option<String>,
+        #[serde(default)]
+        app_switcher_action: Option<String>,
+        #[serde(default)]
+        app_switcher_target: Option<String>,
+        #[serde(default)]
         reminder_title: Option<String>,
         #[serde(default)]
         reminder_when: Option<String>,
@@ -160,6 +173,13 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             action: opt_str(p.computer_action),
             target: opt_str(p.computer_target),
         }),
+        "skill_screenshot" | "screenshot" => Ok(IntentDecision::SkillScreenshot {
+            filename: opt_str(p.screenshot_filename),
+        }),
+        "skill_app_switcher" | "app_switcher" => Ok(IntentDecision::SkillAppSwitcher {
+            action: opt_str(p.app_switcher_action),
+            target: opt_str(p.app_switcher_target),
+        }),
         "skill_reminder" | "reminder" => Ok(IntentDecision::SkillReminder {
             title: opt_str(p.reminder_title),
             when: opt_str(p.reminder_when),
@@ -211,12 +231,24 @@ pub trait IntentClassifier: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+            }
+        }
+    }
     use super::{parse_intent, IntentDecision};
 
     #[test]
     fn parse_intent_smart_home() {
         let raw = r#"{"intent": "skill_smart_home", "smart_home_target": "living room", "smart_home_action": "turn off"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillSmartHome { target, action } => {
                 assert_eq!(target.as_deref(), Some("living room"));
@@ -229,7 +261,7 @@ mod tests {
     #[test]
     fn parse_intent_assistant() {
         let raw = r#"{"intent": "skill_assistant", "assistant_kind": "calendar"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillAssistant { kind } => {
                 assert_eq!(kind.as_deref(), Some("calendar"));
@@ -241,7 +273,7 @@ mod tests {
     #[test]
     fn parse_intent_media() {
         let raw = r#"{"intent": "skill_media", "media_action": "play", "media_target": "kitchen"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillMedia { action, target } => {
                 assert_eq!(action.as_deref(), Some("play"));
@@ -254,7 +286,7 @@ mod tests {
     #[test]
     fn parse_intent_memory() {
         let raw = r#"{"intent": "skill_memory", "memory_query": "where did I leave keys", "memory_store": true}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillMemory { query, store } => {
                 assert_eq!(query.as_deref(), Some("where did I leave keys"));
@@ -267,7 +299,7 @@ mod tests {
     #[test]
     fn parse_intent_computer() {
         let raw = r#"{"intent": "skill_computer", "computer_action": "open", "computer_target": "browser"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillComputer { action, target } => {
                 assert_eq!(action.as_deref(), Some("open"));
@@ -278,9 +310,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_intent_screenshot() {
+        let raw = r#"{"intent":"skill_screenshot","screenshot_filename":"desk.png"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillScreenshot { filename } => {
+                assert_eq!(filename.as_deref(), Some("desk.png"));
+            }
+            _ => panic!("expected SkillScreenshot"),
+        }
+    }
+
+    #[test]
     fn parse_intent_reminder_with_when() {
         let raw = r#"{"intent": "skill_reminder", "reminder_title": "Call mom", "reminder_when": "2026-03-20T17:00"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillReminder { title, when } => {
                 assert_eq!(title.as_deref(), Some("Call mom"));
@@ -293,7 +337,7 @@ mod tests {
     #[test]
     fn parse_intent_reminder_without_when() {
         let raw = r#"{"intent": "skill_reminder", "reminder_title": "Buy groceries"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillReminder { title, when } => {
                 assert_eq!(title.as_deref(), Some("Buy groceries"));
@@ -306,7 +350,7 @@ mod tests {
     #[test]
     fn parse_intent_timer_with_name() {
         let raw = r#"{"intent": "skill_timer", "timer_duration": "5 minutes", "timer_name": "pasta timer"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillTimer { duration, name } => {
                 assert_eq!(duration.as_deref(), Some("5 minutes"));
@@ -319,7 +363,7 @@ mod tests {
     #[test]
     fn parse_intent_timer_without_name() {
         let raw = r#"{"intent": "skill_timer", "timer_duration": "30 minutes"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillTimer { duration, name } => {
                 assert_eq!(duration.as_deref(), Some("30 minutes"));
@@ -332,7 +376,7 @@ mod tests {
     #[test]
     fn parse_intent_shopping_list_add() {
         let raw = r#"{"intent": "skill_shopping_list", "shopping_action": "add", "shopping_items": "strawberries, salami", "shopping_when": "today"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillShoppingList {
                 action,
@@ -350,7 +394,7 @@ mod tests {
     #[test]
     fn parse_intent_shopping_list_no_when_defaults_to_none() {
         let raw = r#"{"intent": "skill_shopping_list", "shopping_action": "add", "shopping_items": "milk"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillShoppingList {
                 action,
@@ -368,7 +412,7 @@ mod tests {
     #[test]
     fn parse_intent_message() {
         let raw = r#"{"intent":"skill_message","message_contact":"my wife","message_text":"How are you?"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillMessage { contact, message } => {
                 assert_eq!(contact.as_deref(), Some("my wife"));
@@ -381,7 +425,7 @@ mod tests {
     #[test]
     fn parse_intent_volume_set_level() {
         let raw = r#"{"intent":"skill_volume","volume_action":"set","volume_level":40}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillVolume { action, level } => {
                 assert_eq!(action.as_deref(), Some("set"));
@@ -394,13 +438,39 @@ mod tests {
     #[test]
     fn parse_intent_volume_without_level() {
         let raw = r#"{"intent":"volume","volume_action":"mute"}"#;
-        let d = parse_intent(raw).unwrap();
+        let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillVolume { action, level } => {
                 assert_eq!(action.as_deref(), Some("mute"));
                 assert_eq!(*level, None);
             }
             _ => panic!("expected SkillVolume"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_app_switcher_with_target() {
+        let raw = r#"{"intent":"skill_app_switcher","app_switcher_action":"switch","app_switcher_target":"Safari"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillAppSwitcher { action, target } => {
+                assert_eq!(action.as_deref(), Some("switch"));
+                assert_eq!(target.as_deref(), Some("Safari"));
+            }
+            _ => panic!("expected SkillAppSwitcher"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_app_switcher_without_target() {
+        let raw = r#"{"intent":"app_switcher","app_switcher_action":"next"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillAppSwitcher { action, target } => {
+                assert_eq!(action.as_deref(), Some("next"));
+                assert!(target.is_none());
+            }
+            _ => panic!("expected SkillAppSwitcher"),
         }
     }
 }

@@ -224,7 +224,10 @@ mod tests {
     async fn action_launch_treated_as_open_app() {
         let skill = MacOsComputerSkill::new_for_tests();
         let result = skill.execute(Some("launch"), Some("Spotify")).await;
-        let result = result.expect("should be ok");
+        let result = match result {
+            Ok(value) => value,
+            Err(error) => panic!("expected Ok(..) in test, got Err: {error:?}"),
+        };
         assert!(result.action_done.contains("open -a"));
     }
 }

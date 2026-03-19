@@ -352,6 +352,19 @@ impl MediaSkill for MacOsMusicSkill {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestOptionExt<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
     use super::{MacOsMusicSkill, SearchItem};
 
     #[test]
@@ -405,13 +418,13 @@ mod tests {
     #[test]
     fn best_match_script_checks_playlist_album_track_in_order() {
         let script = MacOsMusicSkill::best_library_match_script("favorites");
-        let playlist_idx = script.find("play playlist").expect("playlist clause");
+        let playlist_idx = script.find("play playlist").must();
         let album_idx = script
             .find("set albumExact to (tracks of library playlist 1 whose album is q)")
-            .expect("album clause");
+            .must();
         let track_idx = script
             .find("set trackExact to (tracks of library playlist 1 whose name is q)")
-            .expect("track clause");
+            .must();
         assert!(playlist_idx < album_idx);
         assert!(album_idx < track_idx);
         assert!(script.contains("return \"playlist|\""));

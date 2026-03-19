@@ -24,6 +24,7 @@ pub enum SkillId {
     Media,
     Memory,
     Computer,
+    AppSwitcher,
     Reminder,
     Message,
     Timer,

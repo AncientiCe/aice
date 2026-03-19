@@ -46,6 +46,7 @@ const POD_AUDIO_FRAMES_TOTAL: &str = "pod_audio_frames_total";
 const POD_AUDIO_BYTES_TOTAL: &str = "pod_audio_bytes_total";
 const POD_TTS_CHUNKS_TOTAL: &str = "pod_tts_chunks_total";
 const POD_TTS_BYTES_TOTAL: &str = "pod_tts_bytes_total";
+const POD_EGRESS_DEVICE_LOCK_POISON_TOTAL: &str = "pod_egress_device_lock_poison_total";
 const VOICE_INTENT_CLASSIFIER_TOTAL: &str = "voice_intent_classifier_total";
 const VOICE_INTENT_ROUTED_TOTAL: &str = "voice_intent_routed_total";
 const VOICE_WEATHER_SKILL_TOTAL: &str = "voice_weather_skill_total";
@@ -56,6 +57,8 @@ const VOICE_ASSISTANT_SKILL_TOTAL: &str = "voice_assistant_skill_total";
 const VOICE_MEDIA_SKILL_TOTAL: &str = "voice_media_skill_total";
 const VOICE_MEMORY_SKILL_TOTAL: &str = "voice_memory_skill_total";
 const VOICE_COMPUTER_SKILL_TOTAL: &str = "voice_computer_skill_total";
+const VOICE_SCREENSHOT_SKILL_TOTAL: &str = "voice_screenshot_skill_total";
+const VOICE_APP_SWITCHER_SKILL_TOTAL: &str = "voice_app_switcher_skill_total";
 const VOICE_REMINDER_SKILL_TOTAL: &str = "voice_reminder_skill_total";
 const VOICE_MESSAGE_SKILL_TOTAL: &str = "voice_message_skill_total";
 const VOICE_TIMER_SKILL_TOTAL: &str = "voice_timer_skill_total";
@@ -78,6 +81,9 @@ const MEMORY_FACT_STORE_TOTAL: &str = "memory_fact_store_total";
 const MEMORY_FACT_RECALL_TOTAL: &str = "memory_fact_recall_total";
 const MEMORY_FACT_STORE_DURATION_SECONDS: &str = "memory_fact_store_duration_seconds";
 const MEMORY_FACT_RECALL_DURATION_SECONDS: &str = "memory_fact_recall_duration_seconds";
+const SCREENSHOT_SKILL_EXECUTE_TOTAL: &str = "screenshot_skill_execute_total";
+const SCREENSHOT_SKILL_ERRORS_TOTAL: &str = "screenshot_skill_errors_total";
+const SCREENSHOT_SKILL_EXECUTE_DURATION_SECONDS: &str = "screenshot_skill_execute_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -100,6 +106,7 @@ pub fn register_metrics() {
     counter!(POD_AUDIO_BYTES_TOTAL, 0, "device_id" => "unknown");
     counter!(POD_TTS_CHUNKS_TOTAL, 0, "device_id" => "unknown");
     counter!(POD_TTS_BYTES_TOTAL, 0, "device_id" => "unknown");
+    counter!(POD_EGRESS_DEVICE_LOCK_POISON_TOTAL, 0, "operation" => "unknown");
     counter!(VOICE_INTENT_CLASSIFIER_TOTAL, 0);
     counter!(VOICE_INTENT_ROUTED_TOTAL, 0, "intent" => "unknown");
     counter!(VOICE_WEATHER_SKILL_TOTAL, 0, "result" => "unknown");
@@ -110,6 +117,8 @@ pub fn register_metrics() {
     counter!(VOICE_MEDIA_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_MEMORY_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_COMPUTER_SKILL_TOTAL, 0, "result" => "unknown");
+    counter!(VOICE_SCREENSHOT_SKILL_TOTAL, 0, "result" => "unknown");
+    counter!(VOICE_APP_SWITCHER_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_REMINDER_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_MESSAGE_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_TIMER_SKILL_TOTAL, 0, "result" => "unknown");
@@ -132,6 +141,9 @@ pub fn register_metrics() {
     counter!(MEMORY_FACT_RECALL_TOTAL, 0, "result" => "unknown");
     histogram!(MEMORY_FACT_STORE_DURATION_SECONDS, 0.0_f64, "source" => "unknown");
     histogram!(MEMORY_FACT_RECALL_DURATION_SECONDS, 0.0_f64);
+    counter!(SCREENSHOT_SKILL_EXECUTE_TOTAL, 0, "result" => "unknown");
+    counter!(SCREENSHOT_SKILL_ERRORS_TOTAL, 0, "kind" => "unknown");
+    histogram!(SCREENSHOT_SKILL_EXECUTE_DURATION_SECONDS, 0.0_f64);
 }
 
 /// Record a new voice session start.
@@ -240,6 +252,14 @@ pub fn record_pod_tts_chunk(device_id: &str, bytes: usize) {
     counter!(POD_TTS_BYTES_TOTAL, bytes as u64, "device_id" => id);
 }
 
+pub fn record_pod_egress_device_lock_poison(operation: &str) {
+    counter!(
+        POD_EGRESS_DEVICE_LOCK_POISON_TOTAL,
+        1,
+        "operation" => operation.to_string()
+    );
+}
+
 /// Record an intent classification call.
 pub fn record_intent_classifier() {
     counter!(VOICE_INTENT_CLASSIFIER_TOTAL, 1);
@@ -288,6 +308,20 @@ pub fn record_memory_skill(result: &str) {
 /// Record computer skill result (success or error).
 pub fn record_computer_skill(result: &str) {
     counter!(VOICE_COMPUTER_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record screenshot skill result (success or error).
+pub fn record_screenshot_skill(result: &str) {
+    counter!(VOICE_SCREENSHOT_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record app switcher skill result (success or error).
+pub fn record_app_switcher_skill(result: &str) {
+    counter!(
+        VOICE_APP_SWITCHER_SKILL_TOTAL,
+        1,
+        "result" => result.to_string()
+    );
 }
 
 /// Record reminder skill result (success or error).

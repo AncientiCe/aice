@@ -4,13 +4,14 @@ use chrono::Local;
 use core_audio::{AudioCapture, CaptureError, SAMPLE_RATE};
 use core_config::Config;
 use core_observability::{
-    record_assistant_skill, record_computer_skill, record_distance_skill,
-    record_endpointing_wait_duration, record_intent_classifier, record_intent_routed,
-    record_llm_first_token_latency, record_media_execute, record_media_execute_duration,
-    record_media_skill, record_memory_fact_recall, record_memory_fact_recall_duration,
-    record_memory_fact_store, record_memory_fact_store_duration, record_memory_save,
-    record_memory_save_duration, record_memory_save_error, record_memory_skill,
-    record_message_skill, record_policy_denied, record_reminder_skill, record_shopping_list_skill,
+    record_app_switcher_skill, record_assistant_skill, record_computer_skill,
+    record_distance_skill, record_endpointing_wait_duration, record_intent_classifier,
+    record_intent_routed, record_llm_first_token_latency, record_media_execute,
+    record_media_execute_duration, record_media_skill, record_memory_fact_recall,
+    record_memory_fact_recall_duration, record_memory_fact_store,
+    record_memory_fact_store_duration, record_memory_save, record_memory_save_duration,
+    record_memory_save_error, record_memory_skill, record_message_skill, record_policy_denied,
+    record_reminder_skill, record_screenshot_skill, record_shopping_list_skill,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
     record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
     record_turn_time_to_first_audio, record_volume_skill, record_weather_skill, Stage,
@@ -21,12 +22,13 @@ use core_orchestrator::{
 use core_policy::{skill_id_and_risk, ActionRequest, PolicyDecision, PolicyEngine};
 use core_search::ExternalSearch;
 use core_skills::{
-    AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill, DistanceSkillError, MediaSkill,
-    MemorySkill, MessageSkill, MessageSkillError, ReminderSkill, ResolvedLocation,
-    ShoppingListSkill, SmartHomeSkill, TimeResult, TimeSkill, TimerSkill, VolumeSkill,
-    WeatherResult, WeatherSkill,
+    AppSwitcherSkill, AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill,
+    DistanceSkillError, MediaSkill, MemorySkill, MessageSkill, MessageSkillError, ReminderSkill,
+    ResolvedLocation, ScreenshotSkill, ShoppingListSkill, SmartHomeSkill, TimeResult, TimeSkill,
+    TimerSkill, VolumeSkill, WeatherResult, WeatherSkill,
 };
 use core_vad::WakeWordGate;
+use serde::Deserialize;
 use std::fs;
 use std::future::Future;
 use std::io::{Error as IoError, ErrorKind};
@@ -191,6 +193,19 @@ struct ParsedMediaCommand {
     target: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct PendingForceQuit {
+    target: String,
+    requested_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForceQuitConfirmation {
+    Yes,
+    No,
+    Unclear,
+}
+
 /// Aggregate stats from continuous runtime execution.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct RuntimeLoopStats {
@@ -211,6 +226,7 @@ pub struct SkillRunContext<'a> {
     pub media_skill: Option<&'a dyn MediaSkill>,
     pub memory_skill: Option<&'a dyn MemorySkill>,
     pub computer_skill: Option<&'a dyn ComputerSkill>,
+    pub app_switcher_skill: Option<&'a dyn AppSwitcherSkill>,
     pub reminder_skill: Option<&'a dyn ReminderSkill>,
     pub message_skill: Option<&'a dyn MessageSkill>,
     pub timer_skill: Option<&'a dyn TimerSkill>,
@@ -242,6 +258,7 @@ pub struct DesktopRuntime {
     last_assistant_utterance: Option<(String, Instant)>,
     /// When NeedsSearch is detected, call this to get yes/no. None = treat as No.
     user_confirm: Option<UserConfirmFn>,
+    pending_force_quit: Option<PendingForceQuit>,
 }
 
 impl DesktopRuntime {
@@ -252,6 +269,7 @@ impl DesktopRuntime {
             wake_gate,
             last_assistant_utterance: None,
             user_confirm: None,
+            pending_force_quit: None,
         }
     }
 
@@ -308,6 +326,7 @@ impl DesktopRuntime {
             media_skill: None,
             memory_skill: None,
             computer_skill: None,
+            app_switcher_skill: None,
             reminder_skill: None,
             message_skill: None,
             timer_skill: None,
@@ -624,6 +643,7 @@ impl DesktopRuntime {
         let media_skill = skills.media_skill;
         let memory_skill = skills.memory_skill;
         let computer_skill = skills.computer_skill;
+        let app_switcher_skill = skills.app_switcher_skill;
         let reminder_skill = skills.reminder_skill;
         let message_skill = skills.message_skill;
         let timer_skill = skills.timer_skill;
@@ -641,6 +661,61 @@ impl DesktopRuntime {
         }
 
         info!(user_text = %user_text.trim(), "turn");
+
+        let mut decision_override: Option<IntentDecision> = None;
+        if let Some(pending) = self.pending_force_quit.take() {
+            const FORCE_QUIT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(20);
+            if pending.requested_at.elapsed() > FORCE_QUIT_CONFIRM_TIMEOUT {
+                let spoken = format!(
+                    "Force quit for {} was cancelled due to timeout.",
+                    pending.target
+                );
+                self.register_assistant_utterance(&spoken, Instant::now());
+                let t0 = Instant::now();
+                let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                timings.tts = Some(t0.elapsed());
+                return Ok(Self::finish_turn(
+                    "skill_app_switcher_force_quit_confirmation_timeout",
+                    outcome,
+                    turn_started_at,
+                    &mut timings,
+                ));
+            }
+
+            match Self::classify_force_quit_confirmation(llm, &user_text).await? {
+                ForceQuitConfirmation::Yes => {
+                    let action = Some("force_quit".to_string());
+                    let target = Some(pending.target);
+                    decision_override = Some(IntentDecision::SkillAppSwitcher { action, target });
+                }
+                ForceQuitConfirmation::No => {
+                    let spoken = "Okay, I cancelled the force quit request.";
+                    self.register_assistant_utterance(spoken, Instant::now());
+                    let t0 = Instant::now();
+                    let outcome = Self::speak_with_cancel(tts, spoken, cancel_rx).await?;
+                    timings.tts = Some(t0.elapsed());
+                    return Ok(Self::finish_turn(
+                        "skill_app_switcher_force_quit_confirmation_no",
+                        outcome,
+                        turn_started_at,
+                        &mut timings,
+                    ));
+                }
+                ForceQuitConfirmation::Unclear => {
+                    let spoken = "I could not confirm that, so I cancelled the force quit request.";
+                    self.register_assistant_utterance(spoken, Instant::now());
+                    let t0 = Instant::now();
+                    let outcome = Self::speak_with_cancel(tts, spoken, cancel_rx).await?;
+                    timings.tts = Some(t0.elapsed());
+                    return Ok(Self::finish_turn(
+                        "skill_app_switcher_force_quit_confirmation_unclear",
+                        outcome,
+                        turn_started_at,
+                        &mut timings,
+                    ));
+                }
+            }
+        }
 
         if let Some(skill) = memory_skill {
             let t0 = Instant::now();
@@ -760,7 +835,11 @@ impl DesktopRuntime {
         }
 
         // Intent classification: if we have a classifier, use it to decide chat vs skill.
-        let decision = if let Some(classifier) = intent_classifier {
+        let used_decision_override = decision_override.is_some();
+        let decision = if let Some(d) = decision_override {
+            record_intent_routed("skill_app_switcher");
+            d
+        } else if let Some(classifier) = intent_classifier {
             record_intent_classifier();
             match classifier.classify(&user_text).await {
                 Ok(d) => {
@@ -774,6 +853,8 @@ impl DesktopRuntime {
                         IntentDecision::SkillMedia { .. } => "skill_media",
                         IntentDecision::SkillMemory { .. } => "skill_memory",
                         IntentDecision::SkillComputer { .. } => "skill_computer",
+                        IntentDecision::SkillScreenshot { .. } => "skill_screenshot",
+                        IntentDecision::SkillAppSwitcher { .. } => "skill_app_switcher",
                         IntentDecision::SkillReminder { .. } => "skill_reminder",
                         IntentDecision::SkillMessage { .. } => "skill_message",
                         IntentDecision::SkillTimer { .. } => "skill_timer",
@@ -821,6 +902,13 @@ impl DesktopRuntime {
                 IntentDecision::SkillComputer { action, target } => {
                     ("skill_computer", action.clone().or_else(|| target.clone()))
                 }
+                IntentDecision::SkillScreenshot { filename } => {
+                    ("skill_screenshot", filename.clone())
+                }
+                IntentDecision::SkillAppSwitcher { action, target } => (
+                    "skill_app_switcher",
+                    action.clone().or_else(|| target.clone()),
+                ),
                 IntentDecision::SkillReminder { title, .. } => ("skill_reminder", title.clone()),
                 IntentDecision::SkillMessage { contact, message } => {
                     ("skill_message", contact.clone().or_else(|| message.clone()))
@@ -1210,6 +1298,139 @@ impl DesktopRuntime {
                             record_computer_skill("error");
                             tracing::warn!(error = %e, "computer skill failed, falling back to chat");
                         }
+                    }
+                }
+            }
+        }
+
+        // App switcher skill path.
+        if let IntentDecision::SkillAppSwitcher { action, target } = &decision {
+            if let Some(skill) = app_switcher_skill {
+                if !action_allowed(&decision) {
+                    record_policy_denied("skill_app_switcher");
+                    tracing::warn!("policy denied app switcher skill, falling back to chat");
+                } else {
+                    let action_name = action
+                        .as_deref()
+                        .unwrap_or("switch")
+                        .trim()
+                        .to_ascii_lowercase();
+                    let target_name = target
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToString::to_string);
+
+                    if action_name == "force_quit" && !used_decision_override {
+                        let Some(target_name) = target_name else {
+                            record_app_switcher_skill("error");
+                            let spoken =
+                                "I need the app name before I can force quit. Please say the app.";
+                            self.register_assistant_utterance(spoken, Instant::now());
+                            let t0 = Instant::now();
+                            let outcome = Self::speak_with_cancel(tts, spoken, cancel_rx).await?;
+                            timings.tts = Some(t0.elapsed());
+                            return Ok(Self::finish_turn(
+                                "skill_app_switcher_force_quit_missing_target",
+                                outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        };
+
+                        self.pending_force_quit = Some(PendingForceQuit {
+                            target: target_name.clone(),
+                            requested_at: Instant::now(),
+                        });
+                        let spoken = format!(
+                            "Confirm force quit for {target_name}. Say yes to continue or no to cancel."
+                        );
+                        self.register_assistant_utterance(&spoken, Instant::now());
+                        let t0 = Instant::now();
+                        let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                        timings.tts = Some(t0.elapsed());
+                        return Ok(Self::finish_turn(
+                            "skill_app_switcher_force_quit_confirmation_prompt",
+                            outcome,
+                            turn_started_at,
+                            &mut timings,
+                        ));
+                    }
+
+                    let t0 = Instant::now();
+                    match skill.execute(action.as_deref(), target.as_deref()).await {
+                        Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
+                            if let Some(p) = policy {
+                                p.record_action();
+                            }
+                            info!(skill = "app_switcher", "skill_executed");
+                            record_app_switcher_skill("success");
+                            let prompt =
+                                Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_app_switcher",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(e) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_app_switcher_skill("error");
+                            tracing::warn!(
+                                error = %e,
+                                "app switcher skill failed, falling back to chat"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Screenshot skill path.
+        if let IntentDecision::SkillScreenshot { filename } = &decision {
+            if !action_allowed(&decision) {
+                record_policy_denied("skill_screenshot");
+                tracing::warn!("policy denied screenshot skill, falling back to chat");
+            } else {
+                let skill = core_skills::MacOsScreenshotSkill::new();
+                let t0 = Instant::now();
+                match skill.execute(filename.as_deref()).await {
+                    Ok(result) => {
+                        timings.skill = Some(t0.elapsed());
+                        if let Some(p) = policy {
+                            p.record_action();
+                        }
+                        info!(skill = "screenshot", "skill_executed");
+                        record_screenshot_skill("success");
+                        let prompt =
+                            Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
+                        let stream_outcome =
+                            Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                        timings.llm_first_token = stream_outcome.llm_first_token_latency;
+                        timings.llm = Some(stream_outcome.llm_duration);
+                        timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
+                        timings.tts = Some(stream_outcome.tts_duration);
+                        timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                        return Ok(Self::finish_turn(
+                            "skill_screenshot",
+                            stream_outcome.outcome,
+                            turn_started_at,
+                            &mut timings,
+                        ));
+                    }
+                    Err(e) => {
+                        timings.skill = Some(t0.elapsed());
+                        record_screenshot_skill("error");
+                        tracing::warn!(error = %e, "screenshot skill failed, falling back to chat");
                     }
                 }
             }
@@ -1698,6 +1919,42 @@ impl DesktopRuntime {
                 "I'm sorry, I couldn't send that iMessage right now.".to_string()
             }
         }
+    }
+
+    async fn classify_force_quit_confirmation<L: LlmStream>(
+        llm: &L,
+        user_text: &str,
+    ) -> Result<ForceQuitConfirmation, Box<dyn std::error::Error + Send + Sync>> {
+        #[derive(Debug, Deserialize)]
+        struct ConfirmationPayload {
+            confirm: String,
+        }
+
+        let prompt = format!(
+            "You are a confirmation parser. Reply with JSON only.\n\
+             Output schema: {{\"confirm\":\"yes|no|unclear\"}}.\n\
+             User reply: \"{}\"",
+            user_text.trim()
+        );
+        let mut stream = llm
+            .chat_stream(&prompt, &[], None)
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e })?;
+        let mut raw = String::new();
+        use futures::StreamExt;
+        while let Some(token) = stream.next().await {
+            raw.push_str(&token);
+        }
+        let payload = serde_json::from_str::<ConfirmationPayload>(raw.trim()).ok();
+        let value = payload
+            .map(|p| p.confirm.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "unclear".to_string());
+        let confirmation = match value.as_str() {
+            "yes" => ForceQuitConfirmation::Yes,
+            "no" => ForceQuitConfirmation::No,
+            _ => ForceQuitConfirmation::Unclear,
+        };
+        Ok(confirmation)
     }
 
     /// Generic prompt for skill results (smart home, assistant, media, memory, computer).
@@ -2230,7 +2487,9 @@ mod tests {
     fn parse_media_command_accepts_polite_play_prefix() {
         let cmd = DesktopRuntime::parse_media_command("computer please play blinding lights.");
         assert!(cmd.is_some());
-        let cmd = cmd.expect("media command");
+        let Some(cmd) = cmd else {
+            panic!("expected media command");
+        };
         assert_eq!(cmd.action, "play");
         assert_eq!(cmd.target.as_deref(), Some("blinding lights"));
     }
@@ -2239,7 +2498,9 @@ mod tests {
     fn parse_media_command_accepts_shuffle_on() {
         let cmd = DesktopRuntime::parse_media_command("computer turn on shuffle");
         assert!(cmd.is_some());
-        let cmd = cmd.expect("media command");
+        let Some(cmd) = cmd else {
+            panic!("expected media command");
+        };
         assert_eq!(cmd.action, "shuffle_on");
         assert!(cmd.target.is_none());
     }
@@ -2248,7 +2509,9 @@ mod tests {
     fn parse_media_command_accepts_shuffle_off() {
         let cmd = DesktopRuntime::parse_media_command("computer turn shuffle off");
         assert!(cmd.is_some());
-        let cmd = cmd.expect("media command");
+        let Some(cmd) = cmd else {
+            panic!("expected media command");
+        };
         assert_eq!(cmd.action, "shuffle_off");
         assert!(cmd.target.is_none());
     }

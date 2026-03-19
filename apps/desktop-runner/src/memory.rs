@@ -206,14 +206,14 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_roundtrip() {
+    fn save_and_load_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         let limits = test_limits();
         let mut store = MemoryStore::new(&limits);
         store.push_turn("hello", "hi there");
         store.set_profile("user_name", "Ancie");
         let dir = std::env::temp_dir();
         let path = dir.join("aice_memory_roundtrip_test.json");
-        store.save(&path).unwrap();
+        store.save(&path)?;
         let loaded = MemoryStore::load(&path, &limits);
         assert_eq!(loaded.history().len(), 1);
         assert_eq!(loaded.history()[0].0, "hello");
@@ -222,16 +222,18 @@ mod tests {
             Some("Ancie")
         );
         let _ = std::fs::remove_file(&path);
+        Ok(())
     }
 
     #[test]
-    fn load_invalid_json_returns_empty_store() {
+    fn load_invalid_json_returns_empty_store() -> Result<(), Box<dyn std::error::Error>> {
         let limits = test_limits();
         let dir = std::env::temp_dir();
         let path = dir.join("aice_memory_invalid_test.json");
-        std::fs::write(&path, b"{ invalid }").unwrap();
+        std::fs::write(&path, b"{ invalid }")?;
         let store = MemoryStore::load(&path, &limits);
         assert!(store.recent_turns().is_empty());
         let _ = std::fs::remove_file(&path);
+        Ok(())
     }
 }

@@ -20,12 +20,25 @@ pub fn parse_need_search(response: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    pub trait TestOptionExt<T> {
+        fn must(self) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must(self) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
     fn parse_need_search_extracts_query_and_local_answer() {
         let r = "I'm not sure about that. [NEED_SEARCH: weather in NYC]";
-        let (local, query) = parse_need_search(r).unwrap();
+        let (local, query) = parse_need_search(r).must();
         assert_eq!(local, "I'm not sure about that.");
         assert_eq!(query, "weather in NYC");
     }
