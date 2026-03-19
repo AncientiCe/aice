@@ -59,6 +59,11 @@ pub enum IntentDecision {
         contact: Option<String>,
         message: Option<String>,
     },
+    /// Volume: set, adjust, mute/unmute, or query system output volume.
+    SkillVolume {
+        action: Option<String>,
+        level: Option<u8>,
+    },
 }
 
 /// Parse LLM classifier output into IntentDecision. Expects a single JSON object.
@@ -117,6 +122,10 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         message_contact: Option<String>,
         #[serde(default)]
         message_text: Option<String>,
+        #[serde(default)]
+        volume_action: Option<String>,
+        #[serde(default)]
+        volume_level: Option<u8>,
     }
     let p: Payload = serde_json::from_str(s).map_err(ParseIntentError::Json)?;
     let intent = p.intent.to_lowercase().trim().to_string();
@@ -167,6 +176,10 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         "skill_message" | "message" => Ok(IntentDecision::SkillMessage {
             contact: opt_str(p.message_contact),
             message: opt_str(p.message_text),
+        }),
+        "skill_volume" | "volume" => Ok(IntentDecision::SkillVolume {
+            action: opt_str(p.volume_action),
+            level: p.volume_level,
         }),
         _ => Ok(IntentDecision::Chat),
     }
@@ -362,6 +375,32 @@ mod tests {
                 assert_eq!(message.as_deref(), Some("How are you?"));
             }
             _ => panic!("expected SkillMessage"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_volume_set_level() {
+        let raw = r#"{"intent":"skill_volume","volume_action":"set","volume_level":40}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillVolume { action, level } => {
+                assert_eq!(action.as_deref(), Some("set"));
+                assert_eq!(*level, Some(40));
+            }
+            _ => panic!("expected SkillVolume"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_volume_without_level() {
+        let raw = r#"{"intent":"volume","volume_action":"mute"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillVolume { action, level } => {
+                assert_eq!(action.as_deref(), Some("mute"));
+                assert_eq!(*level, None);
+            }
+            _ => panic!("expected SkillVolume"),
         }
     }
 }

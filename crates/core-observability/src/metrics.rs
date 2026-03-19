@@ -60,6 +60,7 @@ const VOICE_REMINDER_SKILL_TOTAL: &str = "voice_reminder_skill_total";
 const VOICE_MESSAGE_SKILL_TOTAL: &str = "voice_message_skill_total";
 const VOICE_TIMER_SKILL_TOTAL: &str = "voice_timer_skill_total";
 const VOICE_SHOPPING_LIST_SKILL_TOTAL: &str = "voice_shopping_list_skill_total";
+const VOICE_VOLUME_SKILL_TOTAL: &str = "voice_volume_skill_total";
 const VOICE_POLICY_DENIED_TOTAL: &str = "voice_policy_denied_total";
 const VOICE_LOCATION_PRELOAD_TOTAL: &str = "voice_location_preload_total";
 const VOICE_SHUTDOWN_SIGNALS_TOTAL: &str = "voice_shutdown_signals_total";
@@ -113,6 +114,7 @@ pub fn register_metrics() {
     counter!(VOICE_MESSAGE_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_TIMER_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_SHOPPING_LIST_SKILL_TOTAL, 0, "result" => "unknown");
+    counter!(VOICE_VOLUME_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_POLICY_DENIED_TOTAL, 0, "reason" => "unknown");
     counter!(VOICE_LOCATION_PRELOAD_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_SHUTDOWN_SIGNALS_TOTAL, 0, "signal" => "unknown", "action" => "unknown");
@@ -306,6 +308,11 @@ pub fn record_timer_skill(result: &str) {
 /// Record shopping list skill result (success or error).
 pub fn record_shopping_list_skill(result: &str) {
     counter!(VOICE_SHOPPING_LIST_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record volume skill result (success or error).
+pub fn record_volume_skill(result: &str) {
+    counter!(VOICE_VOLUME_SKILL_TOTAL, 1, "result" => result.to_string());
 }
 
 /// Record policy denial (reason: e.g. "emergency_stop", "budget_exhausted").

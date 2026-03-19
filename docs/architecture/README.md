@@ -136,7 +136,7 @@ flowchart LR
 
 ---
 
-## 6. Intent classification and skills (weather, time, distance, smart home, assistant, media, memory, computer)
+## 6. Intent classification and skills (weather, time, distance, smart home, assistant, media, memory, computer, volume)
 
 **Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, location is resolved at startup (IP geolocation or config default) or from the user’s request (e.g. “weather in Rome”). The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
 
@@ -339,3 +339,11 @@ Full skill journey, inputs, outputs, failure paths, and metrics are documented a
 **Purpose:** Computer-use actions are handled by a dedicated skill and documented in its own skill doc.
 
 Full skill journey, inputs, outputs, failure paths, and metrics are documented at [computer](../skills/computer.md).
+
+---
+
+## 15. Volume Skill (System Output Volume)
+
+**Purpose:** System output volume control is handled by a dedicated skill and documented in its own skill doc.
+
+Full skill journey, inputs, outputs, failure paths, and metrics are documented at [volume](../skills/volume.md).
