@@ -152,7 +152,7 @@ fn default_audio_idle_sleep_ms() -> u64 {
 }
 
 fn default_audio_speech_end_silence_ms() -> u64 {
-    650
+    300
 }
 
 fn default_audio_speech_rms_threshold() -> f32 {
@@ -176,7 +176,7 @@ impl Default for SttConfig {
 }
 
 fn default_whisper_model_path() -> String {
-    "models/whisper/ggml-base.en.bin".to_string()
+    "models/whisper/ggml-tiny.en.bin".to_string()
 }
 
 /// TTS settings.
@@ -475,11 +475,11 @@ mod tests {
         assert_eq!(config.llm.max_output_tokens, 96);
         assert_eq!(config.pod_bind, "0.0.0.0:8765");
         assert_eq!(config.audio.turn_window_ms, 1500);
-        assert_eq!(config.audio.speech_end_silence_ms, 650);
+        assert_eq!(config.audio.speech_end_silence_ms, 300);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
         assert_eq!(
             config.stt.whisper_model_path,
-            "models/whisper/ggml-base.en.bin"
+            "models/whisper/ggml-tiny.en.bin"
         );
         assert_eq!(config.tts.piper_model_path, "models/piper/model.onnx");
         assert_eq!(config.service.health_bind, "127.0.0.1:8780");
@@ -523,7 +523,7 @@ mod tests {
         );
         assert_eq!(config.pod_bind, "0.0.0.0:9000");
         assert_eq!(config.audio.turn_window_ms, 900);
-        assert_eq!(config.audio.speech_end_silence_ms, 650);
+        assert_eq!(config.audio.speech_end_silence_ms, 300);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
         assert_eq!(config.stt.whisper_model_path, "models/custom-whisper.bin");
         assert_eq!(config.tts.piper_model_path, "models/custom-piper.onnx");

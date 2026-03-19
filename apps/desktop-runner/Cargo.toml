@@ -29,7 +29,7 @@ core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-policy = { path = "../../crates/core-policy" }
 core-search = { path = "../../crates/core-search" }
 core-skills = { path = "../../crates/core-skills" }
-core-stt = { path = "../../crates/core-stt" }
+core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-llm = { path = "../../crates/core-llm" }
 core-tts = { path = "../../crates/core-tts" }
 core-vad = { path = "../../crates/core-vad" }

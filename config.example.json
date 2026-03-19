@@ -11,13 +11,13 @@
     "input_device": null,
     "output_device": null,
     "chunk_timeout_ms": 250,
-    "turn_window_ms": 3000,
+    "turn_window_ms": 1200,
     "idle_sleep_ms": 20,
-    "speech_end_silence_ms": 650,
+    "speech_end_silence_ms": 300,
     "speech_rms_threshold": 0.008
   },
   "stt": {
-    "whisper_model_path": "models/whisper/ggml-base.en.bin"
+    "whisper_model_path": "models/whisper/ggml-tiny.en.bin"
   },
   "tts": {
     "piper_model_path": "models/piper/model.onnx",

@@ -361,7 +361,7 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** `audio.chunk_timeout_ms`, `audio.speech_end_silence_ms` (default `650` ms), and `audio.speech_rms_threshold` (default `0.008`).
+- **Inputs:** `audio.chunk_timeout_ms`, `audio.speech_end_silence_ms` (default `300` ms), and `audio.speech_rms_threshold` (default `0.008`).
 - **Outputs:** Fewer truncated transcripts for headset speech; flush waits for pause/silence (not active-speech chunk windows).
 - **Failure paths:** If `speech_end_silence_ms` is configured too high, perceived response latency increases; if too low, partial phrase truncation can reappear.
 
