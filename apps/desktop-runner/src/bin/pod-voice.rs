@@ -7,8 +7,9 @@ use core_observability::{
     init_json_logging, record_memory_load, record_memory_load_duration, register_metrics,
 };
 use core_skills::{
-    HueSmartHomeSkill, MacOsMusicSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill,
-    OpenMeteoWeatherSkill, SqliteMemorySkill,
+    HueSmartHomeSkill, MacOsClockTimerSkill, MacOsMusicSkill, MacOsNotesShoppingListSkill,
+    MacOsReminderSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill, OpenMeteoWeatherSkill,
+    SqliteMemorySkill,
 };
 use core_stt::WhisperSttStream;
 use core_tts::PiperTtsSink;
@@ -139,6 +140,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         llm_system_prompt,
     );
     let intent_classifier = LlmIntentClassifier::new(&llm);
+    let reminder_skill = MacOsReminderSkill::new();
+    let timer_skill = MacOsClockTimerSkill::new();
+    let shopping_list_skill = MacOsNotesShoppingListSkill::new();
     let piper = PiperTtsSink::new(Path::new(&config.tts.piper_model_path))?;
     let mut tts = RoutingTtsSink::new(piper, Some(egress_tx));
 
@@ -164,6 +168,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 media_skill: media_skill.as_ref().map(|s| s as _),
                 memory_skill: memory_skill.as_ref().map(|s| s as _),
                 computer_skill: None,
+                reminder_skill: Some(&reminder_skill),
+                timer_skill: Some(&timer_skill),
+                shopping_list_skill: Some(&shopping_list_skill),
                 resolved_location: resolved_location.as_ref(),
                 memory: memory_store.clone(),
                 policy: None,

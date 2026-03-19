@@ -274,73 +274,8 @@ flowchart LR
 - **Outputs:** Skill payload context for voice answer generation; SQLite-backed memory facts and turn ingestion.
 - **Failure paths:** Missing provider config keeps a skill disabled; skill execution errors fall back to chat path with existing metrics/error logs.
 
-### 10.1 Hue bridge discovery/auth/control
-
-```mermaid
-sequenceDiagram
-    participant Runtime
-    participant HueDisc as Hue Discovery API
-    participant Bridge as Hue Bridge
-    Runtime->>HueDisc: discover bridge (LAN/public endpoint)
-    HueDisc-->>Runtime: bridge IP
-    Runtime->>Bridge: ping /clip/v2/resource/bridge
-    Bridge-->>Runtime: bridge reachable
-    Runtime->>Bridge: list lights /clip/v2/resource/light
-    Runtime->>Bridge: put action (on/off/brightness/color temp)
-    Bridge-->>Runtime: updated state
-```
-
-### 10.2 macOS Music.app control via AppleScript
-
-```mermaid
-sequenceDiagram
-    participant Runtime
-    participant Skill as MacOsMusicSkill
-    participant Music as macOS Music.app
-    Runtime->>Skill: execute(action,target)
-    Skill->>Music: osascript AppleScript command
-    Music-->>Skill: state/track result
-    Skill-->>Runtime: MediaResult(summary,state,now_playing)
-```
-
-**Notes:**
-- **Inputs:** `media.macos_music.enabled` and media command action/target from intent routing.
-- **Outputs:** Music.app transport/search commands and runtime status responses (`playing`, `paused`, `stopped`, `unknown`).
-- **Playback behavior:** `play <query>` first attempts Music.app library playback via AppleScript, with iTunes catalog lookup only for spoken metadata fallback.
-- **Failure paths:** Non-macOS targets return typed unsupported-action errors; AppleScript failures are returned as playback errors.
-
-### 10.2.1 Media shuffle transport commands
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Runtime
-    participant Skill as MacOsMusicSkill
-    participant Music as Music.app
-    User->>Runtime: "computer turn on shuffle"
-    Runtime->>Skill: execute(action="shuffle_on")
-    Skill->>Music: osascript set shuffle enabled true
-    Music-->>Skill: updated state
-    Skill-->>Runtime: MediaResult(state=playing)
-```
-
-**Notes:**
-- **Inputs:** Voice phrases (`shuffle`, `shuffle on`, `turn on shuffle`, `turn off shuffle`).
-- **Outputs:** AppleScript-driven `shuffle_on` / `shuffle_off` in Music.app.
-- **Failure paths:** If Music.app does not accept shuffle toggles, skill reports playback error and runtime preserves fallback behavior.
-
-### 10.3 SQLite memory store/recall
-
-```mermaid
-flowchart TD
-    Turn[User turn text] --> Ingest[ingest_turn]
-    Ingest --> Extract[Deterministic fact extraction]
-    Extract --> Upsert[SQLite upsert memory_facts]
-    Query[Memory query] --> Recall[execute recall]
-    Recall --> FTS[FTS5 search]
-    FTS --> Fallback[LIKE fallback]
-    Fallback --> Result[MemoryResult facts]
-```
+Full per-skill journeys, inputs, outputs, failure paths, and metrics are in [`docs/skills/`](../skills/README.md):
+[smart-home](../skills/smart-home.md) · [media](../skills/media.md) · [memory](../skills/memory.md)
 
 ---
 
@@ -409,3 +344,30 @@ sequenceDiagram
 - **Inputs:** OS Ctrl+C signal.
 - **Outputs:** deterministic shutdown request on first signal and browser-tree cleanup; force-exit on second signal after browser-tree cleanup.
 - **Failure paths:** if graceful shutdown hangs, second Ctrl+C still executes cleanup and then terminates process.
+
+---
+
+## 12. Reminder, Timer, and Shopping List Skills
+
+**Purpose:** Three dedicated macOS-native skills that create Reminders entries, start Clock timers, and manage shopping lists in Apple Notes — all via AppleScript (`osascript`). Each follows the full intent-classifier → policy-gate → skill-execute → LLM-answer pipeline.
+
+```mermaid
+flowchart LR
+    userText[UserText] --> classifier[IntentClassifierLLM]
+    classifier --> parse[parse_intent]
+    parse --> policy[PolicyEngine]
+    policy --> reminderSkill[MacOsReminderSkill]
+    policy --> timerSkill[MacOsClockTimerSkill]
+    policy --> shoppingSkill[MacOsNotesShoppingListSkill]
+    reminderSkill --> remindersApp[macOS Reminders.app]
+    timerSkill --> clockApp[macOS Clock.app]
+    shoppingSkill --> notesApp[Apple Notes.app]
+    reminderSkill --> result[StructuredSkillResult]
+    timerSkill --> result
+    shoppingSkill --> result
+    result --> answer[AnswerComposerLLM]
+    answer --> tts[TTSOutput]
+```
+
+Full per-skill journeys, inputs, outputs, failure paths, and metrics are in [`docs/skills/`](../skills/README.md):
+[reminder](../skills/reminder.md) · [timer](../skills/timer.md) · [shopping-list](../skills/shopping-list.md)

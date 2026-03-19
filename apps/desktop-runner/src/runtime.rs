@@ -10,9 +10,10 @@ use core_observability::{
     record_media_skill, record_memory_fact_recall, record_memory_fact_recall_duration,
     record_memory_fact_store, record_memory_fact_store_duration, record_memory_save,
     record_memory_save_duration, record_memory_save_error, record_memory_skill,
-    record_policy_denied, record_smart_home_execute, record_smart_home_execute_duration,
-    record_smart_home_skill, record_speech_voiced_duration, record_stage_duration,
-    record_time_skill, record_turn_time_to_first_audio, record_weather_skill, Stage,
+    record_policy_denied, record_reminder_skill, record_shopping_list_skill,
+    record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
+    record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
+    record_turn_time_to_first_audio, record_weather_skill, Stage,
 };
 use core_orchestrator::{
     parse_need_search, IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink,
@@ -21,8 +22,8 @@ use core_policy::{skill_id_and_risk, ActionRequest, PolicyDecision, PolicyEngine
 use core_search::ExternalSearch;
 use core_skills::{
     AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill, DistanceSkillError, MediaSkill,
-    MemorySkill, ResolvedLocation, SmartHomeSkill, TimeResult, TimeSkill, WeatherResult,
-    WeatherSkill,
+    MemorySkill, ReminderSkill, ResolvedLocation, ShoppingListSkill, SmartHomeSkill, TimeResult,
+    TimeSkill, TimerSkill, WeatherResult, WeatherSkill,
 };
 use core_vad::WakeWordGate;
 use std::fs;
@@ -209,6 +210,9 @@ pub struct SkillRunContext<'a> {
     pub media_skill: Option<&'a dyn MediaSkill>,
     pub memory_skill: Option<&'a dyn MemorySkill>,
     pub computer_skill: Option<&'a dyn ComputerSkill>,
+    pub reminder_skill: Option<&'a dyn ReminderSkill>,
+    pub timer_skill: Option<&'a dyn TimerSkill>,
+    pub shopping_list_skill: Option<&'a dyn ShoppingListSkill>,
     pub resolved_location: Option<&'a ResolvedLocation>,
     /// Shared memory store for conversation history and profile; used for chat history and post-turn save.
     pub memory: Option<Arc<tokio::sync::Mutex<MemoryStore>>>,
@@ -301,6 +305,9 @@ impl DesktopRuntime {
             media_skill: None,
             memory_skill: None,
             computer_skill: None,
+            reminder_skill: None,
+            timer_skill: None,
+            shopping_list_skill: None,
             resolved_location: None,
             memory: None,
             policy: None,
@@ -612,6 +619,9 @@ impl DesktopRuntime {
         let media_skill = skills.media_skill;
         let memory_skill = skills.memory_skill;
         let computer_skill = skills.computer_skill;
+        let reminder_skill = skills.reminder_skill;
+        let timer_skill = skills.timer_skill;
+        let shopping_list_skill = skills.shopping_list_skill;
         let resolved_location = skills.resolved_location;
         let memory = skills.memory.as_ref();
         if user_text.trim().is_empty() {
@@ -757,6 +767,9 @@ impl DesktopRuntime {
                         IntentDecision::SkillMedia { .. } => "skill_media",
                         IntentDecision::SkillMemory { .. } => "skill_memory",
                         IntentDecision::SkillComputer { .. } => "skill_computer",
+                        IntentDecision::SkillReminder { .. } => "skill_reminder",
+                        IntentDecision::SkillTimer { .. } => "skill_timer",
+                        IntentDecision::SkillShoppingList { .. } => "skill_shopping_list",
                     });
                     d
                 }
@@ -799,6 +812,12 @@ impl DesktopRuntime {
                 IntentDecision::SkillComputer { action, target } => {
                     ("skill_computer", action.clone().or_else(|| target.clone()))
                 }
+                IntentDecision::SkillReminder { title, .. } => ("skill_reminder", title.clone()),
+                IntentDecision::SkillTimer { name, .. } => ("skill_timer", name.clone()),
+                IntentDecision::SkillShoppingList { action, items, .. } => (
+                    "skill_shopping_list",
+                    action.clone().or_else(|| items.clone()),
+                ),
                 IntentDecision::Chat => return true,
             };
             let (skill_id, risk_tier) = skill_id_and_risk(intent_name);
@@ -1174,6 +1193,141 @@ impl DesktopRuntime {
                             timings.skill = Some(skill_started_at.elapsed());
                             record_computer_skill("error");
                             tracing::warn!(error = %e, "computer skill failed, falling back to chat");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reminder skill path.
+        if let IntentDecision::SkillReminder { title, when } = &decision {
+            if let Some(skill) = reminder_skill {
+                if !action_allowed(&decision) {
+                    record_policy_denied("skill_reminder");
+                    tracing::warn!("policy denied reminder skill, falling back to chat");
+                } else {
+                    let reminder_title = title.as_deref().unwrap_or(&user_text);
+                    let t0 = Instant::now();
+                    match skill.execute(reminder_title, when.as_deref()).await {
+                        Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
+                            if let Some(p) = policy {
+                                p.record_action();
+                            }
+                            info!(skill = "reminder", "skill_executed");
+                            record_reminder_skill("success");
+                            let prompt =
+                                Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_reminder",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(e) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_reminder_skill("error");
+                            tracing::warn!(error = %e, "reminder skill failed, falling back to chat");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Timer skill path.
+        if let IntentDecision::SkillTimer { duration, name } = &decision {
+            if let Some(skill) = timer_skill {
+                if !action_allowed(&decision) {
+                    record_policy_denied("skill_timer");
+                    tracing::warn!("policy denied timer skill, falling back to chat");
+                } else {
+                    let timer_duration = duration.as_deref().unwrap_or("");
+                    let t0 = Instant::now();
+                    match skill.execute(timer_duration, name.as_deref()).await {
+                        Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
+                            if let Some(p) = policy {
+                                p.record_action();
+                            }
+                            info!(skill = "timer", "skill_executed");
+                            record_timer_skill("success");
+                            let prompt =
+                                Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_timer",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(e) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_timer_skill("error");
+                            tracing::warn!(error = %e, "timer skill failed, falling back to chat");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Shopping list skill path.
+        if let IntentDecision::SkillShoppingList {
+            action,
+            items,
+            when,
+        } = &decision
+        {
+            if let Some(skill) = shopping_list_skill {
+                if !action_allowed(&decision) {
+                    record_policy_denied("skill_shopping_list");
+                    tracing::warn!("policy denied shopping list skill, falling back to chat");
+                } else {
+                    let sl_action = action.as_deref().unwrap_or("add");
+                    let sl_items = items.as_deref().unwrap_or("");
+                    let t0 = Instant::now();
+                    match skill.execute(sl_action, sl_items, when.as_deref()).await {
+                        Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
+                            if let Some(p) = policy {
+                                p.record_action();
+                            }
+                            info!(skill = "shopping_list", "skill_executed");
+                            record_shopping_list_skill("success");
+                            let prompt =
+                                Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_shopping_list",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(e) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_shopping_list_skill("error");
+                            tracing::warn!(error = %e, "shopping list skill failed, falling back to chat");
                         }
                     }
                 }

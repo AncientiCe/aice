@@ -24,6 +24,9 @@ pub enum SkillId {
     Media,
     Memory,
     Computer,
+    Reminder,
+    Timer,
+    ShoppingList,
 }
 
 /// Request to perform an action; passed to the policy engine.
