@@ -64,6 +64,13 @@ pub struct OllamaLlmStream {
 }
 
 impl OllamaLlmStream {
+    const SHORT_REPLY_STYLE_PROMPT: &'static str =
+        "You are a private home voice assistant. Reply in 1-2 short sentences unless the user asks for detail.";
+    const PLAIN_SPOKEN_TEXT_RULE: &'static str =
+        "Output plain spoken text only. Do not use Markdown, bullet points, numbered lists, headings, code fences, tables, or emojis.";
+    const USER_OUTPUT_CONTRACT: &'static str =
+        "Output contract: respond in plain spoken text only. Never use markdown, bullets, numbered lists, headings, or code blocks.";
+
     pub fn new(
         base_url: String,
         model: String,
@@ -79,6 +86,39 @@ impl OllamaLlmStream {
             max_output_tokens,
             system_prompt,
         }
+    }
+
+    fn compose_system_prompt(&self, system_prompt_override: Option<&str>) -> Option<String> {
+        if let Some(override_prompt) = system_prompt_override {
+            return Some(override_prompt.to_string());
+        }
+        let base = self
+            .system_prompt
+            .as_deref()
+            .or({
+                if self.short_replies {
+                    Some(Self::SHORT_REPLY_STYLE_PROMPT)
+                } else {
+                    None
+                }
+            })
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        Some(match base {
+            Some(prompt) => format!("{}\n\n{}", prompt, Self::PLAIN_SPOKEN_TEXT_RULE),
+            None => Self::PLAIN_SPOKEN_TEXT_RULE.to_string(),
+        })
+    }
+
+    fn compose_user_message(
+        &self,
+        user_text: &str,
+        system_prompt_override: Option<&str>,
+    ) -> String {
+        if system_prompt_override.is_some() {
+            return user_text.to_string();
+        }
+        format!("{}\n\n{}", user_text, Self::USER_OUTPUT_CONTRACT)
     }
 }
 
@@ -108,31 +148,20 @@ impl LlmStream for OllamaLlmStream {
                 ]
             })
             .collect();
-        let prompt = system_prompt_override.or_else(|| {
-            self.system_prompt
-                .as_deref()
-                .or_else(|| {
-                    if self.short_replies {
-                        Some(
-                            "You are a private home voice assistant. Reply in 1-2 short sentences unless the user asks for detail.",
-                        )
-                    } else {
-                        None
-                    }
-                })
-        });
+        let prompt = self.compose_system_prompt(system_prompt_override);
         if let Some(prompt) = prompt {
             messages.insert(
                 0,
                 ChatMessage {
                     role: "system".to_string(),
-                    content: prompt.to_string(),
+                    content: prompt,
                 },
             );
         }
+        let user_message = self.compose_user_message(user_text, system_prompt_override);
         messages.push(ChatMessage {
             role: "user".to_string(),
-            content: user_text.to_string(),
+            content: user_message,
         });
         let body = ChatRequest {
             model: self.model.clone(),
@@ -180,5 +209,85 @@ impl LlmStream for OllamaLlmStream {
             drop(tx);
         });
         Ok(Box::new(ReceiverStream(rx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OllamaLlmStream;
+
+    #[test]
+    fn compose_system_prompt_adds_plain_text_rule_for_short_replies() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("You are concise.".to_string()),
+        );
+        let prompt = llm
+            .compose_system_prompt(None)
+            .expect("prompt should be present");
+        assert!(prompt.contains("You are concise."));
+        assert!(prompt.contains("Do not use Markdown"));
+    }
+
+    #[test]
+    fn compose_system_prompt_keeps_override_unchanged() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("ignored".to_string()),
+        );
+        let prompt = llm
+            .compose_system_prompt(Some("classification only"))
+            .expect("override prompt should be present");
+        assert_eq!(prompt, "classification only");
+    }
+
+    #[test]
+    fn compose_system_prompt_adds_plain_text_rule_even_without_short_replies() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            false,
+            64,
+            Some("You are helpful.".to_string()),
+        );
+        let prompt = llm
+            .compose_system_prompt(None)
+            .expect("prompt should be present");
+        assert!(prompt.contains("You are helpful."));
+        assert!(prompt.contains("Do not use Markdown"));
+    }
+
+    #[test]
+    fn compose_user_message_adds_voice_contract_without_override() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("You are helpful.".to_string()),
+        );
+        let msg = llm.compose_user_message("tell me something", None);
+        assert!(msg.starts_with("tell me something"));
+        assert!(msg.contains("Output contract:"));
+        assert!(msg.contains("Never use markdown"));
+    }
+
+    #[test]
+    fn compose_user_message_keeps_original_with_override() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("You are helpful.".to_string()),
+        );
+        let msg = llm.compose_user_message("classify this", Some("override"));
+        assert_eq!(msg, "classify this");
     }
 }
