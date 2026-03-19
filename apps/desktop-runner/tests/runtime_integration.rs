@@ -171,6 +171,38 @@ impl LlmStream for RecordLlm {
     }
 }
 
+struct HistoryCountLlm {
+    last_history_len: Arc<std::sync::Mutex<usize>>,
+}
+
+impl HistoryCountLlm {
+    fn new() -> Self {
+        Self {
+            last_history_len: Arc::new(std::sync::Mutex::new(0)),
+        }
+    }
+
+    fn last_history_len(&self) -> usize {
+        *self.last_history_len.lock().unwrap()
+    }
+}
+
+#[async_trait]
+impl LlmStream for HistoryCountLlm {
+    async fn chat_stream(
+        &self,
+        _user_text: &str,
+        history: &[(String, String)],
+        _system_prompt_override: Option<&str>,
+    ) -> Result<
+        Box<dyn futures::Stream<Item = String> + Send + Unpin>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        *self.last_history_len.lock().unwrap() = history.len();
+        Ok(Box::new(stream::iter(vec!["ok".to_string()])))
+    }
+}
+
 struct MockTts {
     spoken: Vec<String>,
     raw_pcm: Vec<Vec<u8>>,
@@ -1006,6 +1038,66 @@ async fn runtime_continuous_streams_silent_chunks_after_voice_starts() {
 }
 
 #[tokio::test]
+async fn runtime_continuous_higher_silence_threshold_increases_completion_time() {
+    async fn run_once(speech_end_silence_ms: u64) -> std::time::Duration {
+        let mut config = Config::default();
+        config.audio.turn_window_ms = 3000;
+        config.audio.chunk_timeout_ms = 20;
+        config.audio.speech_end_silence_ms = speech_end_silence_ms;
+        config.audio.idle_sleep_ms = 1;
+        let mut runtime = DesktopRuntime::new(config);
+        let mut capture = ScriptedCapture::with_chunk_count(1, 320);
+        let mut stt = QueueStt::new(vec!["hello"]);
+        let llm = MockLlm("ok");
+        let mut tts = MockTts::new();
+        let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+        let started = std::time::Instant::now();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runtime.run_continuous(
+                &mut capture,
+                &mut stt,
+                &llm,
+                &mut tts,
+                ContinuousRunOptions {
+                    search: None::<&MockSearch>,
+                    cancel_rx: rx,
+                    max_turns: Some(1),
+                    skills: SkillRunContext {
+                        intent_classifier: None,
+                        weather_skill: None,
+                        time_skill: None,
+                        distance_skill: None,
+                        smart_home_skill: None,
+                        assistant_skill: None,
+                        media_skill: None,
+                        memory_skill: None,
+                        computer_skill: None,
+                        resolved_location: None,
+                        memory: None,
+                        policy: None,
+                    },
+                },
+            ),
+        )
+        .await
+        .expect("runtime should complete")
+        .expect("runtime error");
+        started.elapsed()
+    }
+
+    let low = run_once(20).await;
+    let high = run_once(140).await;
+    assert!(
+        high > low + std::time::Duration::from_millis(80),
+        "higher silence threshold should take longer; low={:?} high={:?}",
+        low,
+        high
+    );
+}
+
+#[tokio::test]
 async fn runtime_ignores_recent_assistant_echo_without_wake_phrase() {
     let mut config = Config::default();
     config.wake_word.enabled = true;
@@ -1541,4 +1633,49 @@ async fn chat_turn_with_memory_appends_and_persists_history() {
     assert_eq!(history[0].1, "hello");
     assert_eq!(history[1].0, "tell me something");
     assert_eq!(history[1].1, "Here you go.");
+}
+
+#[tokio::test]
+async fn chat_turn_caps_history_to_two_recent_turns_for_llm() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("latest question".to_string());
+    let llm = HistoryCountLlm::new();
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::Chat);
+    let limits = core_config::MemoryConfig::default();
+    let mut store = MemoryStore::new(&limits);
+    store.push_turn("u1", "a1");
+    store.push_turn("u2", "a2");
+    store.push_turn("u3", "a3");
+    store.push_turn("u4", "a4");
+    let memory = Arc::new(Mutex::new(store));
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: Some(Arc::clone(&memory)),
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(
+        llm.last_history_len(),
+        2,
+        "chat path should pass only two most recent turns into LLM history"
+    );
 }

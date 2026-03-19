@@ -10,6 +10,13 @@ Core flow is built for low latency:
 Detailed timing logs and dated benchmark tables are maintained in:
 [docs/benchmarks/turn-timings.md](docs/benchmarks/turn-timings.md)
 
+Latest benchmark snapshot (2026-03-19 UTC):
+
+| Timestamp (UTC) | Query | mic_to_stt_ms | speech_voiced_ms | stt_ms | endpointing_wait_ms | llm_ms | journey_ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2026-03-19T07:45:35.308592Z | what's the weather? | 2133 | 865 | 170 | 1098 | 1891 | 5208 |
+| 2026-03-19T07:45:54.466796Z | what's the weather in Rome? | 2630 | 1261 | 144 | 1225 | 1555 | 5429 |
+
 No cloud lock-in is required for the runtime loop. You run it on your own machine.
 
 License: Apache-2.0 (see [LICENSE](LICENSE)).

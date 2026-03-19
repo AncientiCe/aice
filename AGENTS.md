@@ -96,6 +96,14 @@ Fix any failure before marking the task complete.
 
 ---
 
+## 10. Benchmark Logging Discipline
+
+- Whenever you run latency benchmarks or review `turn_timing` logs, append the results to **`docs/benchmarks/turn-timings.md`**.
+- Every benchmark entry must include an explicit **UTC timestamp** from the log and the measured timing fields (at minimum: `mic_to_stt_ms`, `stt_ms`, `llm_ms`, `tts_ms`, `journey_ms`; include new fields when available).
+- Keep the benchmark table/history up to date in git so each change has a traceable before/after timing record.
+
+---
+
 ## Quick Reference
 
 | Rule | Action |
@@ -108,4 +116,5 @@ Fix any failure before marking the task complete.
 | No dead code | No unused variables, dead code, or `#[allow(dead_code)]` |
 | No mocks | No mocks; use real impls, integration tests, or explicit test doubles |
 | No placeholders | No placeholders ever; only real implementations |
+| Benchmark logging | Every timing run/log review must be appended to `docs/benchmarks/turn-timings.md` with UTC timestamp |
 | System impact | Consider callers, storage, API, sync, outbox, observability |

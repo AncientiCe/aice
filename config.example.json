@@ -3,17 +3,17 @@
   "model": "llama3.2",
   "llm": {
     "short_replies": true,
-    "max_output_tokens": 96,
+    "max_output_tokens": 48,
     "system_prompt": null
   },
   "pod_bind": "0.0.0.0:8765",
   "audio": {
     "input_device": null,
     "output_device": null,
-    "chunk_timeout_ms": 250,
+    "chunk_timeout_ms": 80,
     "turn_window_ms": 1200,
     "idle_sleep_ms": 20,
-    "speech_end_silence_ms": 300,
+    "speech_end_silence_ms": 180,
     "speech_rms_threshold": 0.008
   },
   "stt": {

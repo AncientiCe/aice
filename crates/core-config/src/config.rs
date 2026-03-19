@@ -140,7 +140,7 @@ impl Default for AudioRuntimeConfig {
 }
 
 fn default_audio_chunk_timeout_ms() -> u64 {
-    250
+    80
 }
 
 fn default_audio_turn_window_ms() -> u64 {
@@ -152,7 +152,7 @@ fn default_audio_idle_sleep_ms() -> u64 {
 }
 
 fn default_audio_speech_end_silence_ms() -> u64 {
-    300
+    180
 }
 
 fn default_audio_speech_rms_threshold() -> f32 {
@@ -260,7 +260,7 @@ fn default_short_replies() -> bool {
 }
 
 fn default_max_output_tokens() -> u32 {
-    96
+    48
 }
 
 /// Assistant profile: persona, units, and user identity for prompt context.
@@ -472,10 +472,11 @@ mod tests {
         assert_eq!(config.ollama_url, "http://127.0.0.1:11434");
         assert_eq!(config.model, "llama3.2");
         assert!(config.llm.short_replies);
-        assert_eq!(config.llm.max_output_tokens, 96);
+        assert_eq!(config.llm.max_output_tokens, 48);
         assert_eq!(config.pod_bind, "0.0.0.0:8765");
+        assert_eq!(config.audio.chunk_timeout_ms, 80);
         assert_eq!(config.audio.turn_window_ms, 1500);
-        assert_eq!(config.audio.speech_end_silence_ms, 300);
+        assert_eq!(config.audio.speech_end_silence_ms, 180);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
         assert_eq!(
             config.stt.whisper_model_path,
@@ -523,7 +524,7 @@ mod tests {
         );
         assert_eq!(config.pod_bind, "0.0.0.0:9000");
         assert_eq!(config.audio.turn_window_ms, 900);
-        assert_eq!(config.audio.speech_end_silence_ms, 300);
+        assert_eq!(config.audio.speech_end_silence_ms, 180);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
         assert_eq!(config.stt.whisper_model_path, "models/custom-whisper.bin");
         assert_eq!(config.tts.piper_model_path, "models/custom-piper.onnx");
