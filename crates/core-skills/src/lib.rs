@@ -33,6 +33,9 @@ pub use skill_time::{MockTimeSkill, OpenMeteoTimeSkill, TimeResult, TimeSkill, T
 pub use skill_timer::{
     MacOsClockTimerSkill, MockTimerSkill, TimerResult, TimerSkill, TimerSkillError,
 };
+pub use skill_volume::{
+    MacOsVolumeSkill, MockVolumeSkill, VolumeResult, VolumeSkill, VolumeSkillError,
+};
 pub use skill_weather::{
     MockWeatherSkill, OpenMeteoWeatherSkill, ResolvedLocation, WeatherResult, WeatherSkill,
     WeatherSkillError,

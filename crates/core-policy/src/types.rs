@@ -28,6 +28,7 @@ pub enum SkillId {
     Message,
     Timer,
     ShoppingList,
+    Volume,
 }
 
 /// Request to perform an action; passed to the policy engine.

@@ -13,7 +13,7 @@ use core_observability::{
     record_message_skill, record_policy_denied, record_reminder_skill, record_shopping_list_skill,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
     record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
-    record_turn_time_to_first_audio, record_weather_skill, Stage,
+    record_turn_time_to_first_audio, record_volume_skill, record_weather_skill, Stage,
 };
 use core_orchestrator::{
     parse_need_search, IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink,
@@ -23,8 +23,8 @@ use core_search::ExternalSearch;
 use core_skills::{
     AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill, DistanceSkillError, MediaSkill,
     MemorySkill, MessageSkill, MessageSkillError, ReminderSkill, ResolvedLocation,
-    ShoppingListSkill, SmartHomeSkill, TimeResult, TimeSkill, TimerSkill, WeatherResult,
-    WeatherSkill,
+    ShoppingListSkill, SmartHomeSkill, TimeResult, TimeSkill, TimerSkill, VolumeSkill,
+    WeatherResult, WeatherSkill,
 };
 use core_vad::WakeWordGate;
 use std::fs;
@@ -215,6 +215,7 @@ pub struct SkillRunContext<'a> {
     pub message_skill: Option<&'a dyn MessageSkill>,
     pub timer_skill: Option<&'a dyn TimerSkill>,
     pub shopping_list_skill: Option<&'a dyn ShoppingListSkill>,
+    pub volume_skill: Option<&'a dyn VolumeSkill>,
     pub resolved_location: Option<&'a ResolvedLocation>,
     /// Shared memory store for conversation history and profile; used for chat history and post-turn save.
     pub memory: Option<Arc<tokio::sync::Mutex<MemoryStore>>>,
@@ -311,6 +312,7 @@ impl DesktopRuntime {
             message_skill: None,
             timer_skill: None,
             shopping_list_skill: None,
+            volume_skill: None,
             resolved_location: None,
             memory: None,
             policy: None,
@@ -626,6 +628,7 @@ impl DesktopRuntime {
         let message_skill = skills.message_skill;
         let timer_skill = skills.timer_skill;
         let shopping_list_skill = skills.shopping_list_skill;
+        let volume_skill = skills.volume_skill;
         let resolved_location = skills.resolved_location;
         let memory = skills.memory.as_ref();
         if user_text.trim().is_empty() {
@@ -775,6 +778,7 @@ impl DesktopRuntime {
                         IntentDecision::SkillMessage { .. } => "skill_message",
                         IntentDecision::SkillTimer { .. } => "skill_timer",
                         IntentDecision::SkillShoppingList { .. } => "skill_shopping_list",
+                        IntentDecision::SkillVolume { .. } => "skill_volume",
                     });
                     d
                 }
@@ -825,6 +829,10 @@ impl DesktopRuntime {
                 IntentDecision::SkillShoppingList { action, items, .. } => (
                     "skill_shopping_list",
                     action.clone().or_else(|| items.clone()),
+                ),
+                IntentDecision::SkillVolume { action, level } => (
+                    "skill_volume",
+                    action.clone().or_else(|| level.map(|l| l.to_string())),
                 ),
                 IntentDecision::Chat => return true,
             };
@@ -1201,6 +1209,48 @@ impl DesktopRuntime {
                             timings.skill = Some(skill_started_at.elapsed());
                             record_computer_skill("error");
                             tracing::warn!(error = %e, "computer skill failed, falling back to chat");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Volume skill path.
+        if let IntentDecision::SkillVolume { action, level } = &decision {
+            if let Some(skill) = volume_skill {
+                if !action_allowed(&decision) {
+                    record_policy_denied("skill_volume");
+                    tracing::warn!("policy denied volume skill, falling back to chat");
+                } else {
+                    let t0 = Instant::now();
+                    match skill.execute(action.as_deref(), *level).await {
+                        Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
+                            if let Some(p) = policy {
+                                p.record_action();
+                            }
+                            info!(skill = "volume", "skill_executed");
+                            record_volume_skill("success");
+                            let prompt =
+                                Self::skill_answer_prompt(&user_text, &result.to_prompt_context());
+                            let stream_outcome =
+                                Self::stream_llm_to_tts(llm, tts, cancel_rx, &prompt, None).await?;
+                            timings.llm_first_token = stream_outcome.llm_first_token_latency;
+                            timings.llm = Some(stream_outcome.llm_duration);
+                            timings.tts_first_audio = stream_outcome.tts_first_audio_latency;
+                            timings.tts = Some(stream_outcome.tts_duration);
+                            timings.tts_flush = Some(stream_outcome.tts_flush_duration);
+                            return Ok(Self::finish_turn(
+                                "skill_volume",
+                                stream_outcome.outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(e) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_volume_skill("error");
+                            tracing::warn!(error = %e, "volume skill failed, falling back to chat");
                         }
                     }
                 }

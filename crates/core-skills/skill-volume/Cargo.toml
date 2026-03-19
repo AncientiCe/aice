@@ -1,0 +1,13 @@
+[package]
+name = "skill-volume"
+version = "0.1.0"
+edition = "2021"
+description = "Volume skill: control macOS output volume"
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "1.0"
+metrics = "0.21"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

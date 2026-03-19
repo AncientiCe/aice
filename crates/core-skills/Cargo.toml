@@ -16,4 +16,5 @@ skill-shopping-list = { path = "skill-shopping-list" }
 skill-smart-home = { path = "skill-smart-home" }
 skill-time = { path = "skill-time" }
 skill-timer = { path = "skill-timer" }
+skill-volume = { path = "skill-volume" }
 skill-weather = { path = "skill-weather" }

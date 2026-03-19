@@ -8,8 +8,8 @@ use core_observability::{
 };
 use core_skills::{
     HueSmartHomeSkill, MacOsClockTimerSkill, MacOsMessagesSkill, MacOsMusicSkill,
-    MacOsNotesShoppingListSkill, MacOsReminderSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill,
-    OpenMeteoWeatherSkill, SqliteMemorySkill,
+    MacOsNotesShoppingListSkill, MacOsReminderSkill, MacOsVolumeSkill, OpenMeteoDistanceSkill,
+    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, SqliteMemorySkill,
 };
 use core_stt::WhisperSttStream;
 use core_tts::PiperTtsSink;
@@ -144,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let message_skill = MacOsMessagesSkill::new();
     let timer_skill = MacOsClockTimerSkill::new();
     let shopping_list_skill = MacOsNotesShoppingListSkill::new();
+    let volume_skill = MacOsVolumeSkill::new();
     let piper = PiperTtsSink::new(Path::new(&config.tts.piper_model_path))?;
     let mut tts = RoutingTtsSink::new(piper, Some(egress_tx));
 
@@ -173,6 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 message_skill: Some(&message_skill),
                 timer_skill: Some(&timer_skill),
                 shopping_list_skill: Some(&shopping_list_skill),
+                volume_skill: Some(&volume_skill),
                 resolved_location: resolved_location.as_ref(),
                 memory: memory_store.clone(),
                 policy: None,

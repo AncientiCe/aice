@@ -22,6 +22,6 @@ pub use metrics::{
     record_policy_denied, record_reminder_skill, record_session_start, record_shopping_list_skill,
     record_shutdown_signal, record_smart_home_execute, record_smart_home_execute_duration,
     record_smart_home_skill, record_speech_voiced_duration, record_stage_duration,
-    record_time_skill, record_timer_skill, record_turn_time_to_first_audio, record_weather_skill,
-    register_metrics, Stage,
+    record_time_skill, record_timer_skill, record_turn_time_to_first_audio, record_volume_skill,
+    record_weather_skill, register_metrics, Stage,
 };

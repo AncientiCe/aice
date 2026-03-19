@@ -94,13 +94,13 @@ impl MacOsComputerSkill {
         program: &str,
         args: &[String],
     ) -> Result<Option<String>, ComputerSkillError> {
+        if self.dry_run {
+            return Ok(None);
+        }
         if !cfg!(target_os = "macos") {
             return Err(ComputerSkillError::Execution(
                 "computer skill is only available on macOS".to_string(),
             ));
-        }
-        if self.dry_run {
-            return Ok(None);
         }
 
         let output = Command::new(program)
