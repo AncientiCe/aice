@@ -1,8 +1,8 @@
 # Skill: Computer
 
-**Crate:** `skill-computer` · **Impl:** `MockComputerSkill` (no concrete implementation yet)
+**Crate:** `skill-computer` · **Impl:** `MacOsComputerSkill`
 
-**Purpose:** Trait and type scaffolding for computer-use actions — controlling browsers, launching apps, and interacting with files. Defines the interface that a real automation backend (e.g. AppleScript, Accessibility API, or headless browser) will fulfil.
+**Purpose:** Open apps, files, and URLs on macOS from LLM-classified voice commands such as "open GoLand", "open Apple TV", and "open github.com".
 
 ---
 
@@ -10,35 +10,32 @@
 
 ```mermaid
 sequenceDiagram
-    participant LLM as Intent / LLM
-    participant Skill as ComputerSkill
-    participant OS as OS Automation (future: AppleScript / Accessibility API)
+    participant User as User
+    participant Classifier as IntentClassifierLLM
+    participant Runtime as DesktopRuntime
+    participant Policy as PolicyEngine
+    participant Skill as MacOsComputerSkill
+    participant OS as macOS_open_command
     participant Composer as AnswerComposerLLM
 
-    LLM->>Skill: execute(action, target)
+    User->>Classifier: "open goland"
+    Classifier-->>Runtime: SkillComputer{computer_action,computer_target}
+    Runtime->>Policy: allow_action(skill_computer,RiskTier::High)
+    Policy-->>Runtime: Allow
+    Runtime->>Skill: execute(action,target)
 
-    alt action involves browser
-        Skill->>OS: open / navigate browser to target URL or search
-        OS-->>Skill: success or error
-    else action involves app launch
-        Skill->>OS: open application <target>
-        OS-->>Skill: success or error
-    else action involves file operation
-        Skill->>OS: file system action on <target>
-        OS-->>Skill: success or error
-    else action not recognised
-        Skill-->>LLM: Err(Execution)
+    alt target is URL or action implies browser
+        Skill->>OS: open "https://..."
+    else target is absolute/home path
+        Skill->>OS: open "/path/or/~path"
+    else app launch
+        Skill->>OS: open -a "AppName"
     end
 
-    alt OS permission denied
-        Skill-->>LLM: Err(PermissionDenied)
-    end
-    alt OS operation times out
-        Skill-->>LLM: Err(Timeout)
-    end
-
-    Skill-->>Composer: ComputerResult { summary, action_done, output }
-    Composer-->>LLM: to_prompt_context() injected into answer prompt
+    OS-->>Skill: success or stderr
+    Skill-->>Runtime: ComputerResult{summary,action_done,output}
+    Runtime->>Composer: skill_answer_prompt(user_text,to_prompt_context)
+    Composer-->>User: concise spoken confirmation
 ```
 
 ---
@@ -47,28 +44,37 @@ sequenceDiagram
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | `Option<&str>` | Automation action to perform (e.g. `"open browser"`, `"launch app"`, `"create file"`). |
-| `target` | `Option<&str>` | Subject of the action (URL, app name, file path, etc.). |
+| `action` | `Option<&str>` | Optional action hint from classifier. URL-intent actions include `open_url`, `browse`, `open_browser`. |
+| `target` | `Option<&str>` | Required target to open. Interpreted as URL, path, or app name. |
 
 ## Outputs
 
-`ComputerResult { summary, action_done: bool, output: Option<String> }`
+`ComputerResult { summary: String, action_done: String, output: Option<String> }`
+
+- `summary`: Short human-readable status used in voice prompt context.
+- `action_done`: Executed command representation (for example `open -a "GoLand"`).
+- `output`: Optional stdout from `open` when present.
 
 ## Failure Paths
 
 | Error | Cause |
 |-------|-------|
-| `Execution` | Automation backend fails or action is not recognised. |
-| `PermissionDenied` | OS denies Accessibility or Automation permission. |
-| `Timeout` | Automation operation does not complete within the allowed time. |
+| `Execution` | Missing/empty target, non-macOS platform, `open` command failure, or other execution error. |
+| `PermissionDenied` | Reserved error variant for policy/platform permission failures; not emitted directly by current implementation. |
+| `Timeout` | Reserved error variant; current implementation does not enforce a command timeout. |
 
 ## Notes
 
-- No concrete implementation exists yet; only `MockComputerSkill` is available.
-- When a real implementation is added, update this document with the actual automation calls and permission requirements.
+- URL targets: explicit schemes (`http://`, `https://`) are used as-is.
+- URL actions without scheme (for example `github.com` with `open_browser`) are normalized to `https://github.com`.
+- File targets: paths starting with `/` or `~/` are opened directly.
+- App targets: all other targets are treated as app names and launched via `open -a`.
 
 ## Metrics
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| *(none instrumented yet — add when implementing this skill)* | — | — |
+| `computer_skill_execute_total` | Counter | `result` (`success` or `error`) |
+| `computer_skill_errors_total` | Counter | `kind` (`ComputerSkillError` display string) |
+| `computer_skill_execute_duration_seconds` | Histogram | none |
+| `voice_computer_skill_total` | Counter | `result` (`success` or `error`) |

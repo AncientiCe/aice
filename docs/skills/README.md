@@ -5,7 +5,7 @@ One document per skill. Each document contains a Mermaid journey diagram, input/
 | Skill | Crate | Status | Document |
 |-------|-------|--------|----------|
 | Assistant | `skill-assistant` | Trait only (no macOS impl) | [assistant.md](assistant.md) |
-| Computer | `skill-computer` | Trait only (no impl) | [computer.md](computer.md) |
+| Computer | `skill-computer` | `MacOsComputerSkill` | [computer.md](computer.md) |
 | Distance | `skill-distance` | `OpenMeteoDistanceSkill` | [distance.md](distance.md) |
 | Media | `skill-media` | `MacOsMusicSkill` | [media.md](media.md) |
 | Message | `skill-message` | `MacOsMessagesSkill` | [message.md](message.md) |

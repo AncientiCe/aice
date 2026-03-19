@@ -1,7 +1,9 @@
 //! Computer-use skill: browser, apps, files.
 
+mod macos_computer;
 mod types;
 
+pub use macos_computer::MacOsComputerSkill;
 pub use types::{ComputerResult, ComputerSkill, ComputerSkillError};
 
 /// Mock implementation for tests.
