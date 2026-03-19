@@ -5,7 +5,9 @@
 pub use skill_assistant::{
     AssistantItem, AssistantResult, AssistantSkill, AssistantSkillError, MockAssistantSkill,
 };
-pub use skill_computer::{ComputerResult, ComputerSkill, ComputerSkillError, MockComputerSkill};
+pub use skill_computer::{
+    ComputerResult, ComputerSkill, ComputerSkillError, MacOsComputerSkill, MockComputerSkill,
+};
 pub use skill_distance::{
     DistanceResult, DistanceSkill, DistanceSkillError, MockDistanceSkill, OpenMeteoDistanceSkill,
 };

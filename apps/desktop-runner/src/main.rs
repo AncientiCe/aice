@@ -7,9 +7,9 @@ use core_observability::{init_json_logging, register_metrics};
 use core_observability::{record_memory_load, record_memory_load_duration};
 use core_search::HttpSearchProvider;
 use core_skills::{
-    HueSmartHomeSkill, MacOsClockTimerSkill, MacOsMessagesSkill, MacOsMusicSkill,
-    MacOsNotesShoppingListSkill, MacOsReminderSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill,
-    OpenMeteoWeatherSkill, SqliteMemorySkill,
+    HueSmartHomeSkill, MacOsClockTimerSkill, MacOsComputerSkill, MacOsMessagesSkill,
+    MacOsMusicSkill, MacOsNotesShoppingListSkill, MacOsReminderSkill, OpenMeteoDistanceSkill,
+    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, SqliteMemorySkill,
 };
 use core_stt::WhisperSttStream;
 use core_tts::PiperTtsSink;
@@ -99,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let intent_classifier = LlmIntentClassifier::new(&llm);
     let reminder_skill = MacOsReminderSkill::new();
+    let computer_skill = MacOsComputerSkill::new();
     let message_skill = MacOsMessagesSkill::new();
     let timer_skill = MacOsClockTimerSkill::new();
     let shopping_list_skill = MacOsNotesShoppingListSkill::new();
@@ -142,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 assistant_skill: None,
                 media_skill: media_skill.as_ref().map(|s| s as _),
                 memory_skill: memory_skill.as_ref().map(|s| s as _),
-                computer_skill: None,
+                computer_skill: Some(&computer_skill),
                 reminder_skill: Some(&reminder_skill),
                 message_skill: Some(&message_skill),
                 timer_skill: Some(&timer_skill),

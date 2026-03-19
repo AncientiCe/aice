@@ -331,3 +331,11 @@ Full per-skill journeys, inputs, outputs, failure paths, and metrics are in [`do
 **Purpose:** Message sending is handled by a dedicated skill and documented in its own skill doc.
 
 Full skill journey, inputs, outputs, failure paths, and metrics are documented at [message](../skills/message.md).
+
+---
+
+## 14. Computer Skill (Open Apps, Files, URLs)
+
+**Purpose:** Computer-use actions are handled by a dedicated skill and documented in its own skill doc.
+
+Full skill journey, inputs, outputs, failure paths, and metrics are documented at [computer](../skills/computer.md).
