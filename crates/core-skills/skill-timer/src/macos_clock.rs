@@ -196,11 +196,14 @@ impl MacOsClockTimerSkill {
 
     /// Start a Clock.app timer for `seconds` using System Events UI scripting.
     ///
-    /// Steps:
-    /// 1. Activate Clock and wait for its window.
-    /// 2. Click the "Timer" toolbar button.
-    /// 3. Set hours / minutes / seconds via the three input fields.
-    /// 4. Click "Start".
+    /// The script uses two strategies in order:
+    ///
+    /// **Strategy A – text fields**: some macOS versions expose three
+    /// `AXTextField` controls inside `group 1` of the timer window.
+    ///
+    /// **Strategy B – keyboard digit entry**: click the timer display area
+    /// (coordinates captured *before* entering `tell window 1`, which avoids
+    /// the "Can't get window 1 of window 1" -1728 error) then type HHMMSS.
     ///
     /// Returns `TimerSkillError::Execution` with a descriptive message on any
     /// failure, including a hint about Accessibility permissions when relevant.
@@ -213,21 +216,23 @@ impl MacOsClockTimerSkill {
         let mins = (seconds % 3600) / 60;
         let secs = seconds % 60;
 
-        // Build the AppleScript. Braces that must appear literally in the
-        // AppleScript source are doubled ({{ → {, }} → }) by format!.
+        // Pre-format as zero-padded 2-digit strings in Rust so the AppleScript
+        // does not need to do string manipulation.
+        let hrs_str = format!("{hrs:02}");
+        let mins_str = format!("{mins:02}");
+        let secs_str = format!("{secs:02}");
+        let digits = format!("{hrs_str}{mins_str}{secs_str}");
+
+        // Braces that must appear literally in AppleScript are doubled
+        // ({{ → {, }} → }) by format!.
         let script = format!(
             r#"
-set timerHours to {hrs}
-set timerMinutes to {mins}
-set timerSeconds to {secs}
-
--- Step 1: open Clock
 tell application "Clock" to activate
 delay 0.7
 
 tell application "System Events"
     tell process "Clock"
-        -- Step 2: wait for the main window
+        -- Wait for the main window
         set wc to 0
         repeat until (exists window 1) or wc > 30
             delay 0.1
@@ -235,8 +240,7 @@ tell application "System Events"
         end repeat
         if wc >= 30 then error "Clock window did not open"
 
-        -- Step 3: click the Timer tab
-        -- Try by accessibility name first, fall back to positional index 4
+        -- Click the Timer toolbar tab (name first, index 4 as fallback)
         try
             click button "Timer" of toolbar of window 1
         on error
@@ -246,71 +250,59 @@ tell application "System Events"
                 error "Cannot find Timer tab in Clock toolbar"
             end try
         end try
-        delay 0.5
+        delay 0.6
 
-        -- Step 4: set the time via the three input fields (hours, minutes, seconds)
-        -- Clock's timer picker exposes three AXTextField controls inside a group.
-        -- We click each one, select-all its current value, then type the new one.
+        -- IMPORTANT: capture window bounds HERE, outside any `tell window 1`
+        -- block. Inside `tell window 1`, writing `window 1` would look for a
+        -- *child* window and raise error -1728.
+        set winPos to position of window 1
+        set winSz to size of window 1
+        set winCx to (((item 1 of winPos) + (item 1 of winSz) / 2) as integer)
+        -- Y: roughly the lower half of the content area (below the clock face)
+        set winPickerY to (((item 2 of winPos) + (item 2 of winSz) * 3 / 4) as integer)
+
+        -- Strategy A: text fields inside group 1 (works on some macOS versions)
+        set didSet to false
         tell window 1
             try
-                set hourField to text field 1 of group 1
-                set minuteField to text field 2 of group 1
-                set secondField to text field 3 of group 1
-
-                click hourField
+                set f1 to text field 1 of group 1
+                set f2 to text field 2 of group 1
+                set f3 to text field 3 of group 1
+                click f1
                 delay 0.1
                 keystroke "a" using command down
-                keystroke (timerHours as string)
-
-                click minuteField
+                keystroke "{hrs_str}"
+                click f2
                 delay 0.1
                 keystroke "a" using command down
-                keystroke (timerMinutes as string)
-
-                click secondField
+                keystroke "{mins_str}"
+                click f3
                 delay 0.1
                 keystroke "a" using command down
-                keystroke (timerSeconds as string)
-
+                keystroke "{secs_str}"
+                set didSet to true
             on error
-                -- Fallback: click the centre of the timer display area and
-                -- type the duration as a compact HHMMSS digit string.
-                -- The Clock picker fills right-to-left on digit keystrokes.
-                set winPos to position of window 1
-                set winSz to size of window 1
-                set cx to (item 1 of winPos) + (item 1 of winSz) / 2
-                set cy to (item 2 of winPos) + 140
-                click at {{cx as integer, cy as integer}}
-                delay 0.3
-
-                -- Clear existing value
-                repeat 6 times
-                    key code 51
-                    delay 0.05
-                end repeat
-
-                -- Type HHMMSS (leading-zero padded)
-                if timerHours < 10 then
-                    keystroke "0" & (timerHours as string)
-                else
-                    keystroke (timerHours as string)
-                end if
-                if timerMinutes < 10 then
-                    keystroke "0" & (timerMinutes as string)
-                else
-                    keystroke (timerMinutes as string)
-                end if
-                if timerSeconds < 10 then
-                    keystroke "0" & (timerSeconds as string)
-                else
-                    keystroke (timerSeconds as string)
-                end if
+                -- text fields not present on this macOS version; fall through
             end try
         end tell
 
-        delay 0.2
+        -- Strategy B: click the picker area then type HHMMSS digits.
+        -- Uses the pre-captured screen coordinates (no window 1 reference).
+        if not didSet then
+            click at {{winCx, winPickerY}}
+            delay 0.4
+            -- Clear any existing value first
+            repeat 6 times
+                key code 51
+                delay 0.05
+            end repeat
+            keystroke "{digits}"
+            delay 0.2
+        end if
 
-        -- Step 5: click Start
+        delay 0.3
+
+        -- Click Start
         try
             click button "Start" of window 1
         on error
