@@ -37,14 +37,13 @@ impl MacOsVolumeSkill {
     }
 
     fn run_osascript(&self, script: &str) -> Result<String, VolumeSkillError> {
+        if self.dry_run {
+            return Ok(String::new());
+        }
         if !cfg!(target_os = "macos") {
             return Err(VolumeSkillError::Execution(
                 "volume skill is only available on macOS".to_string(),
             ));
-        }
-
-        if self.dry_run {
-            return Ok(String::new());
         }
 
         let output = Command::new("osascript")

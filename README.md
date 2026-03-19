@@ -99,7 +99,7 @@ Defined in `.cargo/config.toml`:
 - `cargo aice-desktop` -> desktop-only runtime
 - `cargo aice-gateway` -> standalone pod transport service
 - `cargo aice-fmt` -> `cargo fmt --all -- --check`
-- `cargo aice-clippy` -> `cargo clippy --all-targets -- -D warnings`
+- `cargo aice-clippy` -> `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo aice-audit` -> dependency audit
 - `cargo aice-test` -> full test suite
 
