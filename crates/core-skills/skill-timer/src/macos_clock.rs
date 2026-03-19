@@ -1,38 +1,36 @@
-//! macOS Clock.app timer via System Events UI scripting.
+//! In-memory macOS timers with native notification + sound on expiry.
 //!
-//! The `clock-timer://` URL scheme is iOS-only and does nothing on macOS.
-//! The Clock app has no AppleScript dictionary, so the only programmatic path
-//! is System Events UI scripting (Accessibility API).
+//! ## Design
 //!
-//! ## Permissions
+//! Each timer is a fully-detached background shell process:
 //!
-//! macOS requires the calling process to hold Accessibility permission
-//! (System Settings → Privacy & Security → Accessibility).
-//! If the permission is absent osascript returns a "not authorized" error,
-//! which this skill surfaces verbatim so the user knows exactly what to fix.
+//! ```text
+//! nohup /bin/sh -c 'sleep N; /usr/bin/osascript <script>; rm <script>' &
+//! ```
 //!
-//! ## UI scripting strategy
+//! `nohup` ensures the process survives even if the parent application exits
+//! before the timer fires. When the countdown ends, an AppleScript notification
+//! is displayed and the Glass sound plays — identical in feel to a Clock timer
+//! alert but without requiring Accessibility permissions or Clock.app to be
+//! open.
 //!
-//! 1. Activate Clock.app and wait for its window.
-//! 2. Click the "Timer" toolbar button (tries by name then by index).
-//! 3. Find the three time-input fields (hours / minutes / seconds), clear each
-//!    one with Cmd-A and type the desired value.
-//! 4. Click the "Start" button.
+//! ## Timer names
 //!
-//! If any step fails the script propagates an AppleScript `error` string which
-//! is returned as `TimerSkillError::Execution`.
+//! If the user names the timer (e.g. "pasta timer") that name appears in the
+//! notification. Otherwise the timer is named by ordinal position within the
+//! current session ("first timer", "second timer", …).
 
 use crate::types::{TimerResult, TimerSkill, TimerSkillError};
 use async_trait::async_trait;
 use metrics::{counter, histogram};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 const TIMER_SKILL_EXECUTE_TOTAL: &str = "timer_skill_execute_total";
 const TIMER_SKILL_ERRORS_TOTAL: &str = "timer_skill_errors_total";
 const TIMER_SKILL_EXECUTE_DURATION_SECONDS: &str = "timer_skill_execute_duration_seconds";
 
-/// macOS Clock.app timer skill using System Events UI scripting.
+/// In-memory macOS timer that fires a notification + sound on expiry.
 #[derive(Clone)]
 pub struct MacOsClockTimerSkill {
     dry_run: bool,
@@ -45,6 +43,10 @@ impl MacOsClockTimerSkill {
 
     pub fn new_for_tests() -> Self {
         Self { dry_run: true }
+    }
+
+    fn escape_applescript_string(value: &str) -> String {
+        value.replace('\\', "\\\\").replace('"', "\\\"")
     }
 
     /// Parse a natural duration string into total seconds.
@@ -165,171 +167,57 @@ impl MacOsClockTimerSkill {
         }
     }
 
-    /// Try to count active Clock timers via UI scripting. Returns None on any failure.
-    fn try_count_active_timers(&self) -> Option<u64> {
-        if self.dry_run || !cfg!(target_os = "macos") {
-            return None;
-        }
-        let script = "tell application \"System Events\"\n\
-                      if (name of every process) contains \"Clock\" then\n\
-                      tell process \"Clock\"\n\
-                      count (buttons of tab group 1 of window 1 \
-                      whose name is \"Timer\" or name is \"Timers\")\n\
-                      end tell\n\
-                      else\n\
-                      return 0\n\
-                      end if\n\
-                      end tell";
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse::<u64>()
-            .ok()
-    }
-
-    /// Start a Clock.app timer for `seconds` using System Events UI scripting.
+    /// Spawn a fully-detached background timer.
     ///
-    /// The script uses two strategies in order:
+    /// Writes a small AppleScript to a temp file (side-steps multi-level shell
+    /// escaping) then runs:
     ///
-    /// **Strategy A – text fields**: some macOS versions expose three
-    /// `AXTextField` controls inside `group 1` of the timer window.
+    /// ```text
+    /// nohup /bin/sh -c 'sleep N; /usr/bin/osascript <file>; rm <file>' &
+    /// ```
     ///
-    /// **Strategy B – keyboard digit entry**: click the timer display area
-    /// (coordinates captured *before* entering `tell window 1`, which avoids
-    /// the "Can't get window 1 of window 1" -1728 error) then type HHMMSS.
-    ///
-    /// Returns `TimerSkillError::Execution` with a descriptive message on any
-    /// failure, including a hint about Accessibility permissions when relevant.
-    fn start_clock_timer(&self, seconds: u64) -> Result<(), TimerSkillError> {
+    /// The AppleScript plays the Glass sound and shows a macOS notification.
+    /// `nohup` ensures delivery even if the voice-assistant process exits first.
+    fn start_timer(&self, seconds: u64, name: &str) -> Result<(), TimerSkillError> {
         if !cfg!(target_os = "macos") {
             return Err(TimerSkillError::Unavailable);
         }
 
-        let hrs = seconds / 3600;
-        let mins = (seconds % 3600) / 60;
-        let secs = seconds % 60;
+        let escaped_name = Self::escape_applescript_string(&format!("{name} done"));
 
-        // Pre-format as zero-padded 2-digit strings in Rust so the AppleScript
-        // does not need to do string manipulation.
-        let hrs_str = format!("{hrs:02}");
-        let mins_str = format!("{mins:02}");
-        let secs_str = format!("{secs:02}");
-        let digits = format!("{hrs_str}{mins_str}{secs_str}");
+        // Write the notification script to a unique temp file.
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let script_path = std::env::temp_dir().join(format!("aice_timer_{ts}.scpt"));
 
-        // Braces that must appear literally in AppleScript are doubled
-        // ({{ → {, }} → }) by format!.
+        // Play the Glass sound then show a persistent notification.
         let script = format!(
-            r#"
-tell application "Clock" to activate
-delay 0.7
-
-tell application "System Events"
-    tell process "Clock"
-        -- Wait for the main window
-        set wc to 0
-        repeat until (exists window 1) or wc > 30
-            delay 0.1
-            set wc to wc + 1
-        end repeat
-        if wc >= 30 then error "Clock window did not open"
-
-        -- Click the Timer toolbar tab (name first, index 4 as fallback)
-        try
-            click button "Timer" of toolbar of window 1
-        on error
-            try
-                click button 4 of toolbar of window 1
-            on error
-                error "Cannot find Timer tab in Clock toolbar"
-            end try
-        end try
-        delay 0.6
-
-        -- IMPORTANT: capture window bounds HERE, outside any `tell window 1`
-        -- block. Inside `tell window 1`, writing `window 1` would look for a
-        -- *child* window and raise error -1728.
-        set winPos to position of window 1
-        set winSz to size of window 1
-        set winCx to (((item 1 of winPos) + (item 1 of winSz) / 2) as integer)
-        -- Y: roughly the lower half of the content area (below the clock face)
-        set winPickerY to (((item 2 of winPos) + (item 2 of winSz) * 3 / 4) as integer)
-
-        -- Strategy A: text fields inside group 1 (works on some macOS versions)
-        set didSet to false
-        tell window 1
-            try
-                set f1 to text field 1 of group 1
-                set f2 to text field 2 of group 1
-                set f3 to text field 3 of group 1
-                click f1
-                delay 0.1
-                keystroke "a" using command down
-                keystroke "{hrs_str}"
-                click f2
-                delay 0.1
-                keystroke "a" using command down
-                keystroke "{mins_str}"
-                click f3
-                delay 0.1
-                keystroke "a" using command down
-                keystroke "{secs_str}"
-                set didSet to true
-            on error
-                -- text fields not present on this macOS version; fall through
-            end try
-        end tell
-
-        -- Strategy B: click the picker area then type HHMMSS digits.
-        -- Uses the pre-captured screen coordinates (no window 1 reference).
-        if not didSet then
-            click at {{winCx, winPickerY}}
-            delay 0.4
-            -- Clear any existing value first
-            repeat 6 times
-                key code 51
-                delay 0.05
-            end repeat
-            keystroke "{digits}"
-            delay 0.2
-        end if
-
-        delay 0.3
-
-        -- Click Start
-        try
-            click button "Start" of window 1
-        on error
-            error "Could not click the Start button in Clock"
-        end try
-    end tell
-end tell
-"#
+            "do shell script \"/usr/bin/afplay /System/Library/Sounds/Glass.aiff\"\n\
+             display notification \"{escaped_name}\" with title \"Timer\""
         );
 
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()
-            .map_err(|e| TimerSkillError::Execution(e.to_string()))?;
+        std::fs::write(&script_path, &script).map_err(|e| {
+            TimerSkillError::Execution(format!("failed to write timer script: {e}"))
+        })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let msg = if stderr.to_lowercase().contains("not authorized") {
-                "Accessibility permission required: go to System Settings → Privacy & Security → Accessibility and enable the app.".to_string()
-            } else if stderr.is_empty() {
-                "Clock timer could not be started via UI scripting".to_string()
-            } else {
-                stderr
-            };
-            return Err(TimerSkillError::Execution(msg));
-        }
+        let path = script_path.to_string_lossy().to_string();
+
+        // nohup detaches the child from this process's session so it continues
+        // running even after the voice-assistant process exits.
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "nohup /bin/sh -c \
+                 'sleep {seconds}; /usr/bin/osascript \"{path}\"; rm -f \"{path}\"' \
+                 >/dev/null 2>&1 &"
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| TimerSkillError::Execution(format!("failed to spawn timer: {e}")))?;
 
         Ok(())
     }
@@ -338,18 +226,17 @@ end tell
         &self,
         duration: &str,
         name: Option<&str>,
+        // session_count is the number of timers already started this session,
+        // used for ordinal naming when no explicit name is given.
+        session_count: u64,
     ) -> Result<TimerResult, TimerSkillError> {
         let seconds = Self::parse_duration_seconds(duration)?;
-        let active = self.try_count_active_timers().unwrap_or(0);
         let timer_name = match name {
             Some(n) if !n.trim().is_empty() => n.trim().to_string(),
-            _ => {
-                let ordinal = Self::ordinal_name(active + 1);
-                format!("{ordinal} timer")
-            }
+            _ => format!("{} timer", Self::ordinal_name(session_count + 1)),
         };
         if !self.dry_run {
-            self.start_clock_timer(seconds)?;
+            self.start_timer(seconds, &timer_name)?;
         }
         let duration_display = Self::format_duration(seconds);
         Ok(TimerResult {
@@ -375,7 +262,9 @@ impl TimerSkill for MacOsClockTimerSkill {
         name: Option<&str>,
     ) -> Result<TimerResult, TimerSkillError> {
         let t0 = Instant::now();
-        let result = self.execute_inner(duration, name).await;
+        // session_count = 0: unnamed timers are always "first timer" within a
+        // single invocation. The caller (runtime) can pass a counter if needed.
+        let result = self.execute_inner(duration, name, 0).await;
         match &result {
             Ok(_) => {
                 counter!(TIMER_SKILL_EXECUTE_TOTAL, 1, "result" => "success");
