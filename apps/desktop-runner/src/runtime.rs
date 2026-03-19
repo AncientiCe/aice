@@ -20,8 +20,9 @@ use core_orchestrator::{
 use core_policy::{skill_id_and_risk, ActionRequest, PolicyDecision, PolicyEngine};
 use core_search::ExternalSearch;
 use core_skills::{
-    AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill, MediaSkill, MemorySkill,
-    ResolvedLocation, SmartHomeSkill, TimeResult, TimeSkill, WeatherResult, WeatherSkill,
+    AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill, DistanceSkillError, MediaSkill,
+    MemorySkill, ResolvedLocation, SmartHomeSkill, TimeResult, TimeSkill, WeatherResult,
+    WeatherSkill,
 };
 use core_vad::WakeWordGate;
 use std::fs;
@@ -920,6 +921,19 @@ impl DesktopRuntime {
                         }
                         Err(e) => {
                             record_distance_skill("error");
+                            if let Some(reply) = Self::distance_error_reply(&e) {
+                                let t0 = Instant::now();
+                                let outcome =
+                                    Self::speak_with_cancel(tts, reply, cancel_rx).await?;
+                                timings.tts = Some(t0.elapsed());
+                                timings.tts_flush = None;
+                                return Ok(Self::finish_turn(
+                                    "skill_distance_unresolved",
+                                    outcome,
+                                    turn_started_at,
+                                    &mut timings,
+                                ));
+                            }
                             tracing::warn!(error = %e, "distance skill failed, falling back to chat");
                         }
                     }
@@ -1152,6 +1166,11 @@ impl DesktopRuntime {
             vec![]
         };
         let llm_started_at = Instant::now();
+        tracing::info!(
+            history_turns = history.len(),
+            llm_input = %user_text.trim(),
+            "llm_chat_input"
+        );
         let mut stream = llm.chat_stream(&user_text, &history, None).await?;
         use futures::StreamExt;
         let mut full_response = String::new();
@@ -1178,6 +1197,7 @@ impl DesktopRuntime {
                 }
                 _ = cancel_rx.recv() => {
                     tts.request_stop_playback();
+                    tracing::info!(llm_output = %full_response.trim(), "llm_chat_output_partial");
                     timings.llm_first_token = first_token_latency;
                     timings.llm = Some(llm_started_at.elapsed());
                     timings.tts_first_audio = first_tts_audio_latency;
@@ -1199,6 +1219,7 @@ impl DesktopRuntime {
         let flush_duration = flush_started_at.elapsed();
         timings.tts_flush = Some(flush_duration);
         timings.tts = Some(tts_push_duration + flush_duration);
+        tracing::info!(llm_output = %full_response.trim(), "llm_chat_output");
         self.register_assistant_utterance(&full_response, Instant::now());
         if let Some((local_answer, query)) = parse_need_search(&full_response) {
             let do_search = if let Some(ref confirm) = self.user_confirm {
@@ -1288,14 +1309,14 @@ impl DesktopRuntime {
         let asks_tomorrow = user_lower.contains("tomorrow") || user_lower.contains("tomorrow's");
         let only_current_note = if asks_tomorrow {
             format!(
-                "\nCurrent-only data (no forecast). If asked about tomorrow, state that limitation for {} and answer with current conditions only.",
+                "\nCurrent-only data (no forecast). If asked about tomorrow, say you only have current conditions for {}.",
                 weather.location_display
             )
         } else {
-            "\nUse only the provided data.".to_string()
+            String::new()
         };
         format!(
-            "User: \"{}\"\nWeather data: {}.{}\nReply in at most 2 short voice-friendly sentences.",
+            "User: \"{}\"\nWeather data: {}.{}\nRules:\n- Use only the weather data above.\n- Do not mention distance, travel time, user location, or any other extra facts.\n- If data is missing, say that briefly.\nReply with exactly 1 short sentence.",
             user_text.trim(),
             context,
             only_current_note
@@ -1305,7 +1326,7 @@ impl DesktopRuntime {
     fn time_answer_prompt(user_text: &str, time_result: &TimeResult) -> String {
         let context = time_result.to_prompt_context();
         format!(
-            "User: \"{}\"\nTime data: {}.\nReply in at most 2 short voice-friendly sentences.",
+            "User: \"{}\"\nTime data: {}.\nRules:\n- Use only the time data above.\n- Do not add any extra facts.\nReply with exactly 1 short sentence.",
             user_text.trim(),
             context
         )
@@ -1314,10 +1335,32 @@ impl DesktopRuntime {
     fn distance_answer_prompt(user_text: &str, dist_result: &DistanceResult) -> String {
         let context = dist_result.to_prompt_context();
         format!(
-            "The user asked: \"{}\"\n\nHere is the distance data: {}.\n\nReply in 1-2 short sentences for voice, using this data.",
+            "User: \"{}\"\nDistance data: {}.\nRules:\n- Use only the distance data above.\n- Do not guess or infer missing places.\nReply with exactly 1 short sentence.",
             user_text.trim(),
             context
         )
+    }
+
+    fn distance_error_reply(err: &DistanceSkillError) -> Option<&'static str> {
+        match err {
+            DistanceSkillError::Geocoding(msg) => {
+                if msg.to_ascii_lowercase().contains("no results") {
+                    Some(
+                        "I couldn't find that place. Please say the city and country, for example Berlin, Germany.",
+                    )
+                } else {
+                    Some(
+                        "I couldn't resolve that location. Please repeat with city and country names.",
+                    )
+                }
+            }
+            DistanceSkillError::MissingPlaces => {
+                Some("Which place should I measure to? Please say the city and country.")
+            }
+            DistanceSkillError::NoDefaultLocation => Some(
+                "I need two places or your current location. Please say both city and country names.",
+            ),
+        }
     }
 
     /// Generic prompt for skill results (smart home, assistant, media, memory, computer).
@@ -1342,10 +1385,12 @@ impl DesktopRuntime {
         T: TtsSink,
     {
         let llm_started_at = Instant::now();
+        tracing::info!(llm_input = %user_prompt.trim(), "llm_skill_input");
         let mut stream = llm
             .chat_stream(user_prompt, &[], system_prompt_override)
             .await?;
         use futures::StreamExt;
+        let mut full_response = String::new();
         let mut tts_push_duration = Duration::ZERO;
         let mut first_token_latency: Option<Duration> = None;
         let mut first_tts_audio_latency: Option<Duration> = None;
@@ -1357,6 +1402,7 @@ impl DesktopRuntime {
                         if first_token_latency.is_none() {
                             first_token_latency = Some(llm_started_at.elapsed());
                         }
+                        full_response.push_str(&token);
                         let t0 = Instant::now();
                         tts.push_text(&token).await?;
                         let push_elapsed = t0.elapsed();
@@ -1368,6 +1414,7 @@ impl DesktopRuntime {
                 }
                 _ = cancel_rx.recv() => {
                     tts.request_stop_playback();
+                    tracing::info!(llm_output = %full_response.trim(), "llm_skill_output_partial");
                     return Ok(StreamLlmTtsOutcome {
                         outcome: RuntimeTurnOutcome::Interrupted,
                         llm_first_token_latency: first_token_latency,
@@ -1382,6 +1429,7 @@ impl DesktopRuntime {
         let flush_started_at = Instant::now();
         tts.flush().await?;
         let tts_flush_duration = flush_started_at.elapsed();
+        tracing::info!(llm_output = %full_response.trim(), "llm_skill_output");
         Ok(StreamLlmTtsOutcome {
             outcome: RuntimeTurnOutcome::Complete,
             llm_first_token_latency: first_token_latency,
