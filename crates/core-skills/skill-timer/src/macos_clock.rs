@@ -192,10 +192,19 @@ impl MacOsClockTimerSkill {
             .as_millis();
         let script_path = std::env::temp_dir().join(format!("aice_timer_{ts}.scpt"));
 
-        // Play the Glass sound then show a persistent notification.
+        // Play the Glass sound then show a dialog.
+        //
+        // `display notification` from a detached nohup process requires the
+        // osascript binary to have notification permission in System Settings,
+        // which most users haven't granted — it silently drops the notification.
+        //
+        // `display dialog` bypasses the Notification Center entirely: it
+        // renders a window directly via the Script Editor GUI context and is
+        // always visible from any process. `giving up after 60` auto-dismisses
+        // if the user doesn't click OK within a minute.
         let script = format!(
             "do shell script \"/usr/bin/afplay /System/Library/Sounds/Glass.aiff\"\n\
-             display notification \"{escaped_name}\" with title \"Timer\""
+             display dialog \"\u{23F0} {escaped_name}\" buttons {{\"OK\"}} giving up after 60"
         );
 
         std::fs::write(&script_path, &script).map_err(|e| {
