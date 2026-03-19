@@ -315,59 +315,19 @@ flowchart LR
 - **Inputs:** Raw STT transcript only (no transcript rewrite step).
 - **Outputs:** No semantic remapping of user speech; reduced false-positive command execution.
 
-### 11.2 Ctrl+C hard shutdown path
-
-**Purpose:** Ensure Ctrl+C always shuts down the app and runs media-skill cleanup (including forced-exit path).
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant OS as Console Signal
-    participant Handler as ctrlc handler
-    participant Main as desktop-runner main
-    participant Runtime
-    participant Media as MacOsMusicSkill
-    User->>OS: Ctrl+C
-    OS->>Handler: SIGINT/CTRL_C_EVENT
-    Handler->>Media: shutdown()
-    Handler->>Main: shutdown channel send
-    Main->>Runtime: cancel broadcast
-    Main->>Media: shutdown()
-    Main->>Main: process::exit(0)
-    User->>OS: Ctrl+C again (fallback)
-    OS->>Handler: second signal
-    Handler->>Media: shutdown()
-    Handler->>Main: process::exit(130)
-```
-
-**Notes:**
-- **Inputs:** OS Ctrl+C signal.
-- **Outputs:** deterministic shutdown request on first signal and browser-tree cleanup; force-exit on second signal after browser-tree cleanup.
-- **Failure paths:** if graceful shutdown hangs, second Ctrl+C still executes cleanup and then terminates process.
-
 ---
 
 ## 12. Reminder, Timer, and Shopping List Skills
 
-**Purpose:** Three dedicated macOS-native skills that create Reminders entries, start Clock timers, and manage shopping lists in Apple Notes — all via AppleScript (`osascript`). Each follows the full intent-classifier → policy-gate → skill-execute → LLM-answer pipeline.
-
-```mermaid
-flowchart LR
-    userText[UserText] --> classifier[IntentClassifierLLM]
-    classifier --> parse[parse_intent]
-    parse --> policy[PolicyEngine]
-    policy --> reminderSkill[MacOsReminderSkill]
-    policy --> timerSkill[MacOsClockTimerSkill]
-    policy --> shoppingSkill[MacOsNotesShoppingListSkill]
-    reminderSkill --> remindersApp[macOS Reminders.app]
-    timerSkill --> clockApp[macOS Clock.app]
-    shoppingSkill --> notesApp[Apple Notes.app]
-    reminderSkill --> result[StructuredSkillResult]
-    timerSkill --> result
-    shoppingSkill --> result
-    result --> answer[AnswerComposerLLM]
-    answer --> tts[TTSOutput]
-```
+**Purpose:** These skills are part of the standard intent → policy → skill → answer-composer flow and are documented in their dedicated skill docs.
 
 Full per-skill journeys, inputs, outputs, failure paths, and metrics are in [`docs/skills/`](../skills/README.md):
 [reminder](../skills/reminder.md) · [timer](../skills/timer.md) · [shopping-list](../skills/shopping-list.md)
+
+---
+
+## 13. Message Skill (Contacts Cache + iMessage)
+
+**Purpose:** Message sending is handled by a dedicated skill and documented in its own skill doc.
+
+Full skill journey, inputs, outputs, failure paths, and metrics are documented at [message](../skills/message.md).

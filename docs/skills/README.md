@@ -8,6 +8,7 @@ One document per skill. Each document contains a Mermaid journey diagram, input/
 | Computer | `skill-computer` | Trait only (no impl) | [computer.md](computer.md) |
 | Distance | `skill-distance` | `OpenMeteoDistanceSkill` | [distance.md](distance.md) |
 | Media | `skill-media` | `MacOsMusicSkill` | [media.md](media.md) |
+| Message | `skill-message` | `MacOsMessagesSkill` | [message.md](message.md) |
 | Memory | `skill-memory` | `SqliteMemorySkill` | [memory.md](memory.md) |
 | Reminder | `skill-reminder` | `MacOsReminderSkill` | [reminder.md](reminder.md) |
 | Shopping List | `skill-shopping-list` | `MacOsNotesShoppingListSkill` | [shopping-list.md](shopping-list.md) |

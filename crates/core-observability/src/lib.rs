@@ -17,7 +17,7 @@ pub use metrics::{
     record_memory_fact_store, record_memory_fact_store_duration, record_memory_load,
     record_memory_load_duration, record_memory_load_error, record_memory_save,
     record_memory_save_duration, record_memory_save_error, record_memory_skill,
-    record_pod_audio_frame, record_pod_connection, record_pod_disconnect,
+    record_message_skill, record_pod_audio_frame, record_pod_connection, record_pod_disconnect,
     record_pod_egress_queue_drop, record_pod_egress_send_error, record_pod_tts_chunk,
     record_policy_denied, record_reminder_skill, record_session_start, record_shopping_list_skill,
     record_shutdown_signal, record_smart_home_execute, record_smart_home_execute_duration,

@@ -45,6 +45,7 @@ Fix any failure before marking the task complete.
 - When **modifying a skill** (changing behaviour, adding parameters, updating error variants, or adding/changing metrics), update its `docs/skills/<skill-name>.md` to reflect the new behaviour.
 - Also add or update the skill's entry in `docs/skills/README.md`.
 - The diagram must show the **full journey** from intent classification through to the answer composer — including all external API calls, platform integrations, and failure branches.
+- Keep architecture docs focused on system-level flows. Skill-specific behaviour, platform details, and failure matrices should live in `docs/skills/*`; `docs/architecture/README.md` should link to those files instead of duplicating full skill docs.
 
 ---
 
