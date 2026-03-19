@@ -6,9 +6,9 @@ use core_config::Config;
 use core_orchestrator::{IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink};
 use core_search::MockSearch;
 use core_skills::{
-    DistanceResult, MediaResult, MockDistanceSkill, MockMediaSkill, MockSmartHomeSkill,
-    MockTimeSkill, MockWeatherSkill, ResolvedLocation, SmartHomeResult, TimeResult, WeatherResult,
-    WeatherSkill,
+    DistanceResult, DistanceSkillError, MediaResult, MockDistanceSkill, MockMediaSkill,
+    MockSmartHomeSkill, MockTimeSkill, MockWeatherSkill, ResolvedLocation, SmartHomeResult,
+    TimeResult, WeatherResult, WeatherSkill,
 };
 use desktop_runner::{
     ContinuousRunOptions, DesktopRuntime, MemoryStore, RuntimeTurnOutcome, SkillRunContext,
@@ -1323,6 +1323,17 @@ async fn intent_weather_uses_default_location_and_streams_llm_answer() {
         "LLM should receive weather context in prompt, got: {}",
         llm.last_user_text()
     );
+    assert!(
+        llm.last_user_text().contains("Do not mention distance"),
+        "Weather prompt should forbid unrelated facts, got: {}",
+        llm.last_user_text()
+    );
+    assert!(
+        llm.last_user_text()
+            .contains("Reply with exactly 1 short sentence"),
+        "Weather prompt should force short output, got: {}",
+        llm.last_user_text()
+    );
     assert!(tts.text().contains("14 degrees"));
 }
 
@@ -1533,6 +1544,117 @@ async fn intent_distance_destination_only_uses_default_origin() {
         llm.last_user_text()
     );
     assert!(tts.text().contains("344"));
+}
+
+#[tokio::test]
+async fn intent_distance_geocoding_no_results_speaks_short_clarification_without_llm() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("how far is Barely?".to_string());
+    let distance_skill =
+        MockDistanceSkill::err(DistanceSkillError::Geocoding("no results".to_string()));
+    let resolved = default_resolved_location();
+    let llm = FailLlm;
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillDistance {
+        origin: None,
+        destination: Some("Barely".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: Some(&distance_skill),
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        resolved_location: Some(&resolved),
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    let spoken = tts.text();
+    assert!(
+        spoken.to_lowercase().contains("couldn't find that place"),
+        "Expected a short clarification for unresolved geocoding, got: {}",
+        spoken
+    );
+    assert!(
+        spoken.to_lowercase().contains("city and country"),
+        "Expected explicit retry guidance, got: {}",
+        spoken
+    );
+    assert!(
+        spoken.len() <= 120,
+        "Clarification should stay short for voice; got {} chars: {}",
+        spoken.len(),
+        spoken
+    );
+}
+
+#[tokio::test]
+async fn intent_distance_missing_places_speaks_short_clarification_without_llm() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("how far is Ouch's book?".to_string());
+    let distance_skill = MockDistanceSkill::err(DistanceSkillError::MissingPlaces);
+    let resolved = default_resolved_location();
+    let llm = FailLlm;
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillDistance {
+        origin: None,
+        destination: None,
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: Some(&distance_skill),
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        resolved_location: Some(&resolved),
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    let spoken = tts.text();
+    assert!(
+        spoken.to_lowercase().contains("which place"),
+        "Expected a short clarification prompt, got: {}",
+        spoken
+    );
+    assert!(
+        spoken.to_lowercase().contains("city and country"),
+        "Expected explicit retry guidance, got: {}",
+        spoken
+    );
+    assert!(
+        spoken.len() <= 120,
+        "Clarification should stay short for voice; got {} chars: {}",
+        spoken.len(),
+        spoken
+    );
 }
 
 #[tokio::test]
