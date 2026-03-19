@@ -90,7 +90,7 @@ cargo aice-test
 3. Start the primary runtime:
 
 ```bash
-cargo aice-pod-voice
+cargo aice-desktop
 ```
 
 ## Canonical cargo commands
