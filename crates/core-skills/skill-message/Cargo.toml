@@ -1,0 +1,13 @@
+[package]
+name = "skill-message"
+version = "0.1.0"
+edition = "2021"
+description = "Message skill: resolve contacts and send iMessages on macOS"
+
+[dependencies]
+async-trait = "0.1"
+thiserror = "1.0"
+metrics = "0.21"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

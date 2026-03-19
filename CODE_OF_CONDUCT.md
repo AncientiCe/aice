@@ -25,7 +25,7 @@ Examples of unacceptable behavior include:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to `conduct@ancientice.com`. All complaints will be reviewed and
+reported to `iCe@icegaming.org`. All complaints will be reviewed and
 investigated promptly and fairly.
 
 Project maintainers are responsible for clarifying and enforcing standards of

@@ -54,6 +54,11 @@ pub enum IntentDecision {
         items: Option<String>,
         when: Option<String>,
     },
+    /// Message: send an iMessage to a contact.
+    SkillMessage {
+        contact: Option<String>,
+        message: Option<String>,
+    },
 }
 
 /// Parse LLM classifier output into IntentDecision. Expects a single JSON object.
@@ -108,6 +113,10 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         shopping_items: Option<String>,
         #[serde(default)]
         shopping_when: Option<String>,
+        #[serde(default)]
+        message_contact: Option<String>,
+        #[serde(default)]
+        message_text: Option<String>,
     }
     let p: Payload = serde_json::from_str(s).map_err(ParseIntentError::Json)?;
     let intent = p.intent.to_lowercase().trim().to_string();
@@ -154,6 +163,10 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             action: opt_str(p.shopping_action),
             items: opt_str(p.shopping_items),
             when: opt_str(p.shopping_when),
+        }),
+        "skill_message" | "message" => Ok(IntentDecision::SkillMessage {
+            contact: opt_str(p.message_contact),
+            message: opt_str(p.message_text),
         }),
         _ => Ok(IntentDecision::Chat),
     }
@@ -336,6 +349,19 @@ mod tests {
                 assert!(when.is_none());
             }
             _ => panic!("expected SkillShoppingList"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_message() {
+        let raw = r#"{"intent":"skill_message","message_contact":"my wife","message_text":"How are you?"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillMessage { contact, message } => {
+                assert_eq!(contact.as_deref(), Some("my wife"));
+                assert_eq!(message.as_deref(), Some("How are you?"));
+            }
+            _ => panic!("expected SkillMessage"),
         }
     }
 }

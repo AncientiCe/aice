@@ -13,6 +13,9 @@ pub use skill_media::{MacOsMusicSkill, MediaResult, MediaSkill, MediaSkillError,
 pub use skill_memory::{
     MemoryFact, MemoryResult, MemorySkill, MemorySkillError, MockMemorySkill, SqliteMemorySkill,
 };
+pub use skill_message::{
+    MacOsMessagesSkill, MessageResult, MessageSkill, MessageSkillError, MockMessageSkill,
+};
 pub use skill_reminder::{
     MacOsReminderSkill, MockReminderSkill, ReminderResult, ReminderSkill, ReminderSkillError,
 };

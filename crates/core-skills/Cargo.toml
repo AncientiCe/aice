@@ -9,6 +9,7 @@ skill-assistant = { path = "skill-assistant" }
 skill-computer = { path = "skill-computer" }
 skill-distance = { path = "skill-distance" }
 skill-media = { path = "skill-media" }
+skill-message = { path = "skill-message" }
 skill-memory = { path = "skill-memory" }
 skill-reminder = { path = "skill-reminder" }
 skill-shopping-list = { path = "skill-shopping-list" }

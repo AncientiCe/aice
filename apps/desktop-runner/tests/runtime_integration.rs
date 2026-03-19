@@ -6,9 +6,9 @@ use core_config::Config;
 use core_orchestrator::{IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink};
 use core_search::MockSearch;
 use core_skills::{
-    DistanceResult, DistanceSkillError, MediaResult, MockDistanceSkill, MockMediaSkill,
-    MockSmartHomeSkill, MockTimeSkill, MockWeatherSkill, ResolvedLocation, SmartHomeResult,
-    TimeResult, WeatherResult, WeatherSkill,
+    DistanceResult, DistanceSkillError, MediaResult, MessageResult, MessageSkillError,
+    MockDistanceSkill, MockMediaSkill, MockMessageSkill, MockSmartHomeSkill, MockTimeSkill,
+    MockWeatherSkill, ResolvedLocation, SmartHomeResult, TimeResult, WeatherResult, WeatherSkill,
 };
 use desktop_runner::{
     ContinuousRunOptions, DesktopRuntime, MemoryStore, RuntimeTurnOutcome, SkillRunContext,
@@ -582,6 +582,7 @@ async fn runtime_continuous_loop_processes_multiple_turns() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -649,6 +650,7 @@ async fn runtime_continuous_loop_activates_on_wake_phrase() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -713,6 +715,7 @@ async fn runtime_continuous_loop_allows_computer_pause_when_gate_closed() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -765,6 +768,7 @@ async fn runtime_continuous_loop_counts_interruption() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -815,6 +819,7 @@ async fn runtime_continuous_flushes_partial_turn_on_timeout() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -867,6 +872,7 @@ async fn runtime_continuous_waits_for_silence_threshold_before_flush() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -925,6 +931,7 @@ async fn runtime_continuous_does_not_flush_on_turn_window_while_voice_continues(
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -985,6 +992,7 @@ async fn runtime_continuous_flushes_after_silent_audio_pause() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -1044,6 +1052,7 @@ async fn runtime_continuous_streams_silent_chunks_after_voice_starts() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -1102,6 +1111,7 @@ async fn runtime_continuous_higher_silence_threshold_increases_completion_time()
                         memory_skill: None,
                         computer_skill: None,
                         reminder_skill: None,
+                        message_skill: None,
                         timer_skill: None,
                         shopping_list_skill: None,
                         resolved_location: None,
@@ -1173,6 +1183,7 @@ async fn runtime_ignores_recent_assistant_echo_without_wake_phrase() {
                 memory_skill: None,
                 computer_skill: None,
                 reminder_skill: None,
+                message_skill: None,
                 timer_skill: None,
                 shopping_list_skill: None,
                 resolved_location: None,
@@ -1236,6 +1247,7 @@ async fn runtime_does_not_ignore_stop_as_echo() {
                     memory_skill: None,
                     computer_skill: None,
                     reminder_skill: None,
+                    message_skill: None,
                     timer_skill: None,
                     shopping_list_skill: None,
                     resolved_location: None,
@@ -1292,6 +1304,7 @@ async fn runtime_requires_wake_phrase_for_each_turn_when_wake_enabled() {
                 memory_skill: None,
                 computer_skill: None,
                 reminder_skill: None,
+                message_skill: None,
                 timer_skill: None,
                 shopping_list_skill: None,
                 resolved_location: None,
@@ -1345,6 +1358,7 @@ async fn intent_weather_uses_default_location_and_streams_llm_answer() {
         memory_skill: None,
         computer_skill: None,
         reminder_skill: None,
+        message_skill: None,
         timer_skill: None,
         shopping_list_skill: None,
         resolved_location: Some(&resolved),
@@ -1410,6 +1424,7 @@ async fn intent_weather_with_explicit_location_calls_skill_with_location() {
         memory_skill: None,
         computer_skill: None,
         reminder_skill: None,
+        message_skill: None,
         timer_skill: None,
         shopping_list_skill: None,
         resolved_location: Some(&resolved),
@@ -1447,6 +1462,7 @@ async fn intent_chat_routes_to_chat_path() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -1484,6 +1500,7 @@ async fn no_intent_classifier_uses_chat_path() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -1529,6 +1546,7 @@ async fn intent_time_uses_default_location_and_streams_llm_answer() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
@@ -1580,6 +1598,7 @@ async fn intent_distance_destination_only_uses_default_origin() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
@@ -1629,6 +1648,7 @@ async fn intent_distance_geocoding_no_results_speaks_short_clarification_without
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
@@ -1687,6 +1707,7 @@ async fn intent_distance_missing_places_speaks_short_clarification_without_llm()
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
@@ -1752,6 +1773,7 @@ async fn intent_smart_home_uses_skill_and_streams_llm_answer() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None,
@@ -1799,6 +1821,7 @@ async fn chat_turn_with_memory_appends_and_persists_history() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -1853,6 +1876,7 @@ async fn chat_turn_caps_history_to_two_recent_turns_for_llm() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -1905,6 +1929,7 @@ async fn intent_reminder_no_when_routes_to_skill() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: Some(&reminder_skill),
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -1956,6 +1981,7 @@ async fn intent_reminder_with_when_routes_to_skill() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: Some(&reminder_skill),
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -2010,6 +2036,7 @@ async fn intent_timer_named_routes_to_skill() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: Some(&timer_skill),
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -2029,6 +2056,146 @@ async fn intent_timer_named_routes_to_skill() {
             .contains(&timer_result.to_prompt_context()),
         "LLM should receive timer context, got: {}",
         llm.last_user_text()
+    );
+}
+
+// --- Message skill tests ---
+
+#[tokio::test]
+async fn intent_message_routes_to_skill_and_speaks_deterministic_success() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("ask my wife how she is".to_string());
+    let message_result = MessageResult {
+        summary: "Sent iMessage to Jane Doe".to_string(),
+        recipient_name: "Jane Doe".to_string(),
+        recipient_handle: "+15551234567".to_string(),
+        message: "How are you?".to_string(),
+    };
+    let message_skill = MockMessageSkill::ok(message_result.clone());
+    let llm = FailLlm;
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        contact: Some("my wife".to_string()),
+        message: Some("How are you?".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: Some(&message_skill),
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(tts.text(), "Sent your message to Jane Doe.");
+}
+
+#[tokio::test]
+async fn intent_message_contact_not_found_speaks_deterministic_apology() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("ask my wife how she is".to_string());
+    let message_skill =
+        MockMessageSkill::err(MessageSkillError::ContactNotFound("my wife".to_string()));
+    let llm = FailLlm;
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        contact: Some("my wife".to_string()),
+        message: Some("How are you?".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: Some(&message_skill),
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(tts.text(), "I'm sorry, I couldn't tell who 'your wife' is.");
+}
+
+#[tokio::test]
+async fn intent_message_send_failed_speaks_deterministic_error_without_llm() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("ask my wife how she is".to_string());
+    let message_skill = MockMessageSkill::err(MessageSkillError::SendFailed(
+        "service unavailable".to_string(),
+    ));
+    let llm = FailLlm;
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        contact: Some("my wife".to_string()),
+        message: Some("How are you?".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: Some(&message_skill),
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(
+        tts.text(),
+        "I'm sorry, I couldn't send an iMessage to 'your wife' right now."
     );
 }
 
@@ -2062,6 +2229,7 @@ async fn intent_timer_unnamed_routes_to_skill() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: Some(&timer_skill),
         shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
@@ -2119,6 +2287,7 @@ async fn intent_shopping_list_add_routes_to_skill() {
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
         reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
         timer_skill: None::<&dyn core_skills::TimerSkill>,
         shopping_list_skill: Some(&shopping_skill),
         resolved_location: None::<&ResolvedLocation>,

@@ -57,6 +57,7 @@ const VOICE_MEDIA_SKILL_TOTAL: &str = "voice_media_skill_total";
 const VOICE_MEMORY_SKILL_TOTAL: &str = "voice_memory_skill_total";
 const VOICE_COMPUTER_SKILL_TOTAL: &str = "voice_computer_skill_total";
 const VOICE_REMINDER_SKILL_TOTAL: &str = "voice_reminder_skill_total";
+const VOICE_MESSAGE_SKILL_TOTAL: &str = "voice_message_skill_total";
 const VOICE_TIMER_SKILL_TOTAL: &str = "voice_timer_skill_total";
 const VOICE_SHOPPING_LIST_SKILL_TOTAL: &str = "voice_shopping_list_skill_total";
 const VOICE_POLICY_DENIED_TOTAL: &str = "voice_policy_denied_total";
@@ -109,6 +110,7 @@ pub fn register_metrics() {
     counter!(VOICE_MEMORY_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_COMPUTER_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_REMINDER_SKILL_TOTAL, 0, "result" => "unknown");
+    counter!(VOICE_MESSAGE_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_TIMER_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_SHOPPING_LIST_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_POLICY_DENIED_TOTAL, 0, "reason" => "unknown");
@@ -289,6 +291,11 @@ pub fn record_computer_skill(result: &str) {
 /// Record reminder skill result (success or error).
 pub fn record_reminder_skill(result: &str) {
     counter!(VOICE_REMINDER_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record message skill result (success or error).
+pub fn record_message_skill(result: &str) {
+    counter!(VOICE_MESSAGE_SKILL_TOTAL, 1, "result" => result.to_string());
 }
 
 /// Record timer skill result (success or error).

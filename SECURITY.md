@@ -8,7 +8,7 @@ Security fixes are prioritized for the latest release branch and `main`.
 
 Please do not open public issues for potential vulnerabilities.
 
-Report security concerns privately to `security@ancientice.com` with:
+Report security concerns privately to `iCe@icegaming.org` with:
 
 - Affected version or commit SHA
 - Reproduction steps or proof of concept

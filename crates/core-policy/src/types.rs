@@ -25,6 +25,7 @@ pub enum SkillId {
     Memory,
     Computer,
     Reminder,
+    Message,
     Timer,
     ShoppingList,
 }

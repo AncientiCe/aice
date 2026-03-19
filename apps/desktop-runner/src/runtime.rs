@@ -10,7 +10,7 @@ use core_observability::{
     record_media_skill, record_memory_fact_recall, record_memory_fact_recall_duration,
     record_memory_fact_store, record_memory_fact_store_duration, record_memory_save,
     record_memory_save_duration, record_memory_save_error, record_memory_skill,
-    record_policy_denied, record_reminder_skill, record_shopping_list_skill,
+    record_message_skill, record_policy_denied, record_reminder_skill, record_shopping_list_skill,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
     record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
     record_turn_time_to_first_audio, record_weather_skill, Stage,
@@ -22,8 +22,9 @@ use core_policy::{skill_id_and_risk, ActionRequest, PolicyDecision, PolicyEngine
 use core_search::ExternalSearch;
 use core_skills::{
     AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill, DistanceSkillError, MediaSkill,
-    MemorySkill, ReminderSkill, ResolvedLocation, ShoppingListSkill, SmartHomeSkill, TimeResult,
-    TimeSkill, TimerSkill, WeatherResult, WeatherSkill,
+    MemorySkill, MessageSkill, MessageSkillError, ReminderSkill, ResolvedLocation,
+    ShoppingListSkill, SmartHomeSkill, TimeResult, TimeSkill, TimerSkill, WeatherResult,
+    WeatherSkill,
 };
 use core_vad::WakeWordGate;
 use std::fs;
@@ -211,6 +212,7 @@ pub struct SkillRunContext<'a> {
     pub memory_skill: Option<&'a dyn MemorySkill>,
     pub computer_skill: Option<&'a dyn ComputerSkill>,
     pub reminder_skill: Option<&'a dyn ReminderSkill>,
+    pub message_skill: Option<&'a dyn MessageSkill>,
     pub timer_skill: Option<&'a dyn TimerSkill>,
     pub shopping_list_skill: Option<&'a dyn ShoppingListSkill>,
     pub resolved_location: Option<&'a ResolvedLocation>,
@@ -306,6 +308,7 @@ impl DesktopRuntime {
             memory_skill: None,
             computer_skill: None,
             reminder_skill: None,
+            message_skill: None,
             timer_skill: None,
             shopping_list_skill: None,
             resolved_location: None,
@@ -620,6 +623,7 @@ impl DesktopRuntime {
         let memory_skill = skills.memory_skill;
         let computer_skill = skills.computer_skill;
         let reminder_skill = skills.reminder_skill;
+        let message_skill = skills.message_skill;
         let timer_skill = skills.timer_skill;
         let shopping_list_skill = skills.shopping_list_skill;
         let resolved_location = skills.resolved_location;
@@ -768,6 +772,7 @@ impl DesktopRuntime {
                         IntentDecision::SkillMemory { .. } => "skill_memory",
                         IntentDecision::SkillComputer { .. } => "skill_computer",
                         IntentDecision::SkillReminder { .. } => "skill_reminder",
+                        IntentDecision::SkillMessage { .. } => "skill_message",
                         IntentDecision::SkillTimer { .. } => "skill_timer",
                         IntentDecision::SkillShoppingList { .. } => "skill_shopping_list",
                     });
@@ -813,6 +818,9 @@ impl DesktopRuntime {
                     ("skill_computer", action.clone().or_else(|| target.clone()))
                 }
                 IntentDecision::SkillReminder { title, .. } => ("skill_reminder", title.clone()),
+                IntentDecision::SkillMessage { contact, message } => {
+                    ("skill_message", contact.clone().or_else(|| message.clone()))
+                }
                 IntentDecision::SkillTimer { name, .. } => ("skill_timer", name.clone()),
                 IntentDecision::SkillShoppingList { action, items, .. } => (
                     "skill_shopping_list",
@@ -1243,6 +1251,72 @@ impl DesktopRuntime {
         }
 
         // Timer skill path.
+        if let IntentDecision::SkillMessage { contact, message } = &decision {
+            if let Some(skill) = message_skill {
+                if !action_allowed(&decision) {
+                    record_policy_denied("skill_message");
+                    tracing::warn!("policy denied message skill, falling back to chat");
+                } else {
+                    let contact_hint = contact.as_deref().unwrap_or(&user_text);
+                    let message_text = message.as_deref().unwrap_or(&user_text);
+                    let t0 = Instant::now();
+                    match skill.execute(contact_hint, message_text).await {
+                        Ok(result) => {
+                            timings.skill = Some(t0.elapsed());
+                            if let Some(p) = policy {
+                                p.record_action();
+                            }
+                            info!(skill = "message", "skill_executed");
+                            record_message_skill("success");
+                            let spoken =
+                                format!("Sent your message to {}.", result.recipient_name.trim());
+                            let tts_started = Instant::now();
+                            let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                            timings.tts = Some(tts_started.elapsed());
+                            return Ok(Self::finish_turn(
+                                "skill_message",
+                                outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(MessageSkillError::ContactNotFound(desc)) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_message_skill("error");
+                            let friendly = Self::apology_contact_desc(&desc);
+                            let spoken =
+                                format!("I'm sorry, I couldn't tell who '{}' is.", friendly);
+                            let tts_started = Instant::now();
+                            let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                            timings.tts = Some(tts_started.elapsed());
+                            return Ok(Self::finish_turn(
+                                "skill_message_contact_not_found",
+                                outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                        Err(e) => {
+                            timings.skill = Some(t0.elapsed());
+                            record_message_skill("error");
+                            tracing::warn!(error = %e, "message skill failed");
+                            let spoken = Self::message_error_reply(contact_hint, &e);
+                            let tts_started = Instant::now();
+                            let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
+                            timings.tts = Some(tts_started.elapsed());
+                            return Ok(Self::finish_turn(
+                                "skill_message_error",
+                                outcome,
+                                turn_started_at,
+                                &mut timings,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Timer skill path.
         if let IntentDecision::SkillTimer { duration, name } = &decision {
             if let Some(skill) = timer_skill {
                 if !action_allowed(&decision) {
@@ -1541,6 +1615,38 @@ impl DesktopRuntime {
             DistanceSkillError::NoDefaultLocation => Some(
                 "I need two places or your current location. Please say both city and country names.",
             ),
+        }
+    }
+
+    fn apology_contact_desc(desc: &str) -> String {
+        let trimmed = desc.trim();
+        if let Some(rest) = trimmed
+            .to_ascii_lowercase()
+            .strip_prefix("my ")
+            .map(|_| &trimmed[3..])
+        {
+            return format!("your {}", rest.trim());
+        }
+        trimmed.to_string()
+    }
+
+    fn message_error_reply(contact_hint: &str, err: &MessageSkillError) -> String {
+        let contact = Self::apology_contact_desc(contact_hint);
+        match err {
+            MessageSkillError::ContactNotFound(desc) => {
+                let friendly = Self::apology_contact_desc(desc);
+                format!("I'm sorry, I couldn't tell who '{}' is.", friendly)
+            }
+            MessageSkillError::SendFailed(_) => format!(
+                "I'm sorry, I couldn't send an iMessage to '{}' right now.",
+                contact
+            ),
+            MessageSkillError::Unavailable => {
+                "I'm sorry, iMessage is not available on this device right now.".to_string()
+            }
+            MessageSkillError::Execution(_) => {
+                "I'm sorry, I couldn't send that iMessage right now.".to_string()
+            }
         }
     }
 
