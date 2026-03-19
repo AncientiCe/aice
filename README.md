@@ -29,7 +29,7 @@ License: Apache-2.0 (see [LICENSE](LICENSE)).
 - `pod-gateway` remains available as an advanced/internal transport service.
 - Hardware direction: Signal Pod is the target device.
 - M5Stack ATOM Echo is supported as an experimental test device.
-- Skills are pluggable by design (`core-skills`), including macOS Music.app control and smart-home integrations.
+- Skills are pluggable by design (`core-skills`); see the [skills catalog](docs/skills/README.md).
 - Recommended host for home deployments: Mac mini on macOS.
 
 ## Stability and support matrix
@@ -130,18 +130,12 @@ tar -xzf aice-v0.1.0-macos-arm64.tar.gz
 
 ## Skills
 
-Aice is designed for plug-and-play skills.
+Aice is designed for plug-and-play skills. See [docs/skills/README.md](docs/skills/README.md).
 
 Current notable integrations:
 
-- Music.app control on macOS (AppleScript bridge)
 - Smart-home lighting via Hue
 - Weather, time, distance, assistant, memory, and computer control skill interfaces
-
-## macOS Music.app
-
-The media skill uses native Music.app control via AppleScript on macOS.
-Authentication and Apple developer token setup are not required.
 
 **Host recommendation:** Run this project on a home Mac mini.
 
