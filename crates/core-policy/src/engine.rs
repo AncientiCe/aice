@@ -91,6 +91,9 @@ pub fn skill_id_and_risk(skill_name: &str) -> (SkillId, RiskTier) {
         "skill_media" => (SkillId::Media, RiskTier::Low),
         "skill_memory" => (SkillId::Memory, RiskTier::Low),
         "skill_computer" => (SkillId::Computer, RiskTier::High),
+        "skill_reminder" => (SkillId::Reminder, RiskTier::Medium),
+        "skill_timer" => (SkillId::Timer, RiskTier::Low),
+        "skill_shopping_list" => (SkillId::ShoppingList, RiskTier::Medium),
         _ => (SkillId::Weather, RiskTier::Low), // fallback
     }
 }

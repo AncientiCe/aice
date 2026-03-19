@@ -38,6 +38,16 @@ Fix any failure before marking the task complete.
 
 ---
 
+## 3.1. Skill Documentation
+
+- Every skill in `crates/core-skills/` must have a corresponding document in **`docs/skills/<skill-name>.md`**.
+- When **adding a new skill**, create `docs/skills/<skill-name>.md` following the structure in [`docs/skills/README.md`](docs/skills/README.md): header, full journey Mermaid diagram, inputs, outputs, failure paths, notes, and metrics.
+- When **modifying a skill** (changing behaviour, adding parameters, updating error variants, or adding/changing metrics), update its `docs/skills/<skill-name>.md` to reflect the new behaviour.
+- Also add or update the skill's entry in `docs/skills/README.md`.
+- The diagram must show the **full journey** from intent classification through to the answer composer — including all external API calls, platform integrations, and failure branches.
+
+---
+
 ## 4. No Plan Markdown Files
 
 - **Do not create `.md` files for plans** (e.g. `PLAN.md`, `TODO.md`, task plans).
@@ -96,7 +106,16 @@ Fix any failure before marking the task complete.
 
 ---
 
-## 10. Benchmark Logging Discipline
+## 10. No Manual STT Interpretation
+
+- **Never manually parse, pattern-match, or interpret STT (speech-to-text) transcripts** to derive intent, extract entities, or route commands.
+- **All intent classification must go through the LLM.** The raw transcript is passed to the LLM; the LLM decides intent, parameters, and skill routing.
+- Do not add keyword matching, regex patterns, string comparisons, or heuristics that short-circuit or bypass the LLM classification step.
+- This rule applies everywhere: intent classifiers, skill dispatchers, runtime routing, and any pre-processing of the transcript.
+
+---
+
+## 11. Benchmark Logging Discipline
 
 - Whenever you run latency benchmarks or review `turn_timing` logs, append the results to **`docs/benchmarks/turn-timings.md`**.
 - Every benchmark entry must include an explicit **UTC timestamp** from the log and the measured timing fields (at minimum: `mic_to_stt_ms`, `stt_ms`, `llm_ms`, `tts_ms`, `journey_ms`; include new fields when available).
@@ -111,10 +130,12 @@ Fix any failure before marking the task complete.
 | TDD | Tests first → see fail → implement → see pass |
 | Quality | `cargo fmt` \| `cargo clippy` \| `cargo audit` \| `cargo test` |
 | Docs | New user behaviour → diagram in `docs/architecture/README.md` |
+| Skill docs | New skill → `docs/skills/<name>.md`; modified skill → update that doc |
 | No plan files | No `.md` for plans; only real documentation |
 | Observability | New feature → add metrics; touched feature without metrics → add them |
 | No dead code | No unused variables, dead code, or `#[allow(dead_code)]` |
 | No mocks | No mocks; use real impls, integration tests, or explicit test doubles |
 | No placeholders | No placeholders ever; only real implementations |
+| No manual STT interpretation | Never parse/match STT transcripts manually; all intent classification goes through the LLM |
 | Benchmark logging | Every timing run/log review must be appended to `docs/benchmarks/turn-timings.md` with UTC timestamp |
 | System impact | Consider callers, storage, API, sync, outbox, observability |

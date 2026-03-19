@@ -7,8 +7,9 @@ use core_observability::{init_json_logging, register_metrics};
 use core_observability::{record_memory_load, record_memory_load_duration};
 use core_search::HttpSearchProvider;
 use core_skills::{
-    HueSmartHomeSkill, MacOsMusicSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill,
-    OpenMeteoWeatherSkill, SqliteMemorySkill,
+    HueSmartHomeSkill, MacOsClockTimerSkill, MacOsMusicSkill, MacOsNotesShoppingListSkill,
+    MacOsReminderSkill, OpenMeteoDistanceSkill, OpenMeteoTimeSkill, OpenMeteoWeatherSkill,
+    SqliteMemorySkill,
 };
 use core_stt::WhisperSttStream;
 use core_tts::PiperTtsSink;
@@ -97,6 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut tts = PiperTtsSink::new(Path::new(&config.tts.piper_model_path))?;
 
     let intent_classifier = LlmIntentClassifier::new(&llm);
+    let reminder_skill = MacOsReminderSkill::new();
+    let timer_skill = MacOsClockTimerSkill::new();
+    let shopping_list_skill = MacOsNotesShoppingListSkill::new();
 
     let (cancel_tx, cancel_rx) = tokio::sync::broadcast::channel(1);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -138,6 +142,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 media_skill: media_skill.as_ref().map(|s| s as _),
                 memory_skill: memory_skill.as_ref().map(|s| s as _),
                 computer_skill: None,
+                reminder_skill: Some(&reminder_skill),
+                timer_skill: Some(&timer_skill),
+                shopping_list_skill: Some(&shopping_list_skill),
                 resolved_location: resolved_location.as_ref(),
                 memory: memory_store.clone(),
                 policy: None,

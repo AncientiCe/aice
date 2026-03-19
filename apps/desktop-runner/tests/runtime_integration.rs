@@ -581,6 +581,9 @@ async fn runtime_continuous_loop_processes_multiple_turns() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -645,6 +648,9 @@ async fn runtime_continuous_loop_activates_on_wake_phrase() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -706,6 +712,9 @@ async fn runtime_continuous_loop_allows_computer_pause_when_gate_closed() {
                     media_skill: Some(&media_skill),
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -755,6 +764,9 @@ async fn runtime_continuous_loop_counts_interruption() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -802,6 +814,9 @@ async fn runtime_continuous_flushes_partial_turn_on_timeout() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -851,6 +866,9 @@ async fn runtime_continuous_waits_for_silence_threshold_before_flush() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -906,6 +924,9 @@ async fn runtime_continuous_does_not_flush_on_turn_window_while_voice_continues(
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -963,6 +984,9 @@ async fn runtime_continuous_flushes_after_silent_audio_pause() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -1019,6 +1043,9 @@ async fn runtime_continuous_streams_silent_chunks_after_voice_starts() {
                     media_skill: None,
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -1074,6 +1101,9 @@ async fn runtime_continuous_higher_silence_threshold_increases_completion_time()
                         media_skill: None,
                         memory_skill: None,
                         computer_skill: None,
+                        reminder_skill: None,
+                        timer_skill: None,
+                        shopping_list_skill: None,
                         resolved_location: None,
                         memory: None,
                         policy: None,
@@ -1142,6 +1172,9 @@ async fn runtime_ignores_recent_assistant_echo_without_wake_phrase() {
                 media_skill: Some(&media_skill),
                 memory_skill: None,
                 computer_skill: None,
+                reminder_skill: None,
+                timer_skill: None,
+                shopping_list_skill: None,
                 resolved_location: None,
                 memory: None,
                 policy: None,
@@ -1202,6 +1235,9 @@ async fn runtime_does_not_ignore_stop_as_echo() {
                     media_skill: Some(&media_skill),
                     memory_skill: None,
                     computer_skill: None,
+                    reminder_skill: None,
+                    timer_skill: None,
+                    shopping_list_skill: None,
                     resolved_location: None,
                     memory: None,
                     policy: None,
@@ -1255,6 +1291,9 @@ async fn runtime_requires_wake_phrase_for_each_turn_when_wake_enabled() {
                 media_skill: Some(&media_skill),
                 memory_skill: None,
                 computer_skill: None,
+                reminder_skill: None,
+                timer_skill: None,
+                shopping_list_skill: None,
                 resolved_location: None,
                 memory: None,
                 policy: None,
@@ -1305,6 +1344,9 @@ async fn intent_weather_uses_default_location_and_streams_llm_answer() {
         media_skill: None,
         memory_skill: None,
         computer_skill: None,
+        reminder_skill: None,
+        timer_skill: None,
+        shopping_list_skill: None,
         resolved_location: Some(&resolved),
         memory: None,
         policy: None,
@@ -1367,6 +1409,9 @@ async fn intent_weather_with_explicit_location_calls_skill_with_location() {
         media_skill: None,
         memory_skill: None,
         computer_skill: None,
+        reminder_skill: None,
+        timer_skill: None,
+        shopping_list_skill: None,
         resolved_location: Some(&resolved),
         memory: None,
         policy: None,
@@ -1401,6 +1446,9 @@ async fn intent_chat_routes_to_chat_path() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
         memory: None,
         policy: None,
@@ -1435,6 +1483,9 @@ async fn no_intent_classifier_uses_chat_path() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
         memory: None,
         policy: None,
@@ -1477,6 +1528,9 @@ async fn intent_time_uses_default_location_and_streams_llm_answer() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
         memory: None,
         policy: None,
@@ -1525,6 +1579,9 @@ async fn intent_distance_destination_only_uses_default_origin() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
         memory: None,
         policy: None,
@@ -1571,6 +1628,9 @@ async fn intent_distance_geocoding_no_results_speaks_short_clarification_without
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
         memory: None,
         policy: None,
@@ -1626,6 +1686,9 @@ async fn intent_distance_missing_places_speaks_short_clarification_without_llm()
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: Some(&resolved),
         memory: None,
         policy: None,
@@ -1688,6 +1751,9 @@ async fn intent_smart_home_uses_skill_and_streams_llm_answer() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None,
         memory: None,
         policy: None,
@@ -1732,6 +1798,9 @@ async fn chat_turn_with_memory_appends_and_persists_history() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
         memory: Some(Arc::clone(&memory)),
         policy: None,
@@ -1783,6 +1852,9 @@ async fn chat_turn_caps_history_to_two_recent_turns_for_llm() {
         media_skill: None::<&dyn core_skills::MediaSkill>,
         memory_skill: None::<&dyn core_skills::MemorySkill>,
         computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
         resolved_location: None::<&ResolvedLocation>,
         memory: Some(Arc::clone(&memory)),
         policy: None,
@@ -1800,4 +1872,272 @@ async fn chat_turn_caps_history_to_two_recent_turns_for_llm() {
         2,
         "chat path should pass only two most recent turns into LLM history"
     );
+}
+
+// --- Reminder skill tests ---
+
+#[tokio::test]
+async fn intent_reminder_no_when_routes_to_skill() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("remind me to buy milk".to_string());
+    let reminder_result = core_skills::ReminderResult {
+        summary: "Reminder 'buy milk' created without due date".to_string(),
+        title: "buy milk".to_string(),
+        when: None,
+    };
+    let reminder_skill = core_skills::MockReminderSkill::ok(reminder_result.clone());
+    let llm = RecordLlm::new("I've set a reminder for you.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillReminder {
+        title: Some("buy milk".to_string()),
+        when: None,
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: Some(&reminder_skill),
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text()
+            .contains(&reminder_result.to_prompt_context()),
+        "LLM should receive reminder context, got: {}",
+        llm.last_user_text()
+    );
+}
+
+#[tokio::test]
+async fn intent_reminder_with_when_routes_to_skill() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("remind me to call mom tomorrow at 5pm".to_string());
+    let reminder_result = core_skills::ReminderResult {
+        summary: "Reminder 'call mom' created for 20 Mar 2026 at 17:00".to_string(),
+        title: "call mom".to_string(),
+        when: Some("20 Mar 2026 at 17:00".to_string()),
+    };
+    let reminder_skill = core_skills::MockReminderSkill::ok(reminder_result.clone());
+    let llm = RecordLlm::new("Done, reminder set.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillReminder {
+        title: Some("call mom".to_string()),
+        when: Some("2026-03-20T17:00".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: Some(&reminder_skill),
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text()
+            .contains(&reminder_result.to_prompt_context()),
+        "LLM should receive reminder context with due date, got: {}",
+        llm.last_user_text()
+    );
+}
+
+// --- Timer skill tests ---
+
+#[tokio::test]
+async fn intent_timer_named_routes_to_skill() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("set a pasta timer for 10 minutes".to_string());
+    let timer_result = core_skills::TimerResult {
+        summary: "Timer 'pasta timer' started for 10 minutes".to_string(),
+        timer_name: "pasta timer".to_string(),
+        duration_display: "10 minutes".to_string(),
+        duration_seconds: 600,
+    };
+    let timer_skill = core_skills::MockTimerSkill::ok(timer_result.clone());
+    let llm = RecordLlm::new("Pasta timer started.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillTimer {
+        duration: Some("10 minutes".to_string()),
+        name: Some("pasta timer".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: Some(&timer_skill),
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text()
+            .contains(&timer_result.to_prompt_context()),
+        "LLM should receive timer context, got: {}",
+        llm.last_user_text()
+    );
+}
+
+#[tokio::test]
+async fn intent_timer_unnamed_routes_to_skill() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("set a timer for 5 minutes".to_string());
+    let timer_result = core_skills::TimerResult {
+        summary: "Timer 'first timer' started for 5 minutes".to_string(),
+        timer_name: "first timer".to_string(),
+        duration_display: "5 minutes".to_string(),
+        duration_seconds: 300,
+    };
+    let timer_skill = core_skills::MockTimerSkill::ok(timer_result.clone());
+    let llm = RecordLlm::new("Timer started.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillTimer {
+        duration: Some("5 minutes".to_string()),
+        name: None,
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: Some(&timer_skill),
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text()
+            .contains(&timer_result.to_prompt_context()),
+        "LLM should receive timer context, got: {}",
+        llm.last_user_text()
+    );
+}
+
+// --- Shopping list skill tests ---
+
+#[tokio::test]
+async fn intent_shopping_list_add_routes_to_skill() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("add strawberries and salami to the shopping list".to_string());
+    let shopping_result = core_skills::ShoppingListResult {
+        summary: "Updated 'Shopping List 19 Mar 2026'".to_string(),
+        note_title: "Shopping List 19 Mar 2026".to_string(),
+        added: vec!["strawberries".to_string(), "salami".to_string()],
+        already_present: vec![],
+        removed: vec![],
+        not_found: vec![],
+    };
+    let shopping_skill = core_skills::MockShoppingListSkill::ok(shopping_result.clone());
+    let llm = RecordLlm::new("Added to your shopping list.");
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillShoppingList {
+        action: Some("add".to_string()),
+        items: Some("strawberries and salami".to_string()),
+        when: None,
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: Some(&shopping_skill),
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        llm.last_user_text()
+            .contains(&shopping_result.to_prompt_context()),
+        "LLM should receive shopping list context, got: {}",
+        llm.last_user_text()
+    );
+    assert!(tts.text().contains("Added"));
 }

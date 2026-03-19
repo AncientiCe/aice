@@ -13,11 +13,21 @@ pub use skill_media::{MacOsMusicSkill, MediaResult, MediaSkill, MediaSkillError,
 pub use skill_memory::{
     MemoryFact, MemoryResult, MemorySkill, MemorySkillError, MockMemorySkill, SqliteMemorySkill,
 };
+pub use skill_reminder::{
+    MacOsReminderSkill, MockReminderSkill, ReminderResult, ReminderSkill, ReminderSkillError,
+};
+pub use skill_shopping_list::{
+    MacOsNotesShoppingListSkill, MockShoppingListSkill, ShoppingListResult, ShoppingListSkill,
+    ShoppingListSkillError,
+};
 pub use skill_smart_home::{
     DeviceState, HueSmartHomeSkill, MockSmartHomeSkill, SmartHomeResult, SmartHomeSkill,
     SmartHomeSkillError,
 };
 pub use skill_time::{MockTimeSkill, OpenMeteoTimeSkill, TimeResult, TimeSkill, TimeSkillError};
+pub use skill_timer::{
+    MacOsClockTimerSkill, MockTimerSkill, TimerResult, TimerSkill, TimerSkillError,
+};
 pub use skill_weather::{
     MockWeatherSkill, OpenMeteoWeatherSkill, ResolvedLocation, WeatherResult, WeatherSkill,
     WeatherSkillError,

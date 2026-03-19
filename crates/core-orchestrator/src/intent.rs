@@ -38,6 +38,22 @@ pub enum IntentDecision {
         action: Option<String>,
         target: Option<String>,
     },
+    /// Reminder: create a macOS Reminders entry; title required, when is optional ISO date-time.
+    SkillReminder {
+        title: Option<String>,
+        when: Option<String>,
+    },
+    /// Timer: start a macOS Clock timer; duration required, name is optional.
+    SkillTimer {
+        duration: Option<String>,
+        name: Option<String>,
+    },
+    /// Shopping list: add or remove items in an Apple Notes shopping list for a given date.
+    SkillShoppingList {
+        action: Option<String>,
+        items: Option<String>,
+        when: Option<String>,
+    },
 }
 
 /// Parse LLM classifier output into IntentDecision. Expects a single JSON object.
@@ -78,6 +94,20 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         computer_action: Option<String>,
         #[serde(default)]
         computer_target: Option<String>,
+        #[serde(default)]
+        reminder_title: Option<String>,
+        #[serde(default)]
+        reminder_when: Option<String>,
+        #[serde(default)]
+        timer_duration: Option<String>,
+        #[serde(default)]
+        timer_name: Option<String>,
+        #[serde(default)]
+        shopping_action: Option<String>,
+        #[serde(default)]
+        shopping_items: Option<String>,
+        #[serde(default)]
+        shopping_when: Option<String>,
     }
     let p: Payload = serde_json::from_str(s).map_err(ParseIntentError::Json)?;
     let intent = p.intent.to_lowercase().trim().to_string();
@@ -111,6 +141,19 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         "skill_computer" | "computer" => Ok(IntentDecision::SkillComputer {
             action: opt_str(p.computer_action),
             target: opt_str(p.computer_target),
+        }),
+        "skill_reminder" | "reminder" => Ok(IntentDecision::SkillReminder {
+            title: opt_str(p.reminder_title),
+            when: opt_str(p.reminder_when),
+        }),
+        "skill_timer" | "timer" => Ok(IntentDecision::SkillTimer {
+            duration: opt_str(p.timer_duration),
+            name: opt_str(p.timer_name),
+        }),
+        "skill_shopping_list" | "shopping_list" => Ok(IntentDecision::SkillShoppingList {
+            action: opt_str(p.shopping_action),
+            items: opt_str(p.shopping_items),
+            when: opt_str(p.shopping_when),
         }),
         _ => Ok(IntentDecision::Chat),
     }
@@ -205,6 +248,94 @@ mod tests {
                 assert_eq!(target.as_deref(), Some("browser"));
             }
             _ => panic!("expected SkillComputer"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_reminder_with_when() {
+        let raw = r#"{"intent": "skill_reminder", "reminder_title": "Call mom", "reminder_when": "2026-03-20T17:00"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillReminder { title, when } => {
+                assert_eq!(title.as_deref(), Some("Call mom"));
+                assert_eq!(when.as_deref(), Some("2026-03-20T17:00"));
+            }
+            _ => panic!("expected SkillReminder"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_reminder_without_when() {
+        let raw = r#"{"intent": "skill_reminder", "reminder_title": "Buy groceries"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillReminder { title, when } => {
+                assert_eq!(title.as_deref(), Some("Buy groceries"));
+                assert!(when.is_none());
+            }
+            _ => panic!("expected SkillReminder"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_timer_with_name() {
+        let raw = r#"{"intent": "skill_timer", "timer_duration": "5 minutes", "timer_name": "pasta timer"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillTimer { duration, name } => {
+                assert_eq!(duration.as_deref(), Some("5 minutes"));
+                assert_eq!(name.as_deref(), Some("pasta timer"));
+            }
+            _ => panic!("expected SkillTimer"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_timer_without_name() {
+        let raw = r#"{"intent": "skill_timer", "timer_duration": "30 minutes"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillTimer { duration, name } => {
+                assert_eq!(duration.as_deref(), Some("30 minutes"));
+                assert!(name.is_none());
+            }
+            _ => panic!("expected SkillTimer"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_shopping_list_add() {
+        let raw = r#"{"intent": "skill_shopping_list", "shopping_action": "add", "shopping_items": "strawberries, salami", "shopping_when": "today"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillShoppingList {
+                action,
+                items,
+                when,
+            } => {
+                assert_eq!(action.as_deref(), Some("add"));
+                assert_eq!(items.as_deref(), Some("strawberries, salami"));
+                assert_eq!(when.as_deref(), Some("today"));
+            }
+            _ => panic!("expected SkillShoppingList"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_shopping_list_no_when_defaults_to_none() {
+        let raw = r#"{"intent": "skill_shopping_list", "shopping_action": "add", "shopping_items": "milk"}"#;
+        let d = parse_intent(raw).unwrap();
+        match &d {
+            IntentDecision::SkillShoppingList {
+                action,
+                items,
+                when,
+            } => {
+                assert_eq!(action.as_deref(), Some("add"));
+                assert_eq!(items.as_deref(), Some("milk"));
+                assert!(when.is_none());
+            }
+            _ => panic!("expected SkillShoppingList"),
         }
     }
 }
