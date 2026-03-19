@@ -174,8 +174,8 @@ Download Whisper model expected by default:
 
 ```bash
 curl -fL \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
-  -o models/whisper/ggml-base.en.bin
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
+  -o models/whisper/ggml-tiny.en.bin
 ```
 
 Download Piper voice model expected by default:
@@ -192,7 +192,7 @@ curl -fL \
 Verify model files:
 
 ```bash
-ls -lh models/whisper/ggml-base.en.bin
+ls -lh models/whisper/ggml-tiny.en.bin
 ls -lh models/piper/model.onnx
 ls -lh models/piper/model.onnx.json
 ```
@@ -207,8 +207,8 @@ If your files are in different paths, update `config.json`:
   - `llama3.2`
   - pull: `ollama pull llama3.2`
 - Whisper default:
-  - file: `models/whisper/ggml-base.en.bin`
-  - URL: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
+  - file: `models/whisper/ggml-tiny.en.bin`
+  - URL: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin`
 - Piper default:
   - files: `models/piper/model.onnx` and `models/piper/model.onnx.json`
   - voice source: `en_US-lessac-medium`
@@ -258,7 +258,7 @@ if command -v whisper-cli >/dev/null || [ -n "${WHISPER_CLI_BIN:-}" ]; then ok "
 if command -v piper >/dev/null || [ -n "${PIPER_BIN:-}" ]; then ok "piper"; else bad "piper (set PIPER_BIN)"; fi
 
 if [ -f config.json ]; then ok "config.json"; else bad "config.json"; fi
-if [ -f models/whisper/ggml-base.en.bin ]; then ok "whisper model"; else bad "models/whisper/ggml-base.en.bin"; fi
+if [ -f models/whisper/ggml-tiny.en.bin ]; then ok "whisper model"; else bad "models/whisper/ggml-tiny.en.bin"; fi
 if [ -f models/piper/model.onnx ]; then ok "piper model .onnx"; else bad "models/piper/model.onnx"; fi
 if [ -f models/piper/model.onnx.json ]; then ok "piper model .onnx.json"; else bad "models/piper/model.onnx.json"; fi
 
@@ -284,7 +284,7 @@ If you already installed runtimes (`ollama`, `whisper-cli`, `piper`) and only ne
 ```
 
 This downloads to the default paths expected by config:
-- `models/whisper/ggml-base.en.bin`
+- `models/whisper/ggml-tiny.en.bin`
 - `models/piper/model.onnx`
 - `models/piper/model.onnx.json`
 - pulls Ollama model `llama3.2`

@@ -36,7 +36,7 @@ fi
 
 echo "==> Verifying required config and models"
 [[ -f config.json ]] || { echo "Missing config.json"; exit 1; }
-[[ -f models/whisper/ggml-base.en.bin ]] || { echo "Missing models/whisper/ggml-base.en.bin"; exit 1; }
+[[ -f models/whisper/ggml-tiny.en.bin ]] || { echo "Missing models/whisper/ggml-tiny.en.bin"; exit 1; }
 [[ -f models/piper/model.onnx ]] || { echo "Missing models/piper/model.onnx"; exit 1; }
 [[ -f models/piper/model.onnx.json ]] || { echo "Missing models/piper/model.onnx.json"; exit 1; }
 

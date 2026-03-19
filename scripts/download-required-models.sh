@@ -6,11 +6,11 @@ WHISPER_DIR="$ROOT_DIR/models/whisper"
 PIPER_DIR="$ROOT_DIR/models/piper"
 
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2}"
-WHISPER_URL="${WHISPER_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin}"
+WHISPER_URL="${WHISPER_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin}"
 PIPER_ONNX_URL="${PIPER_ONNX_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx}"
 PIPER_JSON_URL="${PIPER_JSON_URL:-https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json}"
 
-WHISPER_OUT="$WHISPER_DIR/ggml-base.en.bin"
+WHISPER_OUT="$WHISPER_DIR/ggml-tiny.en.bin"
 PIPER_ONNX_OUT="$PIPER_DIR/model.onnx"
 PIPER_JSON_OUT="$PIPER_DIR/model.onnx.json"
 

@@ -61,6 +61,35 @@ impl SttStream for QueueStt {
     }
 }
 
+struct CountingStt {
+    transcripts: VecDeque<String>,
+    pushed_samples: usize,
+}
+
+impl CountingStt {
+    fn new(items: Vec<&str>) -> Self {
+        Self {
+            transcripts: items.into_iter().map(|s| s.to_string()).collect(),
+            pushed_samples: 0,
+        }
+    }
+}
+
+#[async_trait]
+impl SttStream for CountingStt {
+    async fn push_audio(
+        &mut self,
+        pcm: &[i16],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.pushed_samples += pcm.len();
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.transcripts.pop_front().unwrap_or_default())
+    }
+}
+
 struct MockLlm(&'static str);
 
 #[async_trait]
@@ -914,6 +943,66 @@ async fn runtime_continuous_flushes_after_silent_audio_pause() {
     .expect("runtime error");
 
     assert_eq!(result.turns_completed, 1);
+}
+
+#[tokio::test]
+async fn runtime_continuous_streams_silent_chunks_after_voice_starts() {
+    let mut config = Config::default();
+    config.audio.turn_window_ms = 3000;
+    config.audio.chunk_timeout_ms = 20;
+    config.audio.speech_end_silence_ms = 80;
+    config.audio.speech_rms_threshold = 0.008;
+    config.audio.idle_sleep_ms = 1;
+    let mut runtime = DesktopRuntime::new(config);
+    let mut capture = ScriptedCapture::with_chunks(vec![
+        vec![1_500_i16; 320],
+        vec![0_i16; 320],
+        vec![0_i16; 320],
+        vec![0_i16; 320],
+        vec![0_i16; 320],
+    ]);
+    let mut stt = CountingStt::new(vec!["hello"]);
+    let llm = MockLlm("ok");
+    let mut tts = MockTts::new();
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(350),
+        runtime.run_continuous(
+            &mut capture,
+            &mut stt,
+            &llm,
+            &mut tts,
+            ContinuousRunOptions {
+                search: None::<&MockSearch>,
+                cancel_rx: rx,
+                max_turns: Some(1),
+                skills: SkillRunContext {
+                    intent_classifier: None,
+                    weather_skill: None,
+                    time_skill: None,
+                    distance_skill: None,
+                    smart_home_skill: None,
+                    assistant_skill: None,
+                    media_skill: None,
+                    memory_skill: None,
+                    computer_skill: None,
+                    resolved_location: None,
+                    memory: None,
+                    policy: None,
+                },
+            },
+        ),
+    )
+    .await
+    .expect("runtime should complete after silence threshold")
+    .expect("runtime error");
+
+    assert_eq!(result.turns_completed, 1);
+    assert_eq!(
+        stt.pushed_samples, 1600,
+        "runtime should stream all chunks after voice starts, including silence"
+    );
 }
 
 #[tokio::test]

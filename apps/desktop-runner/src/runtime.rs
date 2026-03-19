@@ -348,6 +348,10 @@ impl DesktopRuntime {
                             buffered_samples += chunk.len();
                             stt.push_audio(&chunk).await?;
                         } else if observed_voice {
+                            // Once speech starts, stream subsequent chunks directly, including
+                            // silence, so STT sees unfiltered audio until end-of-speech.
+                            buffered_samples += chunk.len();
+                            stt.push_audio(&chunk).await?;
                             silence_after_voice_ms =
                                 silence_after_voice_ms.saturating_add(chunk_ms);
                             if silence_after_voice_ms >= speech_end_silence_ms
