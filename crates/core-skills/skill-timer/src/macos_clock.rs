@@ -125,7 +125,11 @@ impl MacOsClockTimerSkill {
         let secs = seconds % 60;
         let mut parts = Vec::new();
         if hours > 0 {
-            parts.push(format!("{} {}", hours, if hours == 1 { "hour" } else { "hours" }));
+            parts.push(format!(
+                "{} {}",
+                hours,
+                if hours == 1 { "hour" } else { "hours" }
+            ));
         }
         if minutes > 0 {
             parts.push(format!(
