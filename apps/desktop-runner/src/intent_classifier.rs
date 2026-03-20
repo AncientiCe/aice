@@ -2,6 +2,7 @@
 
 use core_orchestrator::{parse_intent, IntentClassifier, IntentDecision, LlmStream};
 use futures::StreamExt;
+use tracing::info;
 
 const CLASSIFICATION_SYSTEM_PROMPT: &str = "You are an intent classifier. Reply with only a JSON object, no other text. \
 Use \"intent\": one of \"chat\", \"skill_weather\", \"skill_time\", \"skill_distance\", \"skill_smart_home\", \"skill_assistant\", \"skill_media\", \"skill_memory\", \"skill_computer\", \"skill_screenshot\", \"skill_app_switcher\", \"skill_reminder\", \"skill_timer\", \"skill_shopping_list\", \"skill_message\", \"skill_volume\". \
@@ -83,6 +84,13 @@ where
             .iter()
             .map(|(u, a)| (u.to_string(), a.to_string()))
             .collect();
+        let llm_history =
+            serde_json::to_string(&few_shot_history).unwrap_or_else(|_| "[]".to_string());
+        info!(
+            llm_input = %user_message.trim(),
+            llm_history = %llm_history,
+            "llm_intent_input"
+        );
         let mut stream = self
             .llm
             .chat_stream(
@@ -95,7 +103,9 @@ where
         while let Some(token) = stream.next().await {
             raw.push_str(&token);
         }
+        info!(llm_output = %raw.trim(), "llm_intent_output");
         let decision = parse_intent(raw.trim())?;
+        info!(intent_decision = ?decision, "llm_intent_decision");
         Ok(decision)
     }
 }
@@ -106,7 +116,9 @@ mod tests {
     use async_trait::async_trait;
     use core_orchestrator::{IntentClassifier, IntentDecision, LlmStream};
     use futures::stream;
+    use std::io;
     use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
 
     pub trait TestResultExt<T, E> {
         fn must(self) -> T;
@@ -194,6 +206,65 @@ mod tests {
                 origin: None,
                 destination: Some("Paris, France".to_string())
             }
+        );
+    }
+
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().must().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct SharedMakeWriter {
+        sink: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for SharedMakeWriter {
+        type Writer = SharedBuf;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedBuf(self.sink.clone())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn classifier_logs_intent_llm_input_and_output() {
+        let llm = RecordingLlm::new(r#"{"intent":"skill_weather","location":"Paris, France"}"#);
+        let classifier = LlmIntentClassifier::new(&llm);
+        let sink = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let make_writer = SharedMakeWriter { sink: sink.clone() };
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(make_writer)
+            .without_time()
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        classifier
+            .classify("what's the weather in Paris?")
+            .await
+            .must();
+        drop(_guard);
+
+        let output = String::from_utf8(sink.lock().must().clone()).must();
+        assert!(
+            output.contains("llm_intent_input"),
+            "expected classifier input log entry, got: {}",
+            output
+        );
+        assert!(
+            output.contains("llm_intent_output"),
+            "expected classifier output log entry, got: {}",
+            output
         );
     }
 }

@@ -10,6 +10,7 @@ use core_skills::{
     DistanceResult, DistanceSkillError, MediaResult, MessageResult, MessageSkillError,
     MockDistanceSkill, MockMediaSkill, MockMessageSkill, MockSmartHomeSkill, MockTimeSkill,
     MockWeatherSkill, ResolvedLocation, SmartHomeResult, TimeResult, WeatherResult, WeatherSkill,
+    WeatherSkillError,
 };
 use desktop_runner::{
     ContinuousRunOptions, DesktopRuntime, MemoryStore, RuntimeTurnOutcome, SkillRunContext,
@@ -253,6 +254,49 @@ impl LlmStream for QueueLlm {
         let mut guard = self.responses.lock().await;
         let next = guard.pop_front().unwrap_or_default();
         Ok(Box::new(stream::iter(vec![next])))
+    }
+}
+
+struct RecordingWeatherSkill {
+    result: WeatherResult,
+    last_location: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl RecordingWeatherSkill {
+    fn new(result: WeatherResult) -> Self {
+        Self {
+            result,
+            last_location: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn last_location(&self) -> Option<String> {
+        self.last_location.lock().must().clone()
+    }
+}
+
+#[async_trait]
+impl WeatherSkill for RecordingWeatherSkill {
+    async fn execute(
+        &self,
+        location: Option<&str>,
+        _default_location: Option<&ResolvedLocation>,
+    ) -> Result<WeatherResult, core_skills::WeatherSkillError> {
+        *self.last_location.lock().must() = location.map(|s| s.to_string());
+        Ok(self.result.clone())
+    }
+}
+
+struct PanicWeatherSkill;
+
+#[async_trait]
+impl WeatherSkill for PanicWeatherSkill {
+    async fn execute(
+        &self,
+        _location: Option<&str>,
+        _default_location: Option<&ResolvedLocation>,
+    ) -> Result<WeatherResult, core_skills::WeatherSkillError> {
+        panic!("weather skill should not be called when location normalization is ambiguous");
     }
 }
 
@@ -1502,7 +1546,10 @@ async fn intent_weather_with_explicit_location_calls_skill_with_location() {
     };
     let weather_skill = MockWeatherSkill::ok(weather_result);
     let resolved = default_resolved_location();
-    let llm = RecordLlm::new("Sunny and 22 in Rome.");
+    let llm = QueueLlm::new(vec![
+        r#"{"status":"ok","location":"Rome, Italy"}"#,
+        "Sunny and 22 in Rome.",
+    ]);
     let mut tts = MockTts::new();
     let classifier = MockIntentClassifier(IntentDecision::SkillWeather {
         location: Some("Rome".to_string()),
@@ -1536,6 +1583,236 @@ async fn intent_weather_with_explicit_location_calls_skill_with_location() {
 
     assert_eq!(outcome, RuntimeTurnOutcome::Complete);
     assert!(tts.text().contains("22"));
+}
+
+#[tokio::test]
+async fn intent_weather_geocoding_no_results_speaks_short_clarification_without_llm() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("what's the weather in Los Angeles?".to_string());
+    let weather_skill =
+        MockWeatherSkill::err(WeatherSkillError::Geocoding("no results".to_string()));
+    let resolved = default_resolved_location();
+    let llm = QueueLlm::new(vec![
+        r#"{"status":"ok","location":"Los Angeles, United States"}"#,
+    ]);
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillWeather {
+        location: Some("Los Angeles".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: Some(&weather_skill),
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: Some(&resolved),
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    let spoken = tts.text();
+    assert!(
+        spoken
+            .to_lowercase()
+            .contains("couldn't resolve that location"),
+        "Expected a short clarification for unresolved geocoding, got: {}",
+        spoken
+    );
+    assert!(
+        spoken.to_lowercase().contains("city and country"),
+        "Expected explicit retry guidance, got: {}",
+        spoken
+    );
+    assert!(
+        spoken.len() <= 120,
+        "Clarification should stay short for voice; got {} chars: {}",
+        spoken.len(),
+        spoken
+    );
+}
+
+#[tokio::test]
+async fn intent_weather_normalizes_location_contract_before_skill_execute() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("what's the weather in LA?".to_string());
+    let weather_result = WeatherResult {
+        location_display: "Los Angeles, United States".to_string(),
+        temp_c: 19.0,
+        humidity_pct: Some(54),
+        weather_code: 1,
+        description: "Partly cloudy".to_string(),
+    };
+    let weather_skill = RecordingWeatherSkill::new(weather_result);
+    let resolved = default_resolved_location();
+    let llm = QueueLlm::new(vec![
+        r#"{"status":"ok","location":"Los Angeles, United States"}"#,
+        "It's around 19 degrees and partly cloudy in Los Angeles.",
+    ]);
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillWeather {
+        location: Some("LA".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: Some(&weather_skill),
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: Some(&resolved),
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(
+        weather_skill.last_location().as_deref(),
+        Some("Los Angeles, United States")
+    );
+    assert!(tts.text().contains("19 degrees"));
+}
+
+#[tokio::test]
+async fn intent_weather_location_contract_ambiguous_speaks_clarification_without_skill_call() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("what's the weather in LA?".to_string());
+    let weather_skill = PanicWeatherSkill;
+    let resolved = default_resolved_location();
+    let llm = QueueLlm::new(vec![r#"{"status":"ambiguous","location":"LA"}"#]);
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillWeather {
+        location: Some("LA".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: Some(&weather_skill),
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: Some(&resolved),
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert!(
+        tts.text().to_lowercase().contains("city and country"),
+        "expected location clarification, got: {}",
+        tts.text()
+    );
+}
+
+#[tokio::test]
+async fn intent_weather_location_contract_ambiguous_uses_valid_hint_city_country() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("what's the weather in LA?".to_string());
+    let weather_result = WeatherResult {
+        location_display: "Los Angeles, United States".to_string(),
+        temp_c: 20.0,
+        humidity_pct: Some(50),
+        weather_code: 1,
+        description: "Partly cloudy".to_string(),
+    };
+    let weather_skill = RecordingWeatherSkill::new(weather_result);
+    let resolved = default_resolved_location();
+    let llm = QueueLlm::new(vec![
+        r#"{"status":"ambiguous","location":"LA, USA"}"#,
+        r#"{"status":"unknown","location":"Los Angeles, United States"}"#,
+        "It's around 20 degrees in Los Angeles.",
+    ]);
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillWeather {
+        location: Some("Los Angeles, USA".to_string()),
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: Some(&weather_skill),
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: None::<&dyn core_skills::MessageSkill>,
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: Some(&resolved),
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(
+        weather_skill.last_location().as_deref(),
+        Some("Los Angeles, United States")
+    );
+    assert!(tts.text().contains("20 degrees"));
 }
 
 #[tokio::test]

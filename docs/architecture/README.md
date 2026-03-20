@@ -138,12 +138,15 @@ flowchart LR
 
 ## 6. Intent classification and skills (weather, time, distance, smart home, assistant, media, memory, computer, screenshot, app switcher, volume)
 
-**Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, location is resolved at startup (IP geolocation or config default) or from the user’s request (e.g. “weather in Rome”). The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
+**Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
 
 ```mermaid
 flowchart LR
     UserInput[UserInputText] --> ClassifierLLM[IntentClassifierLLM]
     ClassifierLLM -->|chat| ChatLLM[ChatStreamLLM]
+    ClassifierLLM -->|skill_weather with location| LocationContract[LocationContractLLM]
+    LocationContract -->|normalized| PolicyCheck[PolicyEngine]
+    LocationContract -->|ambiguous/unknown| Clarify[Voice clarification]
     ClassifierLLM -->|skill_*| PolicyCheck[PolicyEngine]
     PolicyCheck -->|allow| WeatherSkill[WeatherSkill]
     PolicyCheck -->|allow| TimeSkill[TimeSkill]
@@ -174,12 +177,13 @@ flowchart LR
     AnswerLLM --> TokenStream
     TokenStream --> TTS[ExistingTTSRouting]
     TTS --> DesktopOrPod[DesktopOrPodOutput]
+    Clarify --> TTS
 ```
 
 **Notes:**
 - **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, smart_home, assistant, media, memory, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
-- **Outputs:** Streamed TTS to desktop or pod; metrics `voice_intent_classifier_total`, `voice_intent_routed_total{intent}`, `voice_*_skill_total` per skill, `voice_policy_denied_total`; audit log events `skill_executed` and policy denial warnings.
-- **Failure paths:** Classification parse failure or skill error fall back to chat path; policy denial (emergency stop or budget exhausted) falls back to chat; missing location/places when required uses startup/default or falls back to chat.
+- **Outputs:** Streamed TTS to desktop or pod; metrics `voice_intent_classifier_total`, `voice_intent_routed_total{intent}`, `voice_*_skill_total` per skill, `voice_policy_denied_total`, `voice_location_contract_total{intent,result}`, `voice_location_contract_duration_seconds{intent}`; audit log events `skill_executed` and policy denial warnings.
+- **Failure paths:** Classification parse failure or skill error fall back to chat path; policy denial (emergency stop or budget exhausted) falls back to chat; weather location contract ambiguity returns a short clarification and does not execute the weather skill.
 
 ### 6.1 Autonomy policy engine
 

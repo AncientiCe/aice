@@ -71,6 +71,8 @@ const VOICE_SHOPPING_LIST_SKILL_TOTAL: &str = "voice_shopping_list_skill_total";
 const VOICE_VOLUME_SKILL_TOTAL: &str = "voice_volume_skill_total";
 const VOICE_POLICY_DENIED_TOTAL: &str = "voice_policy_denied_total";
 const VOICE_LOCATION_PRELOAD_TOTAL: &str = "voice_location_preload_total";
+const VOICE_LOCATION_CONTRACT_TOTAL: &str = "voice_location_contract_total";
+const VOICE_LOCATION_CONTRACT_DURATION_SECONDS: &str = "voice_location_contract_duration_seconds";
 const VOICE_SHUTDOWN_SIGNALS_TOTAL: &str = "voice_shutdown_signals_total";
 const MEMORY_LOAD_TOTAL: &str = "memory_load_total";
 const MEMORY_SAVE_TOTAL: &str = "memory_save_total";
@@ -136,6 +138,17 @@ pub fn register_metrics() {
     counter!(VOICE_VOLUME_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_POLICY_DENIED_TOTAL, 0, "reason" => "unknown");
     counter!(VOICE_LOCATION_PRELOAD_TOTAL, 0, "result" => "unknown");
+    counter!(
+        VOICE_LOCATION_CONTRACT_TOTAL,
+        0,
+        "intent" => "unknown",
+        "result" => "unknown"
+    );
+    histogram!(
+        VOICE_LOCATION_CONTRACT_DURATION_SECONDS,
+        0.0_f64,
+        "intent" => "unknown"
+    );
     counter!(VOICE_SHUTDOWN_SIGNALS_TOTAL, 0, "signal" => "unknown", "action" => "unknown");
     counter!(MEMORY_LOAD_TOTAL, 0);
     counter!(MEMORY_SAVE_TOTAL, 0);
@@ -402,6 +415,25 @@ pub fn record_policy_denied(reason: &str) {
 /// Record startup location preload result (success or failure).
 pub fn record_location_preload(result: &str) {
     counter!(VOICE_LOCATION_PRELOAD_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record a location contract normalization decision by intent and result.
+pub fn record_location_contract(intent: &str, result: &str) {
+    counter!(
+        VOICE_LOCATION_CONTRACT_TOTAL,
+        1,
+        "intent" => intent.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Record latency for location contract normalization.
+pub fn record_location_contract_duration(intent: &str, duration: Duration) {
+    histogram!(
+        VOICE_LOCATION_CONTRACT_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "intent" => intent.to_string()
+    );
 }
 
 /// Record shutdown signal handling action (graceful shutdown vs force-exit).

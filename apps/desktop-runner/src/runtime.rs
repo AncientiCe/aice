@@ -7,8 +7,9 @@ use core_observability::{
     record_app_switcher_skill, record_assistant_skill, record_computer_skill,
     record_distance_skill, record_endpointing_wait_duration, record_intent_classifier,
     record_intent_routed, record_llm_first_token_latency, record_llm_stream_tail_duration,
-    record_media_execute, record_media_execute_duration, record_media_skill,
-    record_memory_fact_recall, record_memory_fact_recall_duration, record_memory_fact_store,
+    record_location_contract, record_location_contract_duration, record_media_execute,
+    record_media_execute_duration, record_media_skill, record_memory_fact_recall,
+    record_memory_fact_recall_duration, record_memory_fact_store,
     record_memory_fact_store_duration, record_memory_save, record_memory_save_duration,
     record_memory_save_error, record_memory_skill, record_message_skill,
     record_mic_to_stt_duration, record_policy_denied, record_reminder_skill,
@@ -27,7 +28,7 @@ use core_skills::{
     AppSwitcherSkill, AssistantSkill, ComputerSkill, DistanceResult, DistanceSkill,
     DistanceSkillError, MediaSkill, MemorySkill, MessageSkill, MessageSkillError, ReminderSkill,
     ResolvedLocation, ScreenshotSkill, ShoppingListSkill, SmartHomeSkill, TimeResult, TimeSkill,
-    TimerSkill, VolumeSkill, WeatherResult, WeatherSkill,
+    TimerSkill, VolumeSkill, WeatherResult, WeatherSkill, WeatherSkillError,
 };
 use core_vad::WakeWordGate;
 use serde::Deserialize;
@@ -221,6 +222,11 @@ enum ForceQuitConfirmation {
     Yes,
     No,
     Unclear,
+}
+
+enum LocationContractDecision {
+    Resolved(String),
+    NeedsClarification,
 }
 
 /// Aggregate stats from continuous runtime execution.
@@ -957,9 +963,42 @@ impl DesktopRuntime {
                     record_policy_denied("skill_weather");
                     tracing::warn!("policy denied weather skill, falling back to chat");
                 } else {
-                    let location_override = location.as_deref();
+                    let location_override = if let Some(raw_location) = location.as_deref() {
+                        match Self::normalize_location_contract(
+                            llm,
+                            "weather",
+                            &user_text,
+                            raw_location,
+                        )
+                        .await
+                        {
+                            Ok(LocationContractDecision::Resolved(normalized)) => Some(normalized),
+                            Ok(LocationContractDecision::NeedsClarification) | Err(_) => {
+                                let t0 = Instant::now();
+                                let outcome = Self::speak_with_cancel(
+                                    tts,
+                                    "Please say the city and country, for example Los Angeles, United States.",
+                                    cancel_rx,
+                                )
+                                .await?;
+                                timings.tts = Some(t0.elapsed());
+                                timings.tts_flush = None;
+                                return Ok(Self::finish_turn(
+                                    "skill_weather_location_clarify",
+                                    outcome,
+                                    turn_started_at,
+                                    &mut timings,
+                                ));
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let skill_started_at = Instant::now();
-                    match skill.execute(location_override, resolved_location).await {
+                    match skill
+                        .execute(location_override.as_deref(), resolved_location)
+                        .await
+                    {
                         Ok(weather) => {
                             timings.skill = Some(skill_started_at.elapsed());
                             if let Some(p) = policy {
@@ -985,6 +1024,19 @@ impl DesktopRuntime {
                         Err(e) => {
                             timings.skill = Some(skill_started_at.elapsed());
                             record_weather_skill("error");
+                            if let Some(reply) = Self::weather_error_reply(&e) {
+                                let t0 = Instant::now();
+                                let outcome =
+                                    Self::speak_with_cancel(tts, reply, cancel_rx).await?;
+                                timings.tts = Some(t0.elapsed());
+                                timings.tts_flush = None;
+                                return Ok(Self::finish_turn(
+                                    "skill_weather_unresolved",
+                                    outcome,
+                                    turn_started_at,
+                                    &mut timings,
+                                ));
+                            }
                             tracing::warn!(error = %e, "weather skill failed, falling back to chat");
                         }
                     }
@@ -1906,6 +1958,18 @@ impl DesktopRuntime {
         }
     }
 
+    fn weather_error_reply(err: &WeatherSkillError) -> Option<&'static str> {
+        match err {
+            WeatherSkillError::Geocoding(_) => {
+                Some("I couldn't resolve that location. Please repeat with city and country names.")
+            }
+            WeatherSkillError::NoDefaultLocation => {
+                Some("I need a location. Please ask for weather in a city and country.")
+            }
+            WeatherSkillError::Forecast(_) => None,
+        }
+    }
+
     fn apology_contact_desc(desc: &str) -> String {
         let trimmed = desc.trim();
         if let Some(rest) = trimmed
@@ -1972,6 +2036,164 @@ impl DesktopRuntime {
             _ => ForceQuitConfirmation::Unclear,
         };
         Ok(confirmation)
+    }
+
+    async fn normalize_location_contract<L: LlmStream>(
+        llm: &L,
+        intent_name: &str,
+        user_text: &str,
+        location_hint: &str,
+    ) -> Result<LocationContractDecision, Box<dyn std::error::Error + Send + Sync>> {
+        #[derive(Debug, Deserialize)]
+        struct Payload {
+            status: Option<String>,
+            location: Option<String>,
+        }
+
+        let started_at = Instant::now();
+        let prompt = format!(
+            "You normalize place names for a voice assistant.\n\
+             Reply with JSON only.\n\
+             Schema: {{\"status\":\"ok|ambiguous|unknown\",\"location\":\"City, Country\"}}.\n\
+             Rules:\n\
+             - status=ok only when location is specific and normalized as City, Country.\n\
+             - For abbreviations or ambiguous places, return status=ambiguous.\n\
+             - If unresolved, return status=unknown.\n\
+             Intent: \"{}\"\n\
+             User utterance: \"{}\"\n\
+             Location hint: \"{}\"",
+            intent_name,
+            user_text.trim(),
+            location_hint.trim()
+        );
+        tracing::info!(llm_input = %prompt.trim(), "llm_location_contract_input");
+        let mut stream = match llm.chat_stream(&prompt, &[], None).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                record_location_contract_duration(intent_name, started_at.elapsed());
+                record_location_contract(intent_name, "error");
+                return Err(error);
+            }
+        };
+        let mut raw = String::new();
+        use futures::StreamExt;
+        while let Some(token) = stream.next().await {
+            raw.push_str(&token);
+        }
+        tracing::info!(llm_output = %raw.trim(), "llm_location_contract_output");
+        let sanitized = raw
+            .trim()
+            .strip_prefix("```json")
+            .or_else(|| raw.trim().strip_prefix("```"))
+            .unwrap_or(raw.trim())
+            .strip_suffix("```")
+            .unwrap_or(raw.trim())
+            .trim();
+        let payload = serde_json::from_str::<Payload>(sanitized).ok();
+        let status = payload
+            .as_ref()
+            .and_then(|p| p.status.clone())
+            .unwrap_or_else(|| "unknown".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        let location = payload
+            .and_then(|p| p.location)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let normalized_from_output = location.filter(|s| s.contains(','));
+        let (decision, result_label) = if status == "ok" {
+            if let Some(normalized) = normalized_from_output {
+                (LocationContractDecision::Resolved(normalized), "normalized")
+            } else {
+                (LocationContractDecision::NeedsClarification, "clarify")
+            }
+        } else if let Some(normalized) =
+            Self::retry_location_contract_resolution(llm, intent_name, user_text, location_hint)
+                .await?
+        {
+            (
+                LocationContractDecision::Resolved(normalized),
+                "retry_normalized",
+            )
+        } else {
+            (LocationContractDecision::NeedsClarification, "clarify")
+        };
+        record_location_contract_duration(intent_name, started_at.elapsed());
+        match &decision {
+            LocationContractDecision::Resolved(loc) => {
+                record_location_contract(intent_name, result_label);
+                tracing::info!(location = %loc, "llm_location_contract_decision");
+            }
+            LocationContractDecision::NeedsClarification => {
+                record_location_contract(intent_name, result_label);
+                tracing::info!("llm_location_contract_needs_clarification");
+            }
+        }
+        Ok(decision)
+    }
+
+    async fn retry_location_contract_resolution<L: LlmStream>(
+        llm: &L,
+        intent_name: &str,
+        user_text: &str,
+        location_hint: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        #[derive(Debug, Deserialize)]
+        struct Payload {
+            status: Option<String>,
+            location: Option<String>,
+        }
+
+        let prompt = format!(
+            "You previously marked a location ambiguous. Re-evaluate with strict normalization.\n\
+             Reply with JSON only.\n\
+             Schema: {{\"status\":\"ok|unknown\",\"location\":\"City, Country\"}}.\n\
+             Rules:\n\
+             - Interpret common country aliases (US, USA, U.S.) as country names.\n\
+             - Return status=ok only when fully normalized as City, Country.\n\
+             - Return status=unknown if still ambiguous.\n\
+             Intent: \"{}\"\n\
+             User utterance: \"{}\"\n\
+             Location hint: \"{}\"",
+            intent_name,
+            user_text.trim(),
+            location_hint.trim()
+        );
+        tracing::info!(llm_input = %prompt.trim(), "llm_location_contract_retry_input");
+        let mut stream = llm
+            .chat_stream(&prompt, &[], None)
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e })?;
+        let mut raw = String::new();
+        use futures::StreamExt;
+        while let Some(token) = stream.next().await {
+            raw.push_str(&token);
+        }
+        tracing::info!(llm_output = %raw.trim(), "llm_location_contract_retry_output");
+        let sanitized = raw
+            .trim()
+            .strip_prefix("```json")
+            .or_else(|| raw.trim().strip_prefix("```"))
+            .unwrap_or(raw.trim())
+            .strip_suffix("```")
+            .unwrap_or(raw.trim())
+            .trim();
+        let payload = serde_json::from_str::<Payload>(sanitized).ok();
+        let status = payload
+            .as_ref()
+            .and_then(|p| p.status.clone())
+            .unwrap_or_else(|| "unknown".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        let location = payload
+            .and_then(|p| p.location)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.contains(','));
+        if status == "ok" || location.is_some() {
+            Ok(location)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Generic prompt for skill results (smart home, assistant, media, memory, computer).
