@@ -3,6 +3,7 @@
 use crate::types::{ResolvedLocation, WeatherResult, WeatherSkill, WeatherSkillError};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 const GEOCODING_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
@@ -50,6 +51,24 @@ impl OpenMeteoWeatherSkill {
     }
 
     async fn geocode(&self, name: &str) -> Result<ResolvedLocation, WeatherSkillError> {
+        let candidates = geocode_candidates(name);
+        let mut last_error: Option<WeatherSkillError> = None;
+        for candidate in candidates {
+            match self.geocode_once(&candidate).await {
+                Ok(Some(location)) => return Ok(location),
+                Ok(None) => {
+                    last_error = Some(WeatherSkillError::Geocoding("no results".to_string()));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| WeatherSkillError::Geocoding("no results".to_string())))
+    }
+
+    async fn geocode_once(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedLocation>, WeatherSkillError> {
         let res = self
             .client
             .get(GEOCODING_URL)
@@ -67,20 +86,19 @@ impl OpenMeteoWeatherSkill {
             .json()
             .await
             .map_err(|e| WeatherSkillError::Geocoding(e.to_string()))?;
-        let first = body
-            .results
-            .and_then(|r| r.into_iter().next())
-            .ok_or_else(|| WeatherSkillError::Geocoding("no results".to_string()))?;
+        let Some(first) = body.results.and_then(|r| r.into_iter().next()) else {
+            return Ok(None);
+        };
         let display_name = if let Some(ref c) = first.country {
             format!("{}, {}", first.name, c)
         } else {
             first.name.clone()
         };
-        Ok(ResolvedLocation {
+        Ok(Some(ResolvedLocation {
             display_name,
             lat: first.latitude,
             lon: first.longitude,
-        })
+        }))
     }
 
     async fn fetch_forecast(
@@ -128,6 +146,61 @@ impl OpenMeteoWeatherSkill {
     }
 }
 
+fn geocode_candidates(raw: &str) -> Vec<String> {
+    fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, candidate: String) {
+        let normalized = candidate.trim();
+        if normalized.is_empty() {
+            return;
+        }
+        let key = normalized.to_lowercase();
+        if seen.insert(key) {
+            out.push(normalized.to_string());
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let trimmed = raw.trim();
+    push_unique(&mut out, &mut seen, trimmed.to_string());
+
+    let stripped = trimmed
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+        .trim_end_matches(|c: char| ['?', '!', '.', ',', ';', ':'].contains(&c))
+        .trim();
+    push_unique(&mut out, &mut seen, stripped.to_string());
+
+    for prefix in ["weather in ", "in ", "for "] {
+        if let Some(suffix) = stripped.to_lowercase().strip_prefix(prefix) {
+            let offset = stripped.len().saturating_sub(suffix.len());
+            let candidate = stripped[offset..].trim();
+            push_unique(&mut out, &mut seen, candidate.to_string());
+        }
+    }
+
+    match stripped.to_lowercase().as_str() {
+        "la" | "l.a" | "l.a." => {
+            push_unique(
+                &mut out,
+                &mut seen,
+                "Los Angeles, United States".to_string(),
+            );
+        }
+        "nyc" => {
+            push_unique(&mut out, &mut seen, "New York, United States".to_string());
+        }
+        "sf" => {
+            push_unique(
+                &mut out,
+                &mut seen,
+                "San Francisco, United States".to_string(),
+            );
+        }
+        _ => {}
+    }
+
+    out
+}
+
 impl Default for OpenMeteoWeatherSkill {
     fn default() -> Self {
         Self::new()
@@ -169,5 +242,40 @@ impl WeatherSkill for OpenMeteoWeatherSkill {
             return Err(WeatherSkillError::NoDefaultLocation);
         };
         self.fetch_forecast(&loc).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::geocode_candidates;
+
+    #[test]
+    fn geocode_candidates_strip_trailing_punctuation() {
+        let cands = geocode_candidates("Los Angeles?");
+        assert!(
+            cands.iter().any(|x| x == "Los Angeles"),
+            "expected stripped city candidate, got: {:?}",
+            cands
+        );
+    }
+
+    #[test]
+    fn geocode_candidates_extract_place_from_phrases() {
+        let cands = geocode_candidates("weather in Los Angeles?");
+        assert!(
+            cands.iter().any(|x| x == "Los Angeles"),
+            "expected place extracted from phrase, got: {:?}",
+            cands
+        );
+    }
+
+    #[test]
+    fn geocode_candidates_expand_la_alias() {
+        let cands = geocode_candidates("LA");
+        assert!(
+            cands.iter().any(|x| x == "Los Angeles, United States"),
+            "expected LA alias expansion, got: {:?}",
+            cands
+        );
     }
 }

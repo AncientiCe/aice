@@ -18,7 +18,7 @@ One document per skill. Each document contains a Mermaid journey diagram, input/
 | Time | `skill-time` | `OpenMeteoTimeSkill` | [time.md](time.md) |
 | Timer | `skill-timer` | `MacOsClockTimerSkill` | [timer.md](timer.md) |
 | Volume | `skill-volume` | `MacOsVolumeSkill` | [volume.md](volume.md) |
-| Weather | `skill-weather` | `OpenMeteoWeatherSkill` | [weather.md](weather.md) |
+| Weather | `skill-weather` | `OpenMeteoWeatherSkill` (+ runtime location-contract normalization) | [weather.md](weather.md) |
 
 ## Document Structure
 
