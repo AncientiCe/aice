@@ -6,15 +6,17 @@ use core_config::Config;
 use core_observability::{
     record_app_switcher_skill, record_assistant_skill, record_computer_skill,
     record_distance_skill, record_endpointing_wait_duration, record_intent_classifier,
-    record_intent_routed, record_llm_first_token_latency, record_media_execute,
-    record_media_execute_duration, record_media_skill, record_memory_fact_recall,
-    record_memory_fact_recall_duration, record_memory_fact_store,
+    record_intent_routed, record_llm_first_token_latency, record_llm_stream_tail_duration,
+    record_media_execute, record_media_execute_duration, record_media_skill,
+    record_memory_fact_recall, record_memory_fact_recall_duration, record_memory_fact_store,
     record_memory_fact_store_duration, record_memory_save, record_memory_save_duration,
-    record_memory_save_error, record_memory_skill, record_message_skill, record_policy_denied,
-    record_reminder_skill, record_screenshot_skill, record_shopping_list_skill,
+    record_memory_save_error, record_memory_skill, record_message_skill,
+    record_mic_to_stt_duration, record_policy_denied, record_reminder_skill,
+    record_screenshot_skill, record_shopping_list_skill, record_skill_duration,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
     record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
-    record_turn_time_to_first_audio, record_volume_skill, record_weather_skill, Stage,
+    record_tts_first_audio_latency, record_tts_flush_duration, record_turn_time_to_first_audio,
+    record_volume_skill, record_weather_skill, Stage,
 };
 use core_orchestrator::{
     parse_need_search, IntentClassifier, IntentDecision, LlmStream, SttStream, TtsSink,
@@ -145,9 +147,15 @@ impl TurnTimings {
         Self::ms(self.total)
     }
 
-    fn record_stage_metrics(&self) {
+    fn record_stage_metrics(&self, path: &str) {
+        if let Some(mic_to_stt) = self.mic_to_stt {
+            record_mic_to_stt_duration(mic_to_stt);
+        }
         if let Some(stt) = self.stt {
             record_stage_duration(Stage::Stt, stt);
+        }
+        if let Some(skill) = self.skill {
+            record_skill_duration(path, skill);
         }
         if let Some(speech) = self.speech_voiced {
             record_speech_voiced_duration(speech);
@@ -158,6 +166,12 @@ impl TurnTimings {
         if let Some(first) = self.llm_first_token {
             record_llm_first_token_latency(first);
         }
+        if let Some(stream_tail_ms) = self.llm_stream_tail_ms() {
+            record_llm_stream_tail_duration(Duration::from_millis(stream_tail_ms as u64));
+        }
+        if let Some(first_audio) = self.tts_first_audio {
+            record_tts_first_audio_latency(first_audio);
+        }
         if let Some(ttfa_ms) = self.time_to_first_audio_ms() {
             record_turn_time_to_first_audio(Duration::from_millis(ttfa_ms as u64));
         }
@@ -166,6 +180,9 @@ impl TurnTimings {
         }
         if let Some(tts) = self.tts {
             record_stage_duration(Stage::Tts, tts);
+        }
+        if let Some(tts_flush) = self.tts_flush {
+            record_tts_flush_duration(tts_flush);
         }
         if let Some(total) = self.total {
             record_stage_duration(Stage::Orchestrator, total);
@@ -1806,7 +1823,7 @@ impl DesktopRuntime {
         timings: &mut TurnTimings,
     ) -> RuntimeTurnOutcome {
         timings.total = Some(turn_started_at.elapsed());
-        timings.record_stage_metrics();
+        timings.record_stage_metrics(path);
         info!(
             path,
             outcome = ?outcome,

@@ -3,7 +3,9 @@
 use core_audio::CpalCapture;
 use core_config::Config;
 use core_llm::OllamaLlmStream;
-use core_observability::{init_json_logging, register_metrics};
+use core_observability::{
+    init_json_logging, init_prometheus_exporter, register_metrics, ExporterInitState,
+};
 use core_observability::{record_memory_load, record_memory_load_duration};
 use core_search::HttpSearchProvider;
 use core_skills::{
@@ -22,13 +24,33 @@ use desktop_runner::{
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
+
+fn init_runtime_observability(config: &Config) -> Result<ExporterInitState, String> {
+    register_metrics();
+    if !config.service.metrics_enabled {
+        return Ok(ExporterInitState::AlreadyRunning);
+    }
+    init_prometheus_exporter(&config.service.metrics_bind).map_err(|error| error.to_string())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = init_json_logging();
-    register_metrics();
     let config = Config::load(Path::new("config.json"))?;
+    match init_runtime_observability(&config) {
+        Ok(ExporterInitState::Started) => {
+            info!(bind = %config.service.metrics_bind, "prometheus metrics exporter started");
+        }
+        Ok(ExporterInitState::AlreadyRunning) => {}
+        Err(error) => {
+            warn!(
+                bind = %config.service.metrics_bind,
+                %error,
+                "failed to initialize prometheus metrics exporter"
+            );
+        }
+    }
 
     let mut runtime = DesktopRuntime::new(config.clone());
     let mut capture = CpalCapture::from_preferred_name(config.audio.input_device.as_deref())?;
@@ -191,4 +213,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::process::exit(0);
     }
     run_result
+}
+
+#[cfg(test)]
+mod tests {
+    use core_config::Config;
+    use std::net::TcpListener;
+
+    fn reserve_local_bind() -> String {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(value) => value,
+            Err(error) => panic!("failed to reserve local bind: {error}"),
+        };
+        let addr = match listener.local_addr() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to read local bind: {error}"),
+        };
+        drop(listener);
+        addr.to_string()
+    }
+
+    #[test]
+    fn observability_setup_is_idempotent_when_metrics_enabled() {
+        let mut config = Config::default();
+        config.service.metrics_enabled = true;
+        config.service.metrics_bind = reserve_local_bind();
+        let first = super::init_runtime_observability(&config);
+        assert!(first.is_ok());
+        let second = super::init_runtime_observability(&config);
+        assert!(second.is_ok());
+    }
 }

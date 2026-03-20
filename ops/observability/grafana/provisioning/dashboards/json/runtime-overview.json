@@ -1,0 +1,81 @@
+{
+  "id": null,
+  "uid": "aice-runtime-overview",
+  "title": "Aice Runtime Overview",
+  "tags": ["aice", "runtime"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Prometheus Target Up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "max(up{job=\"desktop-runner\"})" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sessions / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(voice_sessions_total[5m])) * 60" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(voice_errors_total[5m])) * 60" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Interruptions and Cancellations / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(voice_interruptions_total[5m])) * 60", "legendFormat": "interruptions" },
+        { "refId": "B", "expr": "sum(rate(voice_cancellation_success_total[5m])) * 60", "legendFormat": "cancellation_success" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage Latency p95 (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        { "refId": "A", "expr": "voice_stage_duration_seconds{stage=\"stt\",quantile=\"0.95\"} * 1000", "legendFormat": "stt" },
+        { "refId": "B", "expr": "voice_stage_duration_seconds{stage=\"llm\",quantile=\"0.95\"} * 1000", "legendFormat": "llm" },
+        { "refId": "C", "expr": "voice_stage_duration_seconds{stage=\"tts\",quantile=\"0.95\"} * 1000", "legendFormat": "tts" },
+        { "refId": "D", "expr": "voice_stage_duration_seconds{stage=\"orchestrator\",quantile=\"0.95\"} * 1000", "legendFormat": "journey" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Policy Denials / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (reason) (rate(voice_policy_denied_total[5m])) * 60", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Intent Routed / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (intent) (rate(voice_intent_routed_total[5m])) * 60", "legendFormat": "{{intent}}" }
+      ]
+    }
+  ]
+}

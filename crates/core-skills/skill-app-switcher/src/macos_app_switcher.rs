@@ -26,7 +26,11 @@ impl MacOsAppSwitcherSkill {
     }
 
     fn normalize_action(action: Option<&str>) -> String {
-        action.unwrap_or("switch").trim().to_ascii_lowercase()
+        let normalized = action.unwrap_or("switch").trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "close" | "exit" => "quit".to_string(),
+            _ => normalized,
+        }
     }
 
     fn normalize_target(target: Option<&str>) -> Option<String> {

@@ -58,3 +58,19 @@ async fn dry_run_force_quit_action_succeeds() {
     assert_eq!(result.target.as_deref(), Some("Safari"));
     assert!(result.action_done.to_lowercase().contains("force quit"));
 }
+
+#[tokio::test]
+async fn dry_run_close_action_alias_succeeds_as_quit() {
+    let skill = MacOsAppSwitcherSkill::new_for_tests();
+    let result = skill.execute(Some("close"), Some("Safari")).await.must();
+    assert_eq!(result.target.as_deref(), Some("Safari"));
+    assert!(result.action_done.to_lowercase().contains("quit"));
+}
+
+#[tokio::test]
+async fn dry_run_exit_action_alias_succeeds_as_quit() {
+    let skill = MacOsAppSwitcherSkill::new_for_tests();
+    let result = skill.execute(Some("exit"), Some("Safari")).await.must();
+    assert_eq!(result.target.as_deref(), Some("Safari"));
+    assert!(result.action_done.to_lowercase().contains("quit"));
+}
