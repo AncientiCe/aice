@@ -3,26 +3,165 @@
 //! Provides structured JSON logging and Prometheus-style metrics with
 //! baseline telemetry: voice_sessions_total, voice_errors_total, voice_stage_duration_seconds.
 
+mod exporter;
 mod log;
 mod metrics;
 
+pub use exporter::{init_prometheus_exporter, ExporterInitError, ExporterInitState};
 pub use log::init_json_logging;
 pub use metrics::{
     record_app_switcher_skill, record_assistant_skill, record_cancellation_success,
     record_computer_skill, record_distance_skill, record_endpointing_wait_duration, record_error,
     record_first_audio_latency, record_first_token_latency, record_intent_classifier,
     record_intent_routed, record_interruption, record_llm_first_token_latency,
-    record_location_preload, record_media_execute, record_media_execute_duration,
-    record_media_skill, record_memory_fact_recall, record_memory_fact_recall_duration,
-    record_memory_fact_store, record_memory_fact_store_duration, record_memory_load,
-    record_memory_load_duration, record_memory_load_error, record_memory_save,
-    record_memory_save_duration, record_memory_save_error, record_memory_skill,
-    record_message_skill, record_pod_audio_frame, record_pod_connection, record_pod_disconnect,
-    record_pod_egress_device_lock_poison, record_pod_egress_queue_drop,
+    record_llm_stream_tail_duration, record_location_preload, record_media_execute,
+    record_media_execute_duration, record_media_skill, record_memory_fact_recall,
+    record_memory_fact_recall_duration, record_memory_fact_store,
+    record_memory_fact_store_duration, record_memory_load, record_memory_load_duration,
+    record_memory_load_error, record_memory_save, record_memory_save_duration,
+    record_memory_save_error, record_memory_skill, record_message_skill,
+    record_mic_to_stt_duration, record_pod_audio_frame, record_pod_connection,
+    record_pod_disconnect, record_pod_egress_device_lock_poison, record_pod_egress_queue_drop,
     record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
     record_reminder_skill, record_screenshot_skill, record_session_start,
-    record_shopping_list_skill, record_shutdown_signal, record_smart_home_execute,
-    record_smart_home_execute_duration, record_smart_home_skill, record_speech_voiced_duration,
-    record_stage_duration, record_time_skill, record_timer_skill, record_turn_time_to_first_audio,
+    record_shopping_list_skill, record_shutdown_signal, record_skill_duration,
+    record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
+    record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
+    record_tts_first_audio_latency, record_tts_flush_duration, record_turn_time_to_first_audio,
     record_volume_skill, record_weather_skill, register_metrics, Stage,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        init_prometheus_exporter, record_llm_stream_tail_duration, record_mic_to_stt_duration,
+        record_session_start, record_skill_duration, record_tts_first_audio_latency,
+        record_tts_flush_duration, register_metrics, ExporterInitState,
+    };
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::OnceLock;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn shared_bind() -> Result<&'static str, std::io::Error> {
+        static BIND: OnceLock<String> = OnceLock::new();
+        if let Some(bind) = BIND.get() {
+            return Ok(bind.as_str());
+        }
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        drop(listener);
+        let _ = BIND.set(addr.to_string());
+        match BIND.get() {
+            Some(bind) => Ok(bind.as_str()),
+            None => Err(std::io::Error::other("failed to initialize test bind")),
+        }
+    }
+
+    fn scrape(bind: &str) -> Result<String, std::io::Error> {
+        let mut stream = TcpStream::connect(bind)?;
+        stream.set_read_timeout(Some(Duration::from_millis(250)))?;
+        stream
+            .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+        let mut buf = vec![0_u8; 16 * 1024];
+        let n = stream.read(&mut buf)?;
+        Ok(String::from_utf8_lossy(&buf[..n]).to_string())
+    }
+
+    #[test]
+    fn prometheus_exporter_serves_metrics_text() {
+        let bind = match shared_bind() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to reserve local bind: {error}"),
+        };
+        let state = match init_prometheus_exporter(bind) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to initialize exporter: {error}"),
+        };
+        assert!(state == ExporterInitState::Started || state == ExporterInitState::AlreadyRunning);
+        register_metrics();
+        record_session_start();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match scrape(bind) {
+                Ok(payload) => {
+                    if !payload.trim().is_empty() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        panic!("failed to scrape metrics endpoint before timeout: {error}");
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("metrics endpoint did not return payload before timeout");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn prometheus_exporter_is_initialized_once_per_bind() {
+        let bind = match shared_bind() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to reserve local bind: {error}"),
+        };
+        let _ = match init_prometheus_exporter(bind) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to initialize exporter: {error}"),
+        };
+        let state = match init_prometheus_exporter(bind) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to initialize exporter second time: {error}"),
+        };
+        assert_eq!(state, ExporterInitState::AlreadyRunning);
+    }
+
+    #[test]
+    fn new_turn_timing_metrics_are_emitted() {
+        let bind = match shared_bind() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to reserve local bind: {error}"),
+        };
+        let _ = match init_prometheus_exporter(bind) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to initialize exporter: {error}"),
+        };
+        register_metrics();
+        record_mic_to_stt_duration(Duration::from_millis(120));
+        record_llm_stream_tail_duration(Duration::from_millis(320));
+        record_tts_first_audio_latency(Duration::from_millis(80));
+        record_tts_flush_duration(Duration::from_millis(42));
+        record_skill_duration("intent_path", Duration::from_millis(50));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match scrape(bind) {
+                Ok(payload) => {
+                    if !payload.is_empty()
+                        && payload.contains("voice_mic_to_stt_duration")
+                        && payload.contains("voice_llm_stream_tail_duration")
+                        && payload.contains("voice_tts_first_audio_latency")
+                        && payload.contains("voice_tts_flush_duration")
+                        && payload.contains("voice_skill_duration")
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        panic!("failed to scrape metrics endpoint before timeout: {error}");
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("timing metrics not visible before timeout");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+}

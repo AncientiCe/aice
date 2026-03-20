@@ -1,0 +1,80 @@
+{
+  "id": null,
+  "uid": "aice-skills-outcomes",
+  "title": "Aice Skills and Outcomes",
+  "tags": ["aice", "skills"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Skill Invocations / min by Skill",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (__name__) (rate({__name__=~\"voice_.*_skill_total\"}[5m])) * 60",
+          "legendFormat": "{{__name__}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Skill Results / min by Result",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate({__name__=~\"voice_.*_skill_total\", result!~\"\"}[5m])) * 60",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Top Error Kinds / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "topk(10, sum by (kind) (rate(voice_errors_total[5m])) * 60)", "legendFormat": "{{kind}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Skill Timing p95 (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "voice_skill_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "{{skill}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory Operation Rates / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(memory_load_total[5m])) * 60", "legendFormat": "memory_load" },
+        { "refId": "B", "expr": "sum(rate(memory_save_total[5m])) * 60", "legendFormat": "memory_save" },
+        { "refId": "C", "expr": "sum(rate(memory_load_errors_total[5m])) * 60", "legendFormat": "memory_load_errors" },
+        { "refId": "D", "expr": "sum(rate(memory_save_errors_total[5m])) * 60", "legendFormat": "memory_save_errors" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory Latency p95 (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "refId": "A", "expr": "memory_load_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "load_p95" },
+        { "refId": "B", "expr": "memory_save_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "save_p95" }
+      ]
+    }
+  ]
+}

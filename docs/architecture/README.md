@@ -247,6 +247,7 @@ flowchart TD
 | Task | Doc |
 |------|-----|
 | Prerequisites, config, how to start everything | [Local development setup](../setup/local-dev.md) |
+| Local Prometheus/Grafana dashboards and metrics scrape ops | [Local observability runbook](../runbooks/local-observability.md) |
 | Build and flash M5Stack pod (push code to pod) | [M5Stack pod deployment](../deployment/m5stack-pod.md) |
 | Wi‑Fi and gateway host/port for pods | [Wi‑Fi configuration](../network/wifi-configuration.md) |
 | Plan and implementation status | [Local voice AI plan](../local_voice_ai_plan.md) |
@@ -367,3 +368,26 @@ Full skill journey, inputs, outputs, failure paths, and metrics are documented a
 **Purpose:** App switching actions are handled by a dedicated skill and documented in its own skill doc.
 
 Full skill journey, inputs, outputs, failure paths, and metrics are documented at [app-switcher](../skills/app-switcher.md).
+
+---
+
+## 18. Local observability stack (desktop-runner metrics dashboards)
+
+**Purpose:** Provide local, on-demand operational visibility for desktop runtime metrics and timing analysis with Prometheus + Grafana.
+
+```mermaid
+flowchart LR
+    Desktop[desktop-runner process] --> Exporter[Prometheus exporter at service.metrics_bind]
+    Exporter --> Scrape[Prometheus scrape target desktop-runner]
+    Scrape --> Store[Prometheus TSDB local persistence]
+    Store --> Grafana[Grafana dashboards]
+    Grafana --> Runtime[Runtime Overview]
+    Grafana --> Timings[Timing Deep Dive]
+    Grafana --> Skills[Skills and Outcomes]
+```
+
+**Notes:**
+- **Inputs:** Runtime metrics emitted via `core-observability`; `service.metrics_enabled` and `service.metrics_bind` config.
+- **Outputs:** Local dashboards at Grafana (`127.0.0.1:3000`) and raw Prometheus query UI (`127.0.0.1:9090`).
+- **Failure paths:** If exporter bind is invalid or unavailable, runtime logs a warning and continues; Prometheus target shows down until endpoint is reachable.
+- **Operations:** Bring-up/tear-down is via `./scripts/observability.sh` and `ops/observability/docker-compose.yml`.

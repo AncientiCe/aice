@@ -391,7 +391,51 @@ cargo aice-gateway
 cargo aice-desktop
 ```
 
-## 5. Hardware notes
+## 5. Local observability dashboard (Prometheus + Grafana)
+
+This repo includes an on-demand local observability stack for `desktop-runner`.
+
+Start stack:
+
+```bash
+./scripts/observability.sh up
+```
+
+Validate resolved compose config:
+
+```bash
+./scripts/observability.sh config
+```
+
+Check status / logs:
+
+```bash
+./scripts/observability.sh status
+./scripts/observability.sh logs
+```
+
+Stop stack:
+
+```bash
+./scripts/observability.sh down
+```
+
+Open UIs:
+
+- Grafana: `http://127.0.0.1:3000` (local-only, anonymous dev access)
+- Prometheus: `http://127.0.0.1:9090`
+
+Metrics endpoint settings are in `config.json` under `service`:
+
+- `metrics_enabled` (default `true`)
+- `metrics_bind` (default `127.0.0.1:9000`)
+
+Persisted local data paths:
+
+- `.local/observability/prometheus`
+- `.local/observability/grafana`
+
+## 6. Hardware notes
 
 - Signal Pod is the intended product target.
 - M5Stack ATOM Echo support is experimental and useful for transport/firmware testing.

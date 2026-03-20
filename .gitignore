@@ -16,6 +16,7 @@ memory.json
 memory.sqlite
 memory.sqlite-*
 apple_music_token.json
+.local/observability/
 
 # Secret material
 *.pem

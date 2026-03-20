@@ -15,7 +15,7 @@ Media: play, pause, volume, multi-room, \"play X in Y\". Use \"skill_media\"; op
 Memory: remember/recall facts, \"remember that\", \"what did I say about X\". Use \"skill_memory\"; optional \"memory_query\", \"memory_store\": true when storing. \
 Computer: open app, browser, run script, file operations. Use \"skill_computer\"; optional \"computer_action\", \"computer_target\". \
 Screenshot: take a local screenshot. Use \"skill_screenshot\"; optional \"screenshot_filename\" (e.g. \"meeting-notes.png\") when user asks for a specific filename. \
-App switcher: switch/focus apps, cycle next/previous, hide apps, quit, force quit. Use \"skill_app_switcher\"; optional \"app_switcher_action\" (\"switch\", \"next\", \"previous\", \"hide\", \"hide_others\", \"show_all_windows\", \"quit\", \"force_quit\"), optional \"app_switcher_target\" (required for switch/hide/quit/force_quit). \
+App switcher: switch/focus apps, cycle next/previous, hide apps, quit, force quit. Use \"skill_app_switcher\"; optional \"app_switcher_action\" (\"switch\", \"next\", \"previous\", \"hide\", \"hide_others\", \"show_all_windows\", \"quit\", \"force_quit\"), optional \"app_switcher_target\" (required for switch/hide/quit/force_quit). For user words like \"close\" or \"exit\" an app, output \"quit\". \
 Reminder: add/create a reminder. Use \"skill_reminder\"; \"reminder_title\" = what to be reminded about; optional \"reminder_when\" = date-time in ISO 8601 (e.g. \"2026-03-20T17:00\") when the user specifies a time. Omit \"reminder_when\" if no time given. \
 Timer: set/start a timer. Use \"skill_timer\"; \"timer_duration\" = duration string (e.g. \"5 minutes\", \"1 hour 30 minutes\"); optional \"timer_name\" = label the user gives the timer. \
 Shopping list: add/remove items from a shopping list. Use \"skill_shopping_list\"; \"shopping_action\": \"add\" or \"remove\"; \"shopping_items\" = comma-separated items to add/remove; optional \"shopping_when\" = target date (e.g. \"today\", \"tomorrow\", \"saturday\", \"2026-03-20\"). Default when not specified: \"today\". \
@@ -23,6 +23,33 @@ Message: send a message to a contact via iMessage. Use \"skill_message\"; \"mess
 Volume: set/change/mute/unmute/query system volume. Use \"skill_volume\"; optional \"volume_action\" (\"set\", \"up\", \"down\", \"mute\", \"unmute\", \"get\"), optional \"volume_level\" integer 0-100 (only for \"set\"). \
 Do NOT use \"skill_assistant\" for sending iMessages. \
 Examples: {\"intent\": \"skill_reminder\", \"reminder_title\": \"Call mom\", \"reminder_when\": \"2026-03-20T17:00\"}; {\"intent\": \"skill_timer\", \"timer_duration\": \"5 minutes\"}; {\"intent\": \"skill_shopping_list\", \"shopping_action\": \"add\", \"shopping_items\": \"strawberries, salami, celery\"}; {\"intent\": \"skill_message\", \"message_contact\": \"my wife\", \"message_text\": \"How are you?\"}; {\"intent\": \"skill_message\", \"message_contact\": \"my wife\", \"message_text\": \"how she's doing\"}; {\"intent\": \"skill_volume\", \"volume_action\": \"set\", \"volume_level\": 40}; {\"intent\": \"skill_screenshot\", \"screenshot_filename\": \"desk.png\"}; {\"intent\": \"skill_app_switcher\", \"app_switcher_action\": \"switch\", \"app_switcher_target\": \"Safari\"}; {\"intent\": \"skill_app_switcher\", \"app_switcher_action\": \"quit\", \"app_switcher_target\": \"Music\"}; {\"intent\": \"skill_app_switcher\", \"app_switcher_action\": \"force_quit\", \"app_switcher_target\": \"Safari\"}.";
+
+const CLASSIFICATION_FEW_SHOTS: [(&str, &str); 6] = [
+    (
+        "how far is Paris?",
+        "{\"intent\":\"skill_distance\",\"destination\":\"Paris, France\"}",
+    ),
+    (
+        "what's the weather in Paris?",
+        "{\"intent\":\"skill_weather\",\"location\":\"Paris, France\"}",
+    ),
+    (
+        "what's the weather?",
+        "{\"intent\":\"skill_weather\"}",
+    ),
+    (
+        "time in Tokyo",
+        "{\"intent\":\"skill_time\",\"location\":\"Tokyo, Japan\"}",
+    ),
+    (
+        "set a timer for 5 minutes",
+        "{\"intent\":\"skill_timer\",\"timer_duration\":\"5 minutes\"}",
+    ),
+    (
+        "send a message to John saying running late",
+        "{\"intent\":\"skill_message\",\"message_contact\":\"John\",\"message_text\":\"running late\"}",
+    ),
+];
 
 /// Intent classifier that uses an LLM to classify user text; parses JSON response.
 pub struct LlmIntentClassifier<'a, L> {
@@ -52,9 +79,17 @@ where
             "Classify this user request. Reply with only the JSON object.\nUser request: \"{}\"",
             user_text.trim()
         );
+        let few_shot_history: Vec<(String, String)> = CLASSIFICATION_FEW_SHOTS
+            .iter()
+            .map(|(u, a)| (u.to_string(), a.to_string()))
+            .collect();
         let mut stream = self
             .llm
-            .chat_stream(&user_message, &[], Some(self.system_prompt.as_str()))
+            .chat_stream(
+                &user_message,
+                few_shot_history.as_slice(),
+                Some(self.system_prompt.as_str()),
+            )
             .await?;
         let mut raw = String::new();
         while let Some(token) = stream.next().await {
@@ -62,5 +97,103 @@ where
         }
         let decision = parse_intent(raw.trim())?;
         Ok(decision)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LlmIntentClassifier;
+    use async_trait::async_trait;
+    use core_orchestrator::{IntentClassifier, IntentDecision, LlmStream};
+    use futures::stream;
+    use std::sync::{Arc, Mutex};
+
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
+            }
+        }
+    }
+
+    struct RecordingLlm {
+        response: String,
+        last_history: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl RecordingLlm {
+        fn new(response: &str) -> Self {
+            Self {
+                response: response.to_string(),
+                last_history: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn last_history(&self) -> Vec<(String, String)> {
+            self.last_history.lock().must().clone()
+        }
+    }
+
+    #[async_trait]
+    impl LlmStream for RecordingLlm {
+        async fn chat_stream(
+            &self,
+            _user_text: &str,
+            history: &[(String, String)],
+            _system_prompt_override: Option<&str>,
+        ) -> Result<
+            Box<dyn futures::Stream<Item = String> + Send + Unpin>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
+            *self.last_history.lock().must() = history.to_vec();
+            Ok(Box::new(stream::iter(vec![self.response.clone()])))
+        }
+    }
+
+    #[tokio::test]
+    async fn classifier_provides_contrastive_few_shot_history() {
+        let llm = RecordingLlm::new(r#"{"intent":"chat"}"#);
+        let classifier = LlmIntentClassifier::new(&llm);
+
+        classifier.classify("how far is Paris?").await.must();
+        let history = llm.last_history();
+
+        assert!(
+            history.iter().any(|(u, a)| {
+                u.contains("how far is Paris?")
+                    && a.contains("\"intent\":\"skill_distance\"")
+                    && a.contains("\"destination\":\"Paris, France\"")
+            }),
+            "distance disambiguation example missing from classifier history"
+        );
+        assert!(
+            history.iter().any(|(u, a)| {
+                u.contains("what's the weather in Paris?")
+                    && a.contains("\"intent\":\"skill_weather\"")
+                    && a.contains("\"location\":\"Paris, France\"")
+            }),
+            "weather location extraction example missing from classifier history"
+        );
+    }
+
+    #[tokio::test]
+    async fn classifier_parses_distance_decision_from_llm_json() {
+        let llm = RecordingLlm::new(r#"{"intent":"skill_distance","destination":"Paris, France"}"#);
+        let classifier = LlmIntentClassifier::new(&llm);
+
+        let decision = classifier.classify("how far is Paris?").await.must();
+
+        assert_eq!(
+            decision,
+            IntentDecision::SkillDistance {
+                origin: None,
+                destination: Some("Paris, France".to_string())
+            }
+        );
     }
 }

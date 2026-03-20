@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: aice-desktop
+    orgId: 1
+    folder: Aice Desktop
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

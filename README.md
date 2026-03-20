@@ -19,6 +19,19 @@ Latest benchmark snapshot (2026-03-19 UTC):
 | 2026-03-19T07:45:35.308592Z | what's the weather? | 2133 | 865 | 170 | 1098 | 1891 | 5208 |
 | 2026-03-19T07:45:54.466796Z | what's the weather in Rome? | 2630 | 1261 | 144 | 1225 | 1555 | 5429 |
 
+## Local metrics dashboard (desktop-runner)
+
+Start local Prometheus + Grafana stack on demand:
+
+```bash
+./scripts/observability.sh up
+```
+
+- Grafana: `http://127.0.0.1:3000`
+- Prometheus: `http://127.0.0.1:9090`
+
+Runbook: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md)
+
 No cloud lock-in is required for the runtime loop. You run it on your own machine.
 
 License: Apache-2.0 (see [LICENSE](LICENSE)).
@@ -150,6 +163,7 @@ Current notable integrations:
 ## Ops and hardware docs
 
 - Local setup: [docs/setup/local-dev.md](docs/setup/local-dev.md)
+- Local observability: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md)
 - Architecture: [docs/architecture/README.md](docs/architecture/README.md)
 - Release runbook: [docs/runbooks/release-v0.1.0.md](docs/runbooks/release-v0.1.0.md)
 - Experimental M5Stack deployment: [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md)

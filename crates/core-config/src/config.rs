@@ -209,6 +209,12 @@ pub struct ServiceConfig {
     /// Bind address for HTTP health endpoint (`GET /healthz`).
     #[serde(default = "default_health_bind")]
     pub health_bind: String,
+    /// Enable local Prometheus scrape endpoint for runtime metrics.
+    #[serde(default = "default_metrics_enabled")]
+    pub metrics_enabled: bool,
+    /// Bind address for Prometheus metrics HTTP endpoint.
+    #[serde(default = "default_metrics_bind")]
+    pub metrics_bind: String,
     /// Crash restart backoff for wrapper scripts.
     #[serde(default = "default_restart_backoff_secs")]
     pub restart_backoff_secs: u64,
@@ -218,6 +224,8 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             health_bind: default_health_bind(),
+            metrics_enabled: default_metrics_enabled(),
+            metrics_bind: default_metrics_bind(),
             restart_backoff_secs: default_restart_backoff_secs(),
         }
     }
@@ -229,6 +237,14 @@ fn default_health_bind() -> String {
 
 fn default_restart_backoff_secs() -> u64 {
     3
+}
+
+fn default_metrics_enabled() -> bool {
+    true
+}
+
+fn default_metrics_bind() -> String {
+    "127.0.0.1:9000".to_string()
 }
 
 /// LLM behavior settings.
@@ -517,6 +533,8 @@ mod tests {
         );
         assert_eq!(config.tts.piper_model_path, "models/piper/model.onnx");
         assert_eq!(config.service.health_bind, "127.0.0.1:8780");
+        assert!(config.service.metrics_enabled);
+        assert_eq!(config.service.metrics_bind, "127.0.0.1:9000");
         assert_eq!(config.assistant_profile.unit_system, "metric");
         assert_eq!(config.assistant_profile.time_format, "24h");
         assert!(config.memory.enabled);
@@ -539,7 +557,12 @@ mod tests {
                 "audio":{"turn_window_ms":900},
                 "stt":{"whisper_model_path":"models/custom-whisper.bin"},
                 "tts":{"piper_model_path":"models/custom-piper.onnx","piper_config_path":"models/custom-piper.onnx.json"},
-                "service":{"health_bind":"127.0.0.1:9898","restart_backoff_secs":5}
+                "service":{
+                    "health_bind":"127.0.0.1:9898",
+                    "restart_backoff_secs":5,
+                    "metrics_enabled":false,
+                    "metrics_bind":"127.0.0.1:9100"
+                }
             }"#,
         )
         .must();
@@ -567,6 +590,8 @@ mod tests {
         );
         assert_eq!(config.service.health_bind, "127.0.0.1:9898");
         assert_eq!(config.service.restart_backoff_secs, 5);
+        assert!(!config.service.metrics_enabled);
+        assert_eq!(config.service.metrics_bind, "127.0.0.1:9100");
 
         let _ = std::fs::remove_file(&path);
     }

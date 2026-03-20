@@ -1,0 +1,69 @@
+{
+  "id": null,
+  "uid": "aice-timing-deep-dive",
+  "title": "Aice Timing Deep Dive",
+  "tags": ["aice", "timings"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Journey p50/p95/p99 (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "voice_stage_duration_seconds{stage=\"orchestrator\",quantile=\"0.5\"} * 1000", "legendFormat": "p50" },
+        { "refId": "B", "expr": "voice_stage_duration_seconds{stage=\"orchestrator\",quantile=\"0.95\"} * 1000", "legendFormat": "p95" },
+        { "refId": "C", "expr": "voice_stage_duration_seconds{stage=\"orchestrator\",quantile=\"0.99\"} * 1000", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "STT / LLM / TTS p95 (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "voice_stage_duration_seconds{stage=\"stt\",quantile=\"0.95\"} * 1000", "legendFormat": "stt_p95" },
+        { "refId": "B", "expr": "voice_stage_duration_seconds{stage=\"llm\",quantile=\"0.95\"} * 1000", "legendFormat": "llm_p95" },
+        { "refId": "C", "expr": "voice_stage_duration_seconds{stage=\"tts\",quantile=\"0.95\"} * 1000", "legendFormat": "tts_p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mic to STT / Endpointing / LLM First Token (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "voice_mic_to_stt_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "mic_to_stt_p95" },
+        { "refId": "B", "expr": "voice_endpointing_wait_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "endpointing_wait_p95" },
+        { "refId": "C", "expr": "voice_llm_first_token_latency_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "llm_first_token_p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM Stream Tail / First Audio / Flush (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "voice_llm_stream_tail_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "llm_stream_tail_p95" },
+        { "refId": "B", "expr": "voice_tts_first_audio_latency_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "tts_first_audio_p95" },
+        { "refId": "C", "expr": "voice_tts_flush_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "tts_flush_p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to First Audio (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "voice_turn_time_to_first_audio_seconds{quantile=\"0.5\"} * 1000", "legendFormat": "p50" },
+        { "refId": "B", "expr": "voice_turn_time_to_first_audio_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "p95" },
+        { "refId": "C", "expr": "voice_turn_time_to_first_audio_seconds{quantile=\"0.99\"} * 1000", "legendFormat": "p99" }
+      ]
+    }
+  ]
+}

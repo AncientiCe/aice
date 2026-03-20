@@ -57,7 +57,7 @@ sequenceDiagram
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `action` | `Option<&str>` | `switch`, `next`, `previous`, `hide`, `hide_others`, `show_all_windows`, `quit`, `force_quit`. |
+| `action` | `Option<&str>` | `switch`, `next`, `previous`, `hide`, `hide_others`, `show_all_windows`, `quit`, `force_quit` (`close` and `exit` are normalized to `quit`). |
 | `target` | `Option<&str>` | App name required for `switch`, `hide`, `quit`, `force_quit`. |
 
 ## Outputs
@@ -80,6 +80,7 @@ sequenceDiagram
 - macOS-only behavior for live execution.
 - Runtime requires two-step confirmation for `force_quit` before calling this skill.
 - All execution is local (no cloud or external API dependency).
+- Action aliases `close` and `exit` are normalized to `quit` before execution.
 
 ## Metrics
 

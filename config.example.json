@@ -25,6 +25,8 @@
   },
   "service": {
     "health_bind": "127.0.0.1:8780",
+    "metrics_enabled": true,
+    "metrics_bind": "127.0.0.1:9000",
     "restart_backoff_secs": 3
   },
   "wake_word": {
