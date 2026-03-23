@@ -122,6 +122,7 @@ impl LlmStream for MockLlm {
         _user_text: &str,
         _history: &[(String, String)],
         _system_prompt_override: Option<&str>,
+        _call_options: Option<&core_orchestrator::LlmCallOptions>,
     ) -> Result<
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
@@ -139,6 +140,7 @@ impl LlmStream for FailLlm {
         _user_text: &str,
         _history: &[(String, String)],
         _system_prompt_override: Option<&str>,
+        _call_options: Option<&core_orchestrator::LlmCallOptions>,
     ) -> Result<
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
@@ -185,6 +187,7 @@ impl LlmStream for RecordLlm {
         user_text: &str,
         _history: &[(String, String)],
         _system_prompt_override: Option<&str>,
+        _call_options: Option<&core_orchestrator::LlmCallOptions>,
     ) -> Result<
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
@@ -217,6 +220,7 @@ impl LlmStream for HistoryCountLlm {
         _user_text: &str,
         history: &[(String, String)],
         _system_prompt_override: Option<&str>,
+        _call_options: Option<&core_orchestrator::LlmCallOptions>,
     ) -> Result<
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
@@ -247,6 +251,7 @@ impl LlmStream for QueueLlm {
         _user_text: &str,
         _history: &[(String, String)],
         _system_prompt_override: Option<&str>,
+        _call_options: Option<&core_orchestrator::LlmCallOptions>,
     ) -> Result<
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,

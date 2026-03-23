@@ -11,6 +11,8 @@ pub use classifier_contract::{
     intent_classifier_system_prompt_for_skills,
 };
 pub use engine::{ConversationEngine, TurnOutcome};
-pub use intent::{parse_intent, IntentClassifier, IntentDecision, ParseIntentError};
+pub use intent::{
+    parse_intent, validate_intent_decision, IntentClassifier, IntentDecision, ParseIntentError,
+};
 pub use search::{parse_need_search, NEED_SEARCH_MARKER};
-pub use traits::{LlmStream, SttStream, TtsSink};
+pub use traits::{LlmCallOptions, LlmStream, SttStream, TtsSink};

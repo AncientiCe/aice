@@ -38,6 +38,11 @@ fn render_decision_order(available_skills: &[&str]) -> String {
     if has_skill(available_skills, "skill_assistant") {
         steps.push("Else if the user wants calendar help, use \"skill_assistant\".");
     }
+    if has_skill(available_skills, "skill_media") {
+        steps.push(
+            "Else if the user wants to control music, audio playback, or media (play, pause, skip track, shuffle), use \"skill_media\".",
+        );
+    }
     steps.push("Else classify the best matching skill from the valid intents list.");
     steps.push("If no skill clearly matches, use \"chat\".");
     let mut output = String::new();
@@ -221,6 +226,19 @@ Field restrictions:
             prompt.push_str("- Never classify message-sending as skill_assistant.\n");
         }
     }
+    let include_media = has_skill(available_skills, "skill_media");
+    let include_smart_home = has_skill(available_skills, "skill_smart_home");
+    let include_app_switcher = has_skill(available_skills, "skill_app_switcher");
+    if include_media && include_smart_home {
+        prompt.push_str(
+            "- skill_media is for music, audio playback, tracks, queues, and shuffle. skill_smart_home is for physical devices: lights, switches, scenes, brightness, climate. Never route playback or music requests to skill_smart_home.\n",
+        );
+    }
+    if include_media && include_app_switcher {
+        prompt.push_str(
+            "- skill_media and skill_app_switcher both use \"next\"/\"previous\" commands, but skill_media controls the audio/music player while skill_app_switcher controls the focused application or window.\n",
+        );
+    }
     if include_message_rewrite_block {
         prompt.push_str(
             r#"
@@ -296,6 +314,22 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
         (
             "ask my wife how she is".to_string(),
             "{\"intent\":\"skill_message\",\"command\":\"send\",\"message_contact\":\"my wife\",\"message_text\":\"How are you?\"}".to_string(),
+        ),
+        (
+            "next song".to_string(),
+            "{\"intent\":\"skill_media\",\"command\":\"next\"}".to_string(),
+        ),
+        (
+            "pause the music".to_string(),
+            "{\"intent\":\"skill_media\",\"command\":\"pause\"}".to_string(),
+        ),
+        (
+            "turn on the kitchen lights".to_string(),
+            "{\"intent\":\"skill_smart_home\",\"command\":\"on\",\"smart_home_target\":\"kitchen lights\"}".to_string(),
+        ),
+        (
+            "switch to the next app".to_string(),
+            "{\"intent\":\"skill_app_switcher\",\"command\":\"next\"}".to_string(),
         ),
     ]
 }
@@ -391,5 +425,102 @@ mod tests {
                 && a.contains("\"command\":\"get\"")
                 && a.contains("\"location\":\"London, UK\"")
         }));
+    }
+
+    #[test]
+    fn prompt_includes_media_vs_smart_home_restriction_when_both_present() {
+        let prompt =
+            intent_classifier_system_prompt_for_skills(&["skill_media", "skill_smart_home"]);
+        assert!(
+            prompt.contains("skill_media is for music, audio playback"),
+            "expected media/smart-home domain separation in prompt"
+        );
+        assert!(
+            prompt.contains("Never route playback or music requests to skill_smart_home"),
+            "expected explicit prohibition on smart-home for playback"
+        );
+    }
+
+    #[test]
+    fn prompt_omits_media_smart_home_restriction_when_only_one_present() {
+        let prompt_media_only = intent_classifier_system_prompt_for_skills(&["skill_media"]);
+        assert!(!prompt_media_only
+            .contains("Never route playback or music requests to skill_smart_home"));
+
+        let prompt_smart_home_only =
+            intent_classifier_system_prompt_for_skills(&["skill_smart_home"]);
+        assert!(!prompt_smart_home_only.contains("skill_media is for music"));
+    }
+
+    #[test]
+    fn prompt_includes_media_vs_app_switcher_restriction_when_both_present() {
+        let prompt =
+            intent_classifier_system_prompt_for_skills(&["skill_media", "skill_app_switcher"]);
+        assert!(
+            prompt.contains("skill_media controls the audio/music player"),
+            "expected media/app-switcher next/previous disambiguation in prompt"
+        );
+        assert!(
+            prompt.contains("skill_app_switcher controls the focused application"),
+            "expected app-switcher description in disambiguation rule"
+        );
+    }
+
+    #[test]
+    fn prompt_includes_media_decision_order_step() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_media"]);
+        assert!(
+            prompt.contains("control music, audio playback, or media"),
+            "expected media step in decision order"
+        );
+    }
+
+    #[test]
+    fn few_shots_cover_media_domain_boundary() {
+        let few_shots = intent_classifier_few_shots();
+
+        assert!(
+            few_shots.iter().any(|(u, a)| {
+                u.contains("next song")
+                    && a.contains("\"intent\":\"skill_media\"")
+                    && a.contains("\"command\":\"next\"")
+            }),
+            "expected 'next song' -> skill_media next few-shot"
+        );
+        assert!(
+            few_shots.iter().any(|(u, a)| {
+                u.contains("pause the music")
+                    && a.contains("\"intent\":\"skill_media\"")
+                    && a.contains("\"command\":\"pause\"")
+            }),
+            "expected 'pause the music' -> skill_media pause few-shot"
+        );
+    }
+
+    #[test]
+    fn few_shots_cover_smart_home_domain_boundary() {
+        let few_shots = intent_classifier_few_shots();
+        assert!(
+            few_shots.iter().any(|(u, a)| {
+                u.contains("turn on the kitchen lights")
+                    && a.contains("\"intent\":\"skill_smart_home\"")
+                    && a.contains("\"command\":\"on\"")
+                    && a.contains("\"smart_home_target\":\"kitchen lights\"")
+            }),
+            "expected smart-home lights few-shot"
+        );
+    }
+
+    #[test]
+    fn few_shots_cover_app_switcher_domain_boundary() {
+        let few_shots = intent_classifier_few_shots();
+        assert!(
+            few_shots.iter().any(|(u, a)| {
+                u.contains("switch to the next app")
+                    && a.contains("\"intent\":\"skill_app_switcher\"")
+                    && a.contains("\"command\":\"next\"")
+            }),
+            "expected app-switcher next few-shot"
+        );
     }
 }

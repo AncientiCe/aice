@@ -1806,7 +1806,7 @@ impl DesktopRuntime {
             llm_input = %user_text.trim(),
             "llm_chat_input"
         );
-        let mut stream = llm.chat_stream(&user_text, &history, None).await?;
+        let mut stream = llm.chat_stream(&user_text, &history, None, None).await?;
         use futures::StreamExt;
         let mut full_response = String::new();
         let mut tts_push_duration = Duration::ZERO;
@@ -2045,7 +2045,7 @@ impl DesktopRuntime {
             user_text.trim()
         );
         let mut stream = llm
-            .chat_stream(&prompt, &[], None)
+            .chat_stream(&prompt, &[], None, None)
             .await
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e })?;
         let mut raw = String::new();
@@ -2094,7 +2094,7 @@ impl DesktopRuntime {
             location_hint.trim()
         );
         tracing::info!(llm_input = %prompt.trim(), "llm_location_contract_input");
-        let mut stream = match llm.chat_stream(&prompt, &[], None).await {
+        let mut stream = match llm.chat_stream(&prompt, &[], None, None).await {
             Ok(stream) => stream,
             Err(error) => {
                 record_location_contract_duration(intent_name, started_at.elapsed());
@@ -2188,7 +2188,7 @@ impl DesktopRuntime {
         );
         tracing::info!(llm_input = %prompt.trim(), "llm_location_contract_retry_input");
         let mut stream = llm
-            .chat_stream(&prompt, &[], None)
+            .chat_stream(&prompt, &[], None, None)
             .await
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e })?;
         let mut raw = String::new();
@@ -2247,7 +2247,7 @@ impl DesktopRuntime {
         let llm_started_at = Instant::now();
         tracing::info!(llm_input = %user_prompt.trim(), "llm_skill_input");
         let mut stream = llm
-            .chat_stream(user_prompt, &[], system_prompt_override)
+            .chat_stream(user_prompt, &[], system_prompt_override, None)
             .await?;
         use futures::StreamExt;
         let mut full_response = String::new();

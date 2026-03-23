@@ -15,16 +15,37 @@ pub trait SttStream: Send + Sync {
     async fn flush(&mut self) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Per-call options that override instance-level defaults for a single LLM invocation.
+pub struct LlmCallOptions {
+    /// Override the model temperature for this call only. `0.0` gives the most deterministic output.
+    pub temperature: Option<f32>,
+    /// When `true`, request JSON-constrained output from the model (e.g. Ollama `format: "json"`).
+    pub format_json: bool,
+}
+
+impl LlmCallOptions {
+    /// Options appropriate for classification calls: deterministic, JSON output.
+    pub fn for_classification() -> Self {
+        Self {
+            temperature: Some(0.0),
+            format_json: true,
+        }
+    }
+}
+
 /// Streaming LLM: user message in, token stream out.
 #[async_trait]
 pub trait LlmStream: Send + Sync {
     /// Run one turn: send user text, stream response tokens.
-    /// When `system_prompt_override` is `Some`, use it instead of the default system prompt for this call only.
+    ///
+    /// - `system_prompt_override`: when `Some`, replaces the default system prompt for this call.
+    /// - `call_options`: when `Some`, applies per-call overrides (temperature, format).
     async fn chat_stream(
         &self,
         user_text: &str,
         history: &[(String, String)],
         system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
     ) -> Result<
         Box<dyn Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,

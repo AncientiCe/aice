@@ -77,6 +77,15 @@ sequenceDiagram
 | `Execution` | Missing required target, non-macOS runtime, or AppleScript/shell execution failure. |
 | `UnsupportedAction` | Action not in supported set. |
 
+## Classification / Routing
+
+The canonical routing rules live in [`crates/core-orchestrator/src/classifier_contract.rs`](../../crates/core-orchestrator/src/classifier_contract.rs).
+
+- **Domain**: application or window focus on macOS — switching, hiding, quitting, force-quitting apps.
+- **Allowed `command` values**: `switch`, `next`, `previous`, `hide`, `quit`, `force_quit`.
+- **Distinguished from `skill_media`**: `next` and `previous` here cycle the focused application; the same commands in `skill_media` advance the audio track.
+- Decisions with an `action` outside the allowed set are rejected by `validate_intent_decision` before reaching this skill.
+
 ## Notes
 
 - macOS-only behavior for live execution.
