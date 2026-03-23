@@ -97,4 +97,5 @@ sequenceDiagram
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| *(none instrumented yet — add when touching this skill)* | — | — |
+| `backend_skill_execute_total` | Counter | `skill="memory"`, `result`, `error_kind` |
+| `backend_skill_execute_duration_seconds` | Histogram | `skill="memory"` |

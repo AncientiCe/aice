@@ -92,4 +92,7 @@ sequenceDiagram
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| *(none instrumented yet — add when touching this skill)* | — | — |
+| `backend_skill_execute_total` | Counter | `skill="smart_home"`, `result`, `error_kind` |
+| `backend_skill_execute_duration_seconds` | Histogram | `skill="smart_home"` |
+| `backend_dependency_requests_total` | Counter | `dependency="hue"`, `operation`, `result`, `error_kind` |
+| `backend_dependency_request_duration_seconds` | Histogram | `dependency="hue"`, `operation` |

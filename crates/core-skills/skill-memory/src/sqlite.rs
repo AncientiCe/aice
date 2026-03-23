@@ -1,9 +1,14 @@
 use crate::types::{MemoryFact, MemoryResult, MemorySkill, MemorySkillError};
 use async_trait::async_trait;
 use chrono::Utc;
+use metrics::{counter, histogram};
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+const BACKEND_SKILL_EXECUTE_TOTAL: &str = "backend_skill_execute_total";
+const BACKEND_SKILL_EXECUTE_DURATION_SECONDS: &str = "backend_skill_execute_duration_seconds";
 
 #[derive(Clone)]
 pub struct SqliteMemorySkill {
@@ -206,6 +211,14 @@ impl SqliteMemorySkill {
         }
         Ok(())
     }
+
+    fn error_kind(error: &MemorySkillError) -> &'static str {
+        match error {
+            MemorySkillError::Storage(_) => "storage",
+            MemorySkillError::Retrieval(_) => "retrieval",
+            MemorySkillError::NoMatch => "no_match",
+        }
+    }
 }
 
 #[async_trait]
@@ -215,32 +228,58 @@ impl MemorySkill for SqliteMemorySkill {
         query: Option<&str>,
         store: Option<bool>,
     ) -> Result<MemoryResult, MemorySkillError> {
-        let query = query.unwrap_or("").trim();
-        let should_store = store.unwrap_or(false)
-            || query.to_lowercase().starts_with("remember")
-            || query.to_lowercase().starts_with("note");
+        let started_at = Instant::now();
+        let result = (|| {
+            let query = query.unwrap_or("").trim();
+            let should_store = store.unwrap_or(false)
+                || query.to_lowercase().starts_with("remember")
+                || query.to_lowercase().starts_with("note");
 
-        if should_store {
-            let (key, value) = Self::extract_fact_from_query(query)
-                .ok_or_else(|| MemorySkillError::Storage("empty memory query".to_string()))?;
-            self.store_fact(&key, &value)?;
-            return Ok(MemoryResult {
-                summary: "Stored memory".to_string(),
-                facts: vec![MemoryFact {
-                    key,
-                    value,
-                    when: Some(Utc::now().to_rfc3339()),
-                }],
-                stored: true,
-            });
+            if should_store {
+                let (key, value) = Self::extract_fact_from_query(query)
+                    .ok_or_else(|| MemorySkillError::Storage("empty memory query".to_string()))?;
+                self.store_fact(&key, &value)?;
+                return Ok(MemoryResult {
+                    summary: "Stored memory".to_string(),
+                    facts: vec![MemoryFact {
+                        key,
+                        value,
+                        when: Some(Utc::now().to_rfc3339()),
+                    }],
+                    stored: true,
+                });
+            }
+
+            let facts = self.query_facts(query)?;
+            Ok(MemoryResult {
+                summary: "Memory recall".to_string(),
+                facts,
+                stored: false,
+            })
+        })();
+
+        match &result {
+            Ok(_) => counter!(
+                BACKEND_SKILL_EXECUTE_TOTAL,
+                1,
+                "skill" => "memory",
+                "result" => "success",
+                "error_kind" => "none"
+            ),
+            Err(error) => counter!(
+                BACKEND_SKILL_EXECUTE_TOTAL,
+                1,
+                "skill" => "memory",
+                "result" => "error",
+                "error_kind" => Self::error_kind(error)
+            ),
         }
-
-        let facts = self.query_facts(query)?;
-        Ok(MemoryResult {
-            summary: "Memory recall".to_string(),
-            facts,
-            stored: false,
-        })
+        histogram!(
+            BACKEND_SKILL_EXECUTE_DURATION_SECONDS,
+            started_at.elapsed().as_secs_f64(),
+            "skill" => "memory"
+        );
+        result
     }
 
     async fn ingest_turn(&self, user_text: &str) -> Result<(), MemorySkillError> {

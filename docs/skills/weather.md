@@ -72,7 +72,9 @@ sequenceDiagram
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| `voice_weather_skill_total` | Counter | `result` (`success`,`error`) |
-| `voice_skill_duration_seconds` | Histogram | `skill="skill_weather"` |
+| `backend_skill_execute_total` | Counter | `skill="weather"`, `result`, `error_kind` |
+| `backend_skill_execute_duration_seconds` | Histogram | `skill="weather"` |
+| `backend_dependency_requests_total` | Counter | `dependency="open_meteo"`, `operation` (`geocoding`,`forecast`), `result`, `error_kind` |
+| `backend_dependency_request_duration_seconds` | Histogram | `dependency="open_meteo"`, `operation` (`geocoding`,`forecast`) |
 | `voice_location_contract_total` | Counter | `intent`, `result` (`normalized`,`clarify`,`error`) |
 | `voice_location_contract_duration_seconds` | Histogram | `intent` |

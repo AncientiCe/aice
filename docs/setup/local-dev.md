@@ -393,7 +393,7 @@ cargo aice-desktop
 
 ## 5. Local observability dashboard (Prometheus + Grafana)
 
-This repo includes an on-demand local observability stack for `desktop-runner`.
+This repo includes an on-demand local observability stack for `aice-backend`.
 
 Start stack:
 
@@ -425,10 +425,10 @@ Open UIs:
 - Grafana: `http://127.0.0.1:3000` (local-only, anonymous dev access)
 - Prometheus: `http://127.0.0.1:9090`
 
-Metrics endpoint settings are in `config.json` under `service`:
+Backend metrics endpoint settings are in `config.json` under `service`:
 
 - `metrics_enabled` (default `true`)
-- `metrics_bind` (default `127.0.0.1:9000`)
+- `metrics_bind` (set `AICE_BACKEND_METRICS_BIND=127.0.0.1:9001` to match default observability scrape config)
 
 Persisted local data paths:
 

@@ -1,8 +1,8 @@
 {
   "id": null,
-  "uid": "aice-runtime-overview",
-  "title": "Aice Runtime Overview",
-  "tags": ["aice", "runtime"],
+  "uid": "aice-backend-service-overview",
+  "title": "Aice Backend Service Overview",
+  "tags": ["aice", "backend", "overview"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -12,69 +12,72 @@
   "panels": [
     {
       "type": "stat",
-      "title": "Prometheus Target Up",
+      "title": "Backend Target Up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
-      "targets": [
-        { "refId": "A", "expr": "max(up{job=~\"desktop-runner|aice-backend|aice-macos\"})" }
-      ]
+      "targets": [{ "refId": "A", "expr": "max(up{job=\"aice-backend\"})" }]
     },
     {
       "type": "timeseries",
-      "title": "Sessions / min",
+      "title": "HTTP Requests / min",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 9, "x": 6, "y": 0 },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(voice_sessions_total[5m])) * 60" }
+        {
+          "refId": "A",
+          "expr": "sum(rate(backend_http_requests_total{job=\"aice-backend\"}[5m])) * 60"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Errors / min",
+      "title": "HTTP Errors / min",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 9, "x": 15, "y": 0 },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(voice_errors_total[5m])) * 60" }
+        {
+          "refId": "A",
+          "expr": "sum(rate(backend_http_requests_total{job=\"aice-backend\",result=\"error\"}[5m])) * 60"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Interruptions and Cancellations / min",
+      "title": "HTTP Requests / min by Status Class",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(voice_interruptions_total[5m])) * 60", "legendFormat": "interruptions" },
-        { "refId": "B", "expr": "sum(rate(voice_cancellation_success_total[5m])) * 60", "legendFormat": "cancellation_success" }
+        {
+          "refId": "A",
+          "expr": "sum by (status_class) (rate(backend_http_requests_total{job=\"aice-backend\"}[5m])) * 60",
+          "legendFormat": "{{status_class}}"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Stage Latency p95 (ms)",
+      "title": "HTTP Errors / min by Route",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "targets": [
-        { "refId": "A", "expr": "voice_stage_duration_seconds{stage=\"stt\",quantile=\"0.95\"} * 1000", "legendFormat": "stt" },
-        { "refId": "B", "expr": "voice_stage_duration_seconds{stage=\"llm\",quantile=\"0.95\"} * 1000", "legendFormat": "llm" },
-        { "refId": "C", "expr": "voice_stage_duration_seconds{stage=\"tts\",quantile=\"0.95\"} * 1000", "legendFormat": "tts" },
-        { "refId": "D", "expr": "voice_stage_duration_seconds{stage=\"orchestrator\",quantile=\"0.95\"} * 1000", "legendFormat": "journey" }
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(backend_http_requests_total{job=\"aice-backend\",result=\"error\"}[5m])) * 60",
+          "legendFormat": "{{route}}"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Policy Denials / min",
+      "title": "mDNS Advertisement Outcomes / min",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
       "targets": [
-        { "refId": "A", "expr": "sum by (reason) (rate(voice_policy_denied_total[5m])) * 60", "legendFormat": "{{reason}}" }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Intent Routed / min",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
-      "targets": [
-        { "refId": "A", "expr": "sum by (intent) (rate(voice_intent_routed_total[5m])) * 60", "legendFormat": "{{intent}}" }
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(backend_mdns_advertisement_total{job=\"aice-backend\"}[5m])) * 60",
+          "legendFormat": "{{result}}"
+        }
       ]
     }
   ]

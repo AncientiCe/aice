@@ -3,15 +3,7 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  - job_name: desktop-runner
-    static_configs:
-      - targets:
-          - host.docker.internal:9000
   - job_name: aice-backend
     static_configs:
       - targets:
           - host.docker.internal:9001
-  - job_name: aice-macos
-    static_configs:
-      - targets:
-          - host.docker.internal:9002
