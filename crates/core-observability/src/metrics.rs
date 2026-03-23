@@ -91,6 +91,15 @@ const MEMORY_FACT_RECALL_DURATION_SECONDS: &str = "memory_fact_recall_duration_s
 const SCREENSHOT_SKILL_EXECUTE_TOTAL: &str = "screenshot_skill_execute_total";
 const SCREENSHOT_SKILL_ERRORS_TOTAL: &str = "screenshot_skill_errors_total";
 const SCREENSHOT_SKILL_EXECUTE_DURATION_SECONDS: &str = "screenshot_skill_execute_duration_seconds";
+const BACKEND_TURN_TOTAL: &str = "backend_turn_total";
+const BACKEND_TURN_DURATION_SECONDS: &str = "backend_turn_duration_seconds";
+const BACKEND_TURN_STAGE_DURATION_SECONDS: &str = "backend_turn_stage_duration_seconds";
+const BACKEND_MDNS_ADVERTISEMENT_TOTAL: &str = "backend_mdns_advertisement_total";
+const BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS: &str =
+    "backend_mdns_advertisement_duration_seconds";
+const FRONTEND_RPC_DURATION_SECONDS: &str = "frontend_rpc_duration_seconds";
+const FRONTEND_SKILL_DURATION_SECONDS: &str = "frontend_skill_duration_seconds";
+const FRONTEND_TTS_PLAYBACK_DURATION_SECONDS: &str = "frontend_tts_playback_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -167,6 +176,18 @@ pub fn register_metrics() {
     counter!(SCREENSHOT_SKILL_EXECUTE_TOTAL, 0, "result" => "unknown");
     counter!(SCREENSHOT_SKILL_ERRORS_TOTAL, 0, "kind" => "unknown");
     histogram!(SCREENSHOT_SKILL_EXECUTE_DURATION_SECONDS, 0.0_f64);
+    counter!(BACKEND_TURN_TOTAL, 0, "path" => "unknown", "result" => "unknown");
+    histogram!(BACKEND_TURN_DURATION_SECONDS, 0.0_f64, "path" => "unknown");
+    histogram!(
+        BACKEND_TURN_STAGE_DURATION_SECONDS,
+        0.0_f64,
+        "stage" => "unknown"
+    );
+    counter!(BACKEND_MDNS_ADVERTISEMENT_TOTAL, 0, "result" => "unknown");
+    histogram!(BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS, 0.0_f64);
+    histogram!(FRONTEND_RPC_DURATION_SECONDS, 0.0_f64, "endpoint" => "unknown");
+    histogram!(FRONTEND_SKILL_DURATION_SECONDS, 0.0_f64, "skill" => "unknown");
+    histogram!(FRONTEND_TTS_PLAYBACK_DURATION_SECONDS, 0.0_f64);
 }
 
 /// Record a new voice session start.
@@ -315,6 +336,69 @@ pub fn record_pod_egress_device_lock_poison(operation: &str) {
         POD_EGRESS_DEVICE_LOCK_POISON_TOTAL,
         1,
         "operation" => operation.to_string()
+    );
+}
+
+pub fn record_backend_turn_total(path: &str, result: &str) {
+    counter!(
+        BACKEND_TURN_TOTAL,
+        1,
+        "path" => path.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+pub fn record_backend_turn_duration(path: &str, duration: Duration) {
+    histogram!(
+        BACKEND_TURN_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "path" => path.to_string()
+    );
+}
+
+pub fn record_backend_turn_stage_duration(stage: &str, duration: Duration) {
+    histogram!(
+        BACKEND_TURN_STAGE_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "stage" => stage.to_string()
+    );
+}
+
+pub fn record_backend_mdns_advertisement_total(result: &str) {
+    counter!(
+        BACKEND_MDNS_ADVERTISEMENT_TOTAL,
+        1,
+        "result" => result.to_string()
+    );
+}
+
+pub fn record_backend_mdns_advertisement_duration(duration: Duration) {
+    histogram!(
+        BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS,
+        duration.as_secs_f64()
+    );
+}
+
+pub fn record_frontend_rpc_duration(endpoint: &str, duration: Duration) {
+    histogram!(
+        FRONTEND_RPC_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "endpoint" => endpoint.to_string()
+    );
+}
+
+pub fn record_frontend_skill_duration(skill: &str, duration: Duration) {
+    histogram!(
+        FRONTEND_SKILL_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "skill" => skill.to_string()
+    );
+}
+
+pub fn record_frontend_tts_playback_duration(duration: Duration) {
+    histogram!(
+        FRONTEND_TTS_PLAYBACK_DURATION_SECONDS,
+        duration.as_secs_f64()
     );
 }
 

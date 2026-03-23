@@ -235,7 +235,80 @@ flowchart TD
 
 ---
 
-## 8. Cross-platform and quality
+## 8. Split Runtime Services (`aice-backend` + `aice-macos`)
+
+**Purpose:** Run desktop voice behavior as two services. `aice-macos` owns mic/STT/TTS and macOS skill execution, while `aice-backend` owns LLM orchestration, intent classification, and non-OS skills.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Mac as aice-macos
+    participant Core as aice-backend
+    participant LLM as Ollama
+    participant SkillB as BackendSkills(weather/time/distance/smart_home/memory)
+    participant SkillM as MacOsSkills(computer/app_switcher/reminder/message/timer/shopping/volume/media/screenshot)
+
+    User->>Mac: speech
+    Mac->>Mac: wake gate + STT flush
+    Mac->>Core: POST /v1/turns {session_id, transcript}
+    Core->>LLM: classify + route
+    alt backend-owned skill
+        Core->>SkillB: execute(...)
+        SkillB-->>Core: structured result
+        Core->>LLM: compose spoken answer
+        Core-->>Mac: SSE token stream
+        Mac->>Mac: TTS playback
+    else frontend-owned skill
+        Core-->>Mac: SSE frontend_skill_intent {turn_id, intent, slots}
+        Mac->>SkillM: execute(...)
+        SkillM-->>Mac: structured result context
+        Mac->>Core: POST /v1/turns/{turn_id}/frontend-skill-result
+        Core->>LLM: compose spoken answer
+        Core-->>Mac: SSE token stream
+        Mac->>Mac: TTS playback
+    else chat
+        Core->>LLM: chat stream
+        Core-->>Mac: SSE token stream
+        Mac->>Mac: TTS playback
+    end
+```
+
+**Notes:**
+- **Inputs:** `TurnRequest { session_id, device_id?, turn_id?, transcript, context? }` from frontend.
+- **Outputs:** SSE `RuntimeEvent` stream (`token`, `frontend_skill_intent`, `done`, `error`).
+- **Failure paths:** Frontend skill execution failures are reported via `frontend-skill-result` with `status=error`; backend returns a deterministic spoken fallback.
+
+### 8.1 Frontend activation and capability-scoped routing
+
+**Purpose:** Allow multiple frontends with different local skill capabilities. Frontends register active capabilities by `(device_id, session_id)`, and backend routes frontend intents only when that intent is supported by the active frontend session.
+
+```mermaid
+sequenceDiagram
+    participant Frontend
+    participant Backend
+    Frontend->>Backend: POST /v1/frontends/activate {device_id, session_id, supported_frontend_intents, protocol_version}
+    Backend->>Backend: store session capabilities with TTL
+    loop active session
+        Frontend->>Backend: POST /v1/turns {device_id, session_id, transcript}
+        Backend->>Backend: classify intent
+        alt intent supported by session capability list
+            Backend-->>Frontend: SSE frontend_skill_intent
+        else unsupported frontend intent
+            Backend-->>Frontend: SSE token fallback ("not available on this active frontend")
+        end
+        Frontend->>Backend: POST /v1/frontends/heartbeat {device_id, session_id}
+    end
+    Frontend->>Backend: POST /v1/frontends/deactivate {device_id, session_id}
+```
+
+**Notes:**
+- **Inputs:** Activation API (`/v1/frontends/activate`, `/heartbeat`, `/deactivate`) plus normal turn flow.
+- **Outputs:** Per-session capability-aware routing; deterministic fallback for unsupported frontend intents.
+- **Failure paths:** Unknown/expired frontend session state falls back to legacy routing; protocol version mismatch is rejected at activation.
+
+---
+
+## 9. Cross-platform and quality
 
 - **Desktop:** `core-audio` uses cpal for capture (16 kHz mono i16); Aice home deployments are macOS-first (Mac mini recommended).
 - **Pod gateway:** WebSocket server; reconnect is supported (new connection = new session); `Identify` message sets device_id for subsequent audio from that connection. Parse errors skip the message and continue.
@@ -244,7 +317,7 @@ flowchart TD
 
 ---
 
-## 9. Operational runbooks
+## 10. Operational runbooks
 
 **Purpose:** Links to setup, deployment, and network docs so operators can run the system and push code to pods.
 
@@ -395,3 +468,54 @@ flowchart LR
 - **Outputs:** Local dashboards at Grafana (`127.0.0.1:3000`) and raw Prometheus query UI (`127.0.0.1:9090`).
 - **Failure paths:** If exporter bind is invalid or unavailable, runtime logs a warning and continues; Prometheus target shows down until endpoint is reachable.
 - **Operations:** Bring-up/tear-down is via `./scripts/observability.sh` and `ops/observability/docker-compose.yml`.
+
+---
+
+## 19. Latency attribution and optimization gates (backend + macOS)
+
+**Purpose:** Attribute each turn to concrete latency stages and apply optimization passes behind config flags with explicit SLO budgets.
+
+```mermaid
+flowchart LR
+    Mac["aice-macos (turn_id)"] --> Backend["aice-backend (same turn_id)"]
+    Mac --> MacMetrics["voice_mic_to_stt, voice_endpointing_wait, voice_llm_first_token, voice_turn_time_to_first_audio"]
+    Backend --> BackendMetrics["backend_turn_duration + backend_turn_stage_duration{stage}"]
+    BackendMetrics --> Grafana["Backend Timings dashboard"]
+    MacMetrics --> Grafana
+    Grafana --> Gate{"SLO gates"}
+    Gate -->|pass| Keep["Keep optimization pass"]
+    Gate -->|fail| Revert["Revert and try next pass"]
+```
+
+**Notes:**
+- **Inputs:** Per-turn `turn_id` in `/v1/turns`; macOS endpointing settings; backend compose/classifier execution timings.
+- **Outputs:** Comparable stage metrics across macOS and backend; rollout control via config flags:
+  - `audio.enable_endpointing_tuning` (Pass A)
+  - `llm.skip_secondary_llm_for_skill_answers` (Pass B)
+  - `tts.enable_chunked_push_optimization` + `tts.push_chunk_bytes` (Pass C)
+- **Failure paths:** If a pass increases p95 latency or errors, disable its flag and continue with the next pass.
+
+---
+
+## 20. Backend mDNS advertisement for frontend discovery
+
+**Purpose:** Make `aice-backend` discoverable on local networks across host OSes (Windows/macOS/Linux) without manual IP input.
+
+```mermaid
+flowchart LR
+    Start["aice-backend starts (AICE_BACKEND_BIND)"] --> Bind["HTTP server binds host:port"]
+    Bind --> Mdns["Register mDNS service _aice-backend._tcp.local."]
+    Mdns --> HostType{"Bind host"}
+    HostType -->|specific IP| Fixed["Advertise bound IP + port"]
+    HostType -->|0.0.0.0/::| Auto["Advertise active interface IPs + port"]
+    Fixed --> Browse["aice-macos browses Bonjour/mDNS"]
+    Auto --> Browse
+    Browse --> Probe["Frontend health probe GET /healthz"]
+    Probe -->|ok| Ready["Frontend uses discovered backend URL"]
+    Probe -->|fail| Reject["Candidate rejected"]
+```
+
+**Notes:**
+- **Inputs:** `AICE_BACKEND_BIND`, optional `AICE_BACKEND_MDNS_SERVICE_TYPE`, optional `AICE_BACKEND_MDNS_INSTANCE`, optional `AICE_BACKEND_MDNS_HOSTNAME`.
+- **Outputs:** Backend DNS-SD advertisement and discovery-compatible URL candidates for frontend startup.
+- **Failure paths:** If mDNS registration fails, backend exits with startup error; metrics record `backend_mdns_advertisement_total{result="error"}`.

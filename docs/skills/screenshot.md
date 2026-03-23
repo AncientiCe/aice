@@ -4,6 +4,8 @@
 
 **Purpose:** Capture a local macOS screenshot and save it under `~/Pictures/aice/` from LLM-classified voice commands such as "take a screenshot" or "take a screenshot called desk.png".
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

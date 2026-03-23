@@ -7,17 +7,12 @@ Aice is a private, local voice runtime for home automation and media control.
 Core flow is built for low latency:
 `speech -> STT -> model -> TTS` with streaming where possible.
 
-## Turn timing logs (desktop-runner)
+## Latency observability
 
-Detailed timing logs and dated benchmark tables are maintained in:
-[docs/benchmarks/turn-timings.md](docs/benchmarks/turn-timings.md)
-
-Latest benchmark snapshot (2026-03-19 UTC):
-
-| Timestamp (UTC) | Query | mic_to_stt_ms | speech_voiced_ms | stt_ms | endpointing_wait_ms | llm_ms | journey_ms |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2026-03-19T07:45:35.308592Z | what's the weather? | 2133 | 865 | 170 | 1098 | 1891 | 5208 |
-| 2026-03-19T07:45:54.466796Z | what's the weather in Rome? | 2630 | 1261 | 144 | 1225 | 1555 | 5429 |
+Use metrics dashboards for latency tracking and SLO checks:
+- `timing-deep-dive`
+- `backend-timings`
+- `frontend-timings`
 
 ## Local metrics dashboard (desktop-runner)
 
@@ -106,12 +101,21 @@ cargo aice-test
 cargo aice-desktop
 ```
 
+Split runtime (two services):
+
+```bash
+cargo aice-backend
+cargo aice-macos
+```
+
 ## Canonical cargo commands
 
 Defined in `.cargo/config.toml`:
 
 - `cargo aice-pod-voice` -> run local Jarvis runtime (primary path)
 - `cargo aice-desktop` -> desktop-only runtime
+- `cargo aice-backend` -> backend LLM/orchestration service
+- `cargo aice-macos` -> macOS frontend service (STT/TTS + macOS skills)
 - `cargo aice-gateway` -> standalone pod transport service
 - `cargo aice-fmt` -> `cargo fmt --all -- --check`
 - `cargo aice-clippy` -> `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`

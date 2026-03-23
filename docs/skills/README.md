@@ -4,21 +4,21 @@ One document per skill. Each document contains a Mermaid journey diagram, input/
 
 | Skill | Crate | Status | Document |
 |-------|-------|--------|----------|
-| Assistant | `skill-assistant` | Trait only (no macOS impl) | [assistant.md](assistant.md) |
-| App Switcher | `skill-app-switcher` | `MacOsAppSwitcherSkill` (includes `close`/`exit` -> `quit` aliasing) | [app-switcher.md](app-switcher.md) |
-| Computer | `skill-computer` | `MacOsComputerSkill` | [computer.md](computer.md) |
-| Distance | `skill-distance` | `OpenMeteoDistanceSkill` | [distance.md](distance.md) |
-| Media | `skill-media` | `MacOsMusicSkill` | [media.md](media.md) |
-| Message | `skill-message` | `MacOsMessagesSkill` | [message.md](message.md) |
-| Memory | `skill-memory` | `SqliteMemorySkill` | [memory.md](memory.md) |
-| Reminder | `skill-reminder` | `MacOsReminderSkill` | [reminder.md](reminder.md) |
-| Screenshot | `skill-screenshot` | `MacOsScreenshotSkill` | [screenshot.md](screenshot.md) |
-| Shopping List | `skill-shopping-list` | `MacOsNotesShoppingListSkill` | [shopping-list.md](shopping-list.md) |
-| Smart Home | `skill-smart-home` | `HueSmartHomeSkill` | [smart-home.md](smart-home.md) |
-| Time | `skill-time` | `OpenMeteoTimeSkill` | [time.md](time.md) |
-| Timer | `skill-timer` | `MacOsClockTimerSkill` | [timer.md](timer.md) |
-| Volume | `skill-volume` | `MacOsVolumeSkill` | [volume.md](volume.md) |
-| Weather | `skill-weather` | `OpenMeteoWeatherSkill` (+ runtime location-contract normalization) | [weather.md](weather.md) |
+| Assistant | `skill-assistant` | Frontend-owned (`aice-macos`); trait only currently | [assistant.md](assistant.md) |
+| App Switcher | `skill-app-switcher` | Frontend-owned (`aice-macos`), `MacOsAppSwitcherSkill` | [app-switcher.md](app-switcher.md) |
+| Computer | `skill-computer` | Frontend-owned (`aice-macos`), `MacOsComputerSkill` | [computer.md](computer.md) |
+| Distance | `skill-distance` | Backend-owned (`aice-backend`), `OpenMeteoDistanceSkill` | [distance.md](distance.md) |
+| Media | `skill-media` | Frontend-owned (`aice-macos`), `MacOsMusicSkill` | [media.md](media.md) |
+| Message | `skill-message` | Frontend-owned (`aice-macos`), `MacOsMessagesSkill` | [message.md](message.md) |
+| Memory | `skill-memory` | Backend-owned (`aice-backend`), `SqliteMemorySkill` | [memory.md](memory.md) |
+| Reminder | `skill-reminder` | Frontend-owned (`aice-macos`), `MacOsReminderSkill` | [reminder.md](reminder.md) |
+| Screenshot | `skill-screenshot` | Frontend-owned (`aice-macos`), `MacOsScreenshotSkill` | [screenshot.md](screenshot.md) |
+| Shopping List | `skill-shopping-list` | Frontend-owned (`aice-macos`), `MacOsNotesShoppingListSkill` | [shopping-list.md](shopping-list.md) |
+| Smart Home | `skill-smart-home` | Backend-owned (`aice-backend`), `HueSmartHomeSkill` | [smart-home.md](smart-home.md) |
+| Time | `skill-time` | Backend-owned (`aice-backend`), `OpenMeteoTimeSkill` | [time.md](time.md) |
+| Timer | `skill-timer` | Frontend-owned (`aice-macos`), `MacOsClockTimerSkill` | [timer.md](timer.md) |
+| Volume | `skill-volume` | Frontend-owned (`aice-macos`), `MacOsVolumeSkill` | [volume.md](volume.md) |
+| Weather | `skill-weather` | Backend-owned (`aice-backend`), `OpenMeteoWeatherSkill` | [weather.md](weather.md) |
 
 ## Document Structure
 

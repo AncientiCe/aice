@@ -1,6 +1,52 @@
 //! LLM-based intent classification: known skills vs chat.
 
+use serde::Deserialize;
 use std::fmt;
+
+fn deserialize_optional_string_or_array<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let normalized = match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Array(items) => {
+            let values: Vec<String> = items
+                .into_iter()
+                .filter_map(|item| match item {
+                    serde_json::Value::String(s) => {
+                        let t = s.trim().to_string();
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t)
+                        }
+                    }
+                    serde_json::Value::Null => None,
+                    other => {
+                        let t = other.to_string();
+                        if t.trim().is_empty() {
+                            None
+                        } else {
+                            Some(t)
+                        }
+                    }
+                })
+                .collect();
+            values.join(", ")
+        }
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    if normalized.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(normalized))
+    }
+}
 
 /// Result of classifying user input (from LLM, parsed from JSON).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +109,7 @@ pub enum IntentDecision {
     },
     /// Message: send an iMessage to a contact.
     SkillMessage {
+        command: Option<String>,
         contact: Option<String>,
         message: Option<String>,
     },
@@ -100,6 +147,8 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         #[serde(default)]
         assistant_kind: Option<String>,
         #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
         media_action: Option<String>,
         #[serde(default)]
         media_target: Option<String>,
@@ -127,7 +176,7 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         timer_name: Option<String>,
         #[serde(default)]
         shopping_action: Option<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_optional_string_or_array")]
         shopping_items: Option<String>,
         #[serde(default)]
         shopping_when: Option<String>,
@@ -146,6 +195,11 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
     let origin = p.origin.filter(|o| !o.trim().is_empty());
     let destination = p.destination.filter(|d| !d.trim().is_empty());
     let opt_str = |o: Option<String>| o.filter(|x| !x.trim().is_empty());
+    let command = opt_str(p.command);
+    let action_from = |field: Option<String>, fallback: &Option<String>| {
+        opt_str(field).or_else(|| fallback.clone())
+    };
+
     match intent.as_str() {
         "chat" => Ok(IntentDecision::Chat),
         "skill_weather" | "weather" => Ok(IntentDecision::SkillWeather { location }),
@@ -156,13 +210,13 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         }),
         "skill_smart_home" | "smart_home" => Ok(IntentDecision::SkillSmartHome {
             target: opt_str(p.smart_home_target),
-            action: opt_str(p.smart_home_action),
+            action: action_from(p.smart_home_action, &command),
         }),
         "skill_assistant" | "assistant" => Ok(IntentDecision::SkillAssistant {
             kind: opt_str(p.assistant_kind),
         }),
         "skill_media" | "media" => Ok(IntentDecision::SkillMedia {
-            action: opt_str(p.media_action),
+            action: action_from(p.media_action, &command),
             target: opt_str(p.media_target),
         }),
         "skill_memory" | "memory" => Ok(IntentDecision::SkillMemory {
@@ -170,14 +224,14 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             store: p.memory_store,
         }),
         "skill_computer" | "computer" => Ok(IntentDecision::SkillComputer {
-            action: opt_str(p.computer_action),
+            action: action_from(p.computer_action, &command),
             target: opt_str(p.computer_target),
         }),
         "skill_screenshot" | "screenshot" => Ok(IntentDecision::SkillScreenshot {
             filename: opt_str(p.screenshot_filename),
         }),
         "skill_app_switcher" | "app_switcher" => Ok(IntentDecision::SkillAppSwitcher {
-            action: opt_str(p.app_switcher_action),
+            action: action_from(p.app_switcher_action, &command),
             target: opt_str(p.app_switcher_target),
         }),
         "skill_reminder" | "reminder" => Ok(IntentDecision::SkillReminder {
@@ -189,16 +243,17 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             name: opt_str(p.timer_name),
         }),
         "skill_shopping_list" | "shopping_list" => Ok(IntentDecision::SkillShoppingList {
-            action: opt_str(p.shopping_action),
+            action: action_from(p.shopping_action, &command),
             items: opt_str(p.shopping_items),
             when: opt_str(p.shopping_when),
         }),
         "skill_message" | "message" => Ok(IntentDecision::SkillMessage {
+            command: command.clone(),
             contact: opt_str(p.message_contact),
             message: opt_str(p.message_text),
         }),
         "skill_volume" | "volume" => Ok(IntentDecision::SkillVolume {
-            action: opt_str(p.volume_action),
+            action: action_from(p.volume_action, &command),
             level: p.volume_level,
         }),
         _ => Ok(IntentDecision::Chat),
@@ -410,15 +465,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_intent_message() {
-        let raw = r#"{"intent":"skill_message","message_contact":"my wife","message_text":"How are you?"}"#;
+    fn parse_intent_shopping_list_items_array_is_normalized() {
+        let raw = r#"{"intent": "skill_shopping_list", "shopping_action": "add", "shopping_items": ["strawberries", "salami"], "shopping_when": "today"}"#;
         let d = parse_intent(raw).must();
         match &d {
-            IntentDecision::SkillMessage { contact, message } => {
+            IntentDecision::SkillShoppingList {
+                action,
+                items,
+                when,
+            } => {
+                assert_eq!(action.as_deref(), Some("add"));
+                assert_eq!(items.as_deref(), Some("strawberries, salami"));
+                assert_eq!(when.as_deref(), Some("today"));
+            }
+            _ => panic!("expected SkillShoppingList"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_message() {
+        let raw = r#"{"intent":"skill_message","command":"send","message_contact":"my wife","message_text":"How are you?"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillMessage {
+                command,
+                contact,
+                message,
+            } => {
+                assert_eq!(command.as_deref(), Some("send"));
                 assert_eq!(contact.as_deref(), Some("my wife"));
                 assert_eq!(message.as_deref(), Some("How are you?"));
             }
             _ => panic!("expected SkillMessage"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_uses_global_command_for_action_skills() {
+        let raw = r#"{"intent":"skill_volume","command":"mute"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillVolume { action, level } => {
+                assert_eq!(action.as_deref(), Some("mute"));
+                assert_eq!(*level, None);
+            }
+            _ => panic!("expected SkillVolume"),
         }
     }
 

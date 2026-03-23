@@ -4,7 +4,8 @@
   "llm": {
     "short_replies": true,
     "max_output_tokens": 48,
-    "system_prompt": null
+    "system_prompt": null,
+    "skip_secondary_llm_for_skill_answers": false
   },
   "pod_bind": "0.0.0.0:8765",
   "audio": {
@@ -14,14 +15,20 @@
     "turn_window_ms": 1200,
     "idle_sleep_ms": 20,
     "speech_end_silence_ms": 180,
-    "speech_rms_threshold": 0.008
+    "speech_rms_threshold": 0.008,
+    "enable_endpointing_tuning": false,
+    "tuned_chunk_timeout_ms": 40,
+    "tuned_turn_window_ms": 900,
+    "tuned_speech_end_silence_ms": 120
   },
   "stt": {
     "whisper_model_path": "models/whisper/ggml-tiny.en.bin"
   },
   "tts": {
     "piper_model_path": "models/piper/model.onnx",
-    "piper_config_path": null
+    "piper_config_path": null,
+    "enable_chunked_push_optimization": false,
+    "push_chunk_bytes": 24
   },
   "service": {
     "health_bind": "127.0.0.1:8780",
@@ -40,7 +47,6 @@
     "api_key": null,
     "timeout_secs": 10
   },
-  "default_location": "London",
   "assistant_profile": {
     "name": "Jarvis",
     "persona": "Private home assistant. Concise and helpful.",

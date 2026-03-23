@@ -4,6 +4,8 @@
 
 **Purpose:** Control macOS system output volume from LLM-classified voice commands such as "set volume to 40", "volume up", "mute volume", and "what is the volume".
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

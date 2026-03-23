@@ -4,6 +4,8 @@
 
 **Purpose:** Add or remove items from a dated shopping list note in macOS Notes.app via AppleScript. Each shopping list is a separate note named `"Shopping List DD Mon YYYY"`.
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

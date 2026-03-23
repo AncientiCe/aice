@@ -77,22 +77,27 @@ impl TurnTimings {
         Self::default()
     }
 
+    #[cfg(test)]
     fn ms(duration: Option<Duration>) -> Option<u128> {
         duration.map(|d| d.as_millis())
     }
 
+    #[cfg(test)]
     fn mic_to_stt_ms(&self) -> Option<u128> {
         Self::ms(self.mic_to_stt)
     }
 
+    #[cfg(test)]
     fn stt_ms(&self) -> Option<u128> {
         Self::ms(self.stt)
     }
 
+    #[cfg(test)]
     fn skill_ms(&self) -> Option<u128> {
         Self::ms(self.skill)
     }
 
+    #[cfg(test)]
     fn speech_voiced_ms(&self) -> Option<u128> {
         Self::ms(self.speech_voiced)
     }
@@ -107,6 +112,7 @@ impl TurnTimings {
         )
     }
 
+    #[cfg(test)]
     fn llm_first_token_ms(&self) -> Option<u128> {
         Self::ms(self.llm_first_token)
     }
@@ -117,6 +123,7 @@ impl TurnTimings {
         Some(llm.as_millis().saturating_sub(first.as_millis()))
     }
 
+    #[cfg(test)]
     fn tts_first_audio_ms(&self) -> Option<u128> {
         Self::ms(self.tts_first_audio)
     }
@@ -132,18 +139,22 @@ impl TurnTimings {
         )
     }
 
+    #[cfg(test)]
     fn llm_ms(&self) -> Option<u128> {
         Self::ms(self.llm)
     }
 
+    #[cfg(test)]
     fn tts_ms(&self) -> Option<u128> {
         Self::ms(self.tts)
     }
 
+    #[cfg(test)]
     fn tts_flush_ms(&self) -> Option<u128> {
         Self::ms(self.tts_flush)
     }
 
+    #[cfg(test)]
     fn total_ms(&self) -> Option<u128> {
         Self::ms(self.total)
     }
@@ -933,9 +944,11 @@ impl DesktopRuntime {
                     action.clone().or_else(|| target.clone()),
                 ),
                 IntentDecision::SkillReminder { title, .. } => ("skill_reminder", title.clone()),
-                IntentDecision::SkillMessage { contact, message } => {
-                    ("skill_message", contact.clone().or_else(|| message.clone()))
-                }
+                IntentDecision::SkillMessage {
+                    command: _,
+                    contact,
+                    message,
+                } => ("skill_message", contact.clone().or_else(|| message.clone())),
                 IntentDecision::SkillTimer { name, .. } => ("skill_timer", name.clone()),
                 IntentDecision::SkillShoppingList { action, items, .. } => (
                     "skill_shopping_list",
@@ -1591,14 +1604,42 @@ impl DesktopRuntime {
         }
 
         // Timer skill path.
-        if let IntentDecision::SkillMessage { contact, message } = &decision {
+        if let IntentDecision::SkillMessage {
+            command: _,
+            contact,
+            message,
+        } = &decision
+        {
             if let Some(skill) = message_skill {
                 if !action_allowed(&decision) {
                     record_policy_denied("skill_message");
                     tracing::warn!("policy denied message skill, falling back to chat");
                 } else {
                     let contact_hint = contact.as_deref().unwrap_or(&user_text);
-                    let message_text = message.as_deref().unwrap_or(&user_text);
+                    let Some(message_text) = message.as_deref() else {
+                        let spoken = "What should I say in the message?";
+                        let tts_started = Instant::now();
+                        let outcome = Self::speak_with_cancel(tts, spoken, cancel_rx).await?;
+                        timings.tts = Some(tts_started.elapsed());
+                        return Ok(Self::finish_turn(
+                            "skill_message_missing_text",
+                            outcome,
+                            turn_started_at,
+                            &mut timings,
+                        ));
+                    };
+                    if message_text.trim().is_empty() {
+                        let spoken = "What should I say in the message?";
+                        let tts_started = Instant::now();
+                        let outcome = Self::speak_with_cancel(tts, spoken, cancel_rx).await?;
+                        timings.tts = Some(tts_started.elapsed());
+                        return Ok(Self::finish_turn(
+                            "skill_message_missing_text",
+                            outcome,
+                            turn_started_at,
+                            &mut timings,
+                        ));
+                    }
                     let t0 = Instant::now();
                     match skill.execute(contact_hint, message_text).await {
                         Ok(result) => {
@@ -1879,21 +1920,7 @@ impl DesktopRuntime {
         info!(
             path,
             outcome = ?outcome,
-            mic_to_stt_ms = timings.mic_to_stt_ms(),
-            speech_voiced_ms = timings.speech_voiced_ms(),
-            stt_ms = timings.stt_ms(),
-            skill_ms = timings.skill_ms(),
-            endpointing_wait_ms = timings.endpointing_wait_ms(),
-            llm_first_token_ms = timings.llm_first_token_ms(),
-            llm_ms = timings.llm_ms(),
-            llm_network_and_prefill_ms = timings.llm_first_token_ms(),
-            llm_stream_tail_ms = timings.llm_stream_tail_ms(),
-            tts_first_audio_ms = timings.tts_first_audio_ms(),
-            time_to_first_audio_ms = timings.time_to_first_audio_ms(),
-            tts_ms = timings.tts_ms(),
-            tts_flush_ms = timings.tts_flush_ms(),
-            journey_ms = timings.total_ms(),
-            "turn_timing"
+            "turn_complete"
         );
         outcome
     }

@@ -4,6 +4,8 @@
 
 **Purpose:** Create reminders in macOS Reminders.app via AppleScript. Supports optional due date/time in ISO 8601 format.
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

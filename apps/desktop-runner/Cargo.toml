@@ -25,6 +25,7 @@ futures = "0.3"
 chrono = { version = "0.4", features = ["clock"] }
 core-config = { path = "../../crates/core-config" }
 core-observability = { path = "../../crates/core-observability" }
+aice-backend = { path = "../aice-backend" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-policy = { path = "../../crates/core-policy" }
 core-search = { path = "../../crates/core-search" }

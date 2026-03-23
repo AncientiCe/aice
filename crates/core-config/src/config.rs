@@ -123,6 +123,18 @@ pub struct AudioRuntimeConfig {
     /// Minimum RMS amplitude considered speech (0.0-1.0).
     #[serde(default = "default_audio_speech_rms_threshold")]
     pub speech_rms_threshold: f32,
+    /// Enable tuned endpointing values for lower latency (Pass A).
+    #[serde(default)]
+    pub enable_endpointing_tuning: bool,
+    /// Tuned timeout waiting for one capture chunk (milliseconds).
+    #[serde(default = "default_audio_tuned_chunk_timeout_ms")]
+    pub tuned_chunk_timeout_ms: u64,
+    /// Tuned transcription window size in milliseconds.
+    #[serde(default = "default_audio_tuned_turn_window_ms")]
+    pub tuned_turn_window_ms: u64,
+    /// Tuned speech end silence threshold in milliseconds.
+    #[serde(default = "default_audio_tuned_speech_end_silence_ms")]
+    pub tuned_speech_end_silence_ms: u64,
 }
 
 impl Default for AudioRuntimeConfig {
@@ -135,6 +147,10 @@ impl Default for AudioRuntimeConfig {
             idle_sleep_ms: default_audio_idle_sleep_ms(),
             speech_end_silence_ms: default_audio_speech_end_silence_ms(),
             speech_rms_threshold: default_audio_speech_rms_threshold(),
+            enable_endpointing_tuning: false,
+            tuned_chunk_timeout_ms: default_audio_tuned_chunk_timeout_ms(),
+            tuned_turn_window_ms: default_audio_tuned_turn_window_ms(),
+            tuned_speech_end_silence_ms: default_audio_tuned_speech_end_silence_ms(),
         }
     }
 }
@@ -157,6 +173,18 @@ fn default_audio_speech_end_silence_ms() -> u64 {
 
 fn default_audio_speech_rms_threshold() -> f32 {
     0.008
+}
+
+fn default_audio_tuned_chunk_timeout_ms() -> u64 {
+    40
+}
+
+fn default_audio_tuned_turn_window_ms() -> u64 {
+    900
+}
+
+fn default_audio_tuned_speech_end_silence_ms() -> u64 {
+    120
 }
 
 /// STT settings.
@@ -188,6 +216,12 @@ pub struct TtsConfig {
     /// Optional Piper model config path.
     #[serde(default)]
     pub piper_config_path: Option<String>,
+    /// Enable larger TTS text chunks to reduce push/flush overhead.
+    #[serde(default)]
+    pub enable_chunked_push_optimization: bool,
+    /// Number of bytes per TTS text chunk when chunked push optimization is enabled.
+    #[serde(default = "default_tts_push_chunk_bytes")]
+    pub push_chunk_bytes: usize,
 }
 
 impl Default for TtsConfig {
@@ -195,12 +229,18 @@ impl Default for TtsConfig {
         Self {
             piper_model_path: default_piper_model_path(),
             piper_config_path: None,
+            enable_chunked_push_optimization: false,
+            push_chunk_bytes: default_tts_push_chunk_bytes(),
         }
     }
 }
 
 fn default_piper_model_path() -> String {
     "models/piper/model.onnx".to_string()
+}
+
+fn default_tts_push_chunk_bytes() -> usize {
+    24
 }
 
 /// Service/runtime operational settings.
@@ -259,6 +299,9 @@ pub struct LlmConfig {
     /// Optional explicit system prompt override.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Skip secondary LLM answer-composer calls for backend skill summaries.
+    #[serde(default)]
+    pub skip_secondary_llm_for_skill_answers: bool,
 }
 
 impl Default for LlmConfig {
@@ -267,6 +310,7 @@ impl Default for LlmConfig {
             short_replies: default_short_replies(),
             max_output_tokens: default_max_output_tokens(),
             system_prompt: None,
+            skip_secondary_llm_for_skill_answers: false,
         }
     }
 }
@@ -410,9 +454,6 @@ pub struct Config {
     /// Service/runtime operational options.
     #[serde(default)]
     pub service: ServiceConfig,
-    /// Default location (e.g. city name) when startup geolocation fails; used for weather skill.
-    #[serde(default)]
-    pub default_location: Option<String>,
     /// Assistant profile (name, units, user identity) for prompt context.
     #[serde(default)]
     pub assistant_profile: AssistantProfileConfig,
@@ -452,7 +493,6 @@ impl Default for Config {
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
             service: ServiceConfig::default(),
-            default_location: None,
             assistant_profile: AssistantProfileConfig::default(),
             smart_home: SmartHomeConfig::default(),
             media: MediaConfig::default(),
@@ -527,6 +567,10 @@ mod tests {
         assert_eq!(config.audio.turn_window_ms, 1500);
         assert_eq!(config.audio.speech_end_silence_ms, 180);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
+        assert!(!config.audio.enable_endpointing_tuning);
+        assert_eq!(config.audio.tuned_chunk_timeout_ms, 40);
+        assert_eq!(config.audio.tuned_turn_window_ms, 900);
+        assert_eq!(config.audio.tuned_speech_end_silence_ms, 120);
         assert_eq!(
             config.stt.whisper_model_path,
             "models/whisper/ggml-tiny.en.bin"
@@ -582,6 +626,7 @@ mod tests {
         assert_eq!(config.audio.turn_window_ms, 900);
         assert_eq!(config.audio.speech_end_silence_ms, 180);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
+        assert!(!config.audio.enable_endpointing_tuning);
         assert_eq!(config.stt.whisper_model_path, "models/custom-whisper.bin");
         assert_eq!(config.tts.piper_model_path, "models/custom-piper.onnx");
         assert_eq!(

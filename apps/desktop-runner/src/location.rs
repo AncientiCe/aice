@@ -1,4 +1,4 @@
-//! Startup location: IP geolocation first, then config default_location fallback.
+//! Startup location: IP geolocation only.
 //! This location is used for weather, time, and distance when the user does not name a place.
 
 use core_config::Config;
@@ -10,50 +10,21 @@ use crate::memory::MemoryStore;
 
 const IP_API_URL: &str = "http://ip-api.com/json/?fields=status,city,country,lat,lon";
 
-/// Resolve user location at startup: IP geolocation first, then config default_location fallback.
+/// Resolve user location at startup from IP geolocation.
 pub async fn resolve_startup_location(
-    config: &Config,
+    _config: &Config,
     weather_skill: &OpenMeteoWeatherSkill,
 ) -> Option<ResolvedLocation> {
-    let ip_location = try_ip_geolocation().await;
-    let has_ip_location = ip_location.is_some();
-    let config_location = if let Some(ref name) = config.default_location {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            match weather_skill.geocode_place(trimmed).await {
-                Ok(loc) => Some(loc),
-                Err(e) => {
-                    tracing::warn!(error = %e, default_location = %trimmed, "geocode default_location failed");
-                    None
-                }
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Some(loc) = pick_startup_location(ip_location, config_location) {
-        if has_ip_location {
-            info!(display_name = %loc.display_name, "startup location from IP geolocation");
-        } else {
-            info!(display_name = %loc.display_name, "startup location from config default_location");
-        }
+    let _ = weather_skill;
+    if let Some(loc) = try_ip_geolocation().await {
+        info!(display_name = %loc.display_name, "startup location from IP geolocation");
         record_location_preload("success");
         return Some(loc);
     }
 
-    info!("no startup location (IP failed and config default_location unset or failed)");
+    info!("no startup location (IP geolocation unavailable)");
     record_location_preload("failure");
     None
-}
-
-fn pick_startup_location(
-    ip_location: Option<ResolvedLocation>,
-    config_location: Option<ResolvedLocation>,
-) -> Option<ResolvedLocation> {
-    ip_location.or(config_location)
 }
 
 /// Build the LLM system prompt with the resolved location so the model knows the user's place.
@@ -184,7 +155,7 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_effective_system_prompt, pick_startup_location};
+    use super::build_effective_system_prompt;
     use core_config::Config;
     use core_skills::ResolvedLocation;
 
@@ -224,36 +195,5 @@ mod tests {
         };
         assert!(s.contains("Remembered preferences:"));
         assert!(s.contains("user_name: Ancie"));
-    }
-
-    #[test]
-    fn pick_startup_location_prefers_ip_location() {
-        let ip = Some(ResolvedLocation {
-            display_name: "Berlin, Germany".to_string(),
-            lat: 52.52,
-            lon: 13.405,
-        });
-        let cfg = Some(ResolvedLocation {
-            display_name: "London, United Kingdom".to_string(),
-            lat: 51.5072,
-            lon: -0.1276,
-        });
-        let Some(picked) = pick_startup_location(ip, cfg) else {
-            panic!("expected startup location");
-        };
-        assert_eq!(picked.display_name, "Berlin, Germany");
-    }
-
-    #[test]
-    fn pick_startup_location_uses_config_when_ip_missing() {
-        let cfg = Some(ResolvedLocation {
-            display_name: "London, United Kingdom".to_string(),
-            lat: 51.5072,
-            lon: -0.1276,
-        });
-        let Some(picked) = pick_startup_location(None, cfg) else {
-            panic!("expected startup location");
-        };
-        assert_eq!(picked.display_name, "London, United Kingdom");
     }
 }

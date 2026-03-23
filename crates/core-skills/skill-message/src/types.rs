@@ -12,10 +12,7 @@ pub struct MessageResult {
 
 impl MessageResult {
     pub fn to_prompt_context(&self) -> String {
-        format!(
-            "{}. Recipient: \"{}\". Handle: \"{}\". Message: \"{}\".",
-            self.summary, self.recipient_name, self.recipient_handle, self.message
-        )
+        format!("Sent \"{}\" to {}.", self.message, self.recipient_name)
     }
 }
 

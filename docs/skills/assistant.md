@@ -4,6 +4,8 @@
 
 **Purpose:** Trait and type scaffolding for querying calendar events, reminders, and messages. Defines the interface and result types that a real macOS EventKit / Messages integration will fulfil.
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey
