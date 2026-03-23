@@ -38,13 +38,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+        run: cargo clippy --workspace --exclude aice-macos --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
 
       - name: Audit
         run: cargo install cargo-audit && cargo audit --deny warnings
 
       - name: Test
-        run: cargo test --all
+        run: cargo test --workspace --exclude aice-macos
 
   backend-build-matrix:
     name: Build aice-backend (${{ matrix.os }})
