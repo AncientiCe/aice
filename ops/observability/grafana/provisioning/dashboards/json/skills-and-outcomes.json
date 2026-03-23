@@ -1,8 +1,8 @@
 {
   "id": null,
-  "uid": "aice-skills-outcomes",
-  "title": "Aice Skills and Outcomes",
-  "tags": ["aice", "skills"],
+  "uid": "aice-backend-skills",
+  "title": "Aice Backend Skills",
+  "tags": ["aice", "backend", "skills"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -18,62 +18,74 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (__name__) (rate({__name__=~\"voice_.*_skill_total\"}[5m])) * 60",
-          "legendFormat": "{{__name__}}"
+          "expr": "sum by (skill) (rate(backend_skill_execute_total{job=\"aice-backend\"}[5m])) * 60",
+          "legendFormat": "{{skill}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Skill Results / min by Result",
+      "title": "Failed Skills / min by Skill",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (result) (rate({__name__=~\"voice_.*_skill_total\", result!~\"\"}[5m])) * 60",
-          "legendFormat": "{{result}}"
+          "expr": "sum by (skill) (rate(backend_skill_execute_total{job=\"aice-backend\",result=\"error\"}[5m])) * 60",
+          "legendFormat": "{{skill}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Top Error Kinds / min",
+      "title": "Failed Skills / min by Skill + Error Kind",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
-        { "refId": "A", "expr": "topk(10, sum by (kind) (rate(voice_errors_total[5m])) * 60)", "legendFormat": "{{kind}}" }
+        {
+          "refId": "A",
+          "expr": "sum by (skill, error_kind) (rate(backend_skill_execute_total{job=\"aice-backend\",result=\"error\"}[5m])) * 60",
+          "legendFormat": "{{skill}} {{error_kind}}"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Skill Timing p95 (ms)",
+      "title": "Skill Duration avg by Skill (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
-        { "refId": "A", "expr": "voice_skill_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "{{skill}}" }
+        {
+          "refId": "A",
+          "expr": "sum by (skill) (rate(backend_skill_execute_duration_seconds_sum{job=\"aice-backend\"}[5m])) / sum by (skill) (rate(backend_skill_execute_duration_seconds_count{job=\"aice-backend\"}[5m])) * 1000",
+          "legendFormat": "{{skill}}"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Memory Operation Rates / min",
+      "title": "Skill Duration p95 by Skill (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "targets": [
-        { "refId": "A", "expr": "sum(rate(memory_load_total[5m])) * 60", "legendFormat": "memory_load" },
-        { "refId": "B", "expr": "sum(rate(memory_save_total[5m])) * 60", "legendFormat": "memory_save" },
-        { "refId": "C", "expr": "sum(rate(memory_load_errors_total[5m])) * 60", "legendFormat": "memory_load_errors" },
-        { "refId": "D", "expr": "sum(rate(memory_save_errors_total[5m])) * 60", "legendFormat": "memory_save_errors" }
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, skill) (rate(backend_skill_execute_duration_seconds_bucket{job=\"aice-backend\"}[5m]))) * 1000",
+          "legendFormat": "{{skill}}"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Memory Latency p95 (ms)",
+      "title": "Dependency Errors / min by Dependency + Operation",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "targets": [
-        { "refId": "A", "expr": "memory_load_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "load_p95" },
-        { "refId": "B", "expr": "memory_save_duration_seconds{quantile=\"0.95\"} * 1000", "legendFormat": "save_p95" }
+        {
+          "refId": "A",
+          "expr": "sum by (dependency, operation, error_kind) (rate(backend_dependency_requests_total{job=\"aice-backend\",result=\"error\"}[5m])) * 60",
+          "legendFormat": "{{dependency}} {{operation}} {{error_kind}}"
+        }
       ]
     }
   ]

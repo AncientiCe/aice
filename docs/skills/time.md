@@ -70,4 +70,7 @@ sequenceDiagram
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| *(none instrumented yet — add when touching this skill)* | — | — |
+| `backend_skill_execute_total` | Counter | `skill="time"`, `result`, `error_kind` |
+| `backend_skill_execute_duration_seconds` | Histogram | `skill="time"` |
+| `backend_dependency_requests_total` | Counter | `dependency="open_meteo"`, `operation` (`geocoding`,`time_lookup`), `result`, `error_kind` |
+| `backend_dependency_request_duration_seconds` | Histogram | `dependency="open_meteo"`, `operation` (`geocoding`,`time_lookup`) |

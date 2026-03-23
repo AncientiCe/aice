@@ -3,7 +3,9 @@ use bytes::Bytes;
 use core_config::Config;
 use core_llm::OllamaLlmStream;
 use core_observability::{
-    record_backend_turn_duration, record_backend_turn_stage_duration, record_backend_turn_total,
+    record_backend_dependency_request, record_backend_dependency_request_duration,
+    record_backend_http_request, record_backend_turn_duration, record_backend_turn_stage_duration,
+    record_backend_turn_total,
 };
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_system_prompt, parse_intent, IntentClassifier,
@@ -181,6 +183,21 @@ fn sse_response_timed(events: &[RuntimeEvent]) -> Response<RespBody> {
     response
 }
 
+fn with_backend_http_metrics(
+    method: &Method,
+    route: &str,
+    started_at: Instant,
+    response: Response<RespBody>,
+) -> Response<RespBody> {
+    record_backend_http_request(
+        route,
+        method.as_str(),
+        response.status().as_u16(),
+        started_at.elapsed(),
+    );
+    response
+}
+
 async fn decode_json<T: for<'de> serde::Deserialize<'de>>(
     req: Request<Incoming>,
 ) -> Result<T, DynError> {
@@ -295,17 +312,28 @@ async fn handle_request(
     pending_chunks: TurnChunks,
     frontend_sessions: FrontendSessions,
 ) -> Result<Response<RespBody>, Infallible> {
+    let request_started_at = Instant::now();
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
     if method == Method::GET && path == "/healthz" {
-        return Ok(plain_response(StatusCode::OK, "ok"));
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/healthz",
+            request_started_at,
+            plain_response(StatusCode::OK, "ok"),
+        ));
     }
 
     if method == Method::GET && path == "/metrics" {
-        return Ok(plain_response(
-            StatusCode::OK,
-            "metrics served on configured exporter endpoint",
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/metrics",
+            request_started_at,
+            plain_response(
+                StatusCode::OK,
+                "metrics served on configured exporter endpoint",
+            ),
         ));
     }
 
@@ -315,18 +343,28 @@ async fn handle_request(
             Ok(value) => value,
             Err(error) => {
                 record_backend_turn_total("frontend_activate", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("invalid request body: {error}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/activate",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("invalid request body: {error}")}),
+                    ),
                 ));
             }
         };
         if let Some(version) = request.protocol_version {
             if version != CURRENT_PROTOCOL_VERSION {
                 record_backend_turn_total("frontend_activate", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("unsupported protocol_version {version}; expected {CURRENT_PROTOCOL_VERSION}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/activate",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("unsupported protocol_version {version}; expected {CURRENT_PROTOCOL_VERSION}")}),
+                    ),
                 ));
             }
         }
@@ -337,14 +375,21 @@ async fn handle_request(
             }
             Err(error) => {
                 record_backend_turn_total("frontend_activate", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": error }),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/activate",
+                    request_started_at,
+                    json_response(StatusCode::BAD_REQUEST, json!({ "error": error })),
                 ));
             }
         };
         record_backend_turn_duration("frontend_activate", started_at.elapsed());
-        return Ok(plain_response(status, "accepted"));
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/v1/frontends/activate",
+            request_started_at,
+            plain_response(status, "accepted"),
+        ));
     }
 
     if method == Method::POST && path == "/v1/frontends/heartbeat" {
@@ -353,9 +398,14 @@ async fn handle_request(
             Ok(value) => value,
             Err(error) => {
                 record_backend_turn_total("frontend_heartbeat", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("invalid request body: {error}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/heartbeat",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("invalid request body: {error}")}),
+                    ),
                 ));
             }
         };
@@ -363,9 +413,11 @@ async fn handle_request(
             Ok(found) => found,
             Err(error) => {
                 record_backend_turn_total("frontend_heartbeat", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": error }),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/heartbeat",
+                    request_started_at,
+                    json_response(StatusCode::BAD_REQUEST, json!({ "error": error })),
                 ));
             }
         };
@@ -374,7 +426,12 @@ async fn handle_request(
             if refreshed { "success" } else { "missing" },
         );
         record_backend_turn_duration("frontend_heartbeat", started_at.elapsed());
-        return Ok(plain_response(StatusCode::ACCEPTED, "accepted"));
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/v1/frontends/heartbeat",
+            request_started_at,
+            plain_response(StatusCode::ACCEPTED, "accepted"),
+        ));
     }
 
     if method == Method::POST && path == "/v1/frontends/deactivate" {
@@ -383,9 +440,14 @@ async fn handle_request(
             Ok(value) => value,
             Err(error) => {
                 record_backend_turn_total("frontend_deactivate", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("invalid request body: {error}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/deactivate",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("invalid request body: {error}")}),
+                    ),
                 ));
             }
         };
@@ -393,9 +455,11 @@ async fn handle_request(
             Ok(found) => found,
             Err(error) => {
                 record_backend_turn_total("frontend_deactivate", "error");
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": error }),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/frontends/deactivate",
+                    request_started_at,
+                    json_response(StatusCode::BAD_REQUEST, json!({ "error": error })),
                 ));
             }
         };
@@ -404,16 +468,26 @@ async fn handle_request(
             if removed { "success" } else { "missing" },
         );
         record_backend_turn_duration("frontend_deactivate", started_at.elapsed());
-        return Ok(plain_response(StatusCode::ACCEPTED, "accepted"));
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/v1/frontends/deactivate",
+            request_started_at,
+            plain_response(StatusCode::ACCEPTED, "accepted"),
+        ));
     }
 
     if method == Method::POST && path == "/v1/turns/chunks" {
         let request = match decode_json::<TurnChunkRequest>(req).await {
             Ok(value) => value,
             Err(error) => {
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("invalid request body: {error}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/turns/chunks",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("invalid request body: {error}")}),
+                    ),
                 ));
             }
         };
@@ -426,16 +500,26 @@ async fn handle_request(
             }
             entry.push_str(chunk);
         }
-        return Ok(plain_response(StatusCode::ACCEPTED, "accepted"));
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/v1/turns/chunks",
+            request_started_at,
+            plain_response(StatusCode::ACCEPTED, "accepted"),
+        ));
     }
 
     if method == Method::POST && path == "/v1/turns" {
         let mut request = match decode_json::<TurnRequest>(req).await {
             Ok(value) => value,
             Err(error) => {
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("invalid request body: {error}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/turns",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("invalid request body: {error}")}),
+                    ),
                 ));
             }
         };
@@ -449,7 +533,12 @@ async fn handle_request(
                 }
                 entry.push_str(transcript);
             }
-            return Ok(plain_response(StatusCode::ACCEPTED, "buffered"));
+            return Ok(with_backend_http_metrics(
+                &method,
+                "/v1/turns",
+                request_started_at,
+                plain_response(StatusCode::ACCEPTED, "buffered"),
+            ));
         }
         let buffered = {
             let mut chunks = pending_chunks.lock().await;
@@ -494,51 +583,56 @@ async fn handle_request(
         let result = engine.process_turn(request).await;
         record_backend_turn_duration("turn", started_at.elapsed());
 
-        return Ok(match result {
-            Ok(BackendEngineDecision::Chat(text)) => {
-                info!("backend routed turn to chat");
-                record_backend_turn_total("chat", "success");
-                sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-            }
-            Ok(BackendEngineDecision::BackendSkill(text)) => {
-                info!("backend routed turn to backend skill");
-                record_backend_turn_total("backend_skill", "success");
-                sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-            }
-            Ok(BackendEngineDecision::FrontendSkillIntent(intent)) => {
-                if !frontend_intent_allowed(&intent.intent, frontend_capabilities.as_deref()) {
-                    record_backend_turn_total("frontend_skill_capability_gate", "fallback");
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/v1/turns",
+            request_started_at,
+            match result {
+                Ok(BackendEngineDecision::Chat(text)) => {
+                    info!("backend routed turn to chat");
+                    record_backend_turn_total("chat", "success");
+                    sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
+                }
+                Ok(BackendEngineDecision::BackendSkill(text)) => {
+                    info!("backend routed turn to backend skill");
+                    record_backend_turn_total("backend_skill", "success");
+                    sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
+                }
+                Ok(BackendEngineDecision::FrontendSkillIntent(intent)) => {
+                    if !frontend_intent_allowed(&intent.intent, frontend_capabilities.as_deref()) {
+                        record_backend_turn_total("frontend_skill_capability_gate", "fallback");
+                        sse_response_timed(&[
+                            RuntimeEvent::Token {
+                                text: "That action is not available on this active frontend."
+                                    .to_string(),
+                            },
+                            RuntimeEvent::Done,
+                        ])
+                    } else {
+                        info!(
+                            intent = %intent.intent,
+                            turn_id = %intent.turn_id,
+                            "backend routed turn to frontend skill intent"
+                        );
+                        record_backend_turn_total("frontend_skill", "success");
+                        sse_response_timed(&[
+                            RuntimeEvent::FrontendSkillIntent(intent),
+                            RuntimeEvent::Done,
+                        ])
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "backend turn request failed");
+                    record_backend_turn_total("turn", "error");
                     sse_response_timed(&[
-                        RuntimeEvent::Token {
-                            text: "That action is not available on this active frontend."
-                                .to_string(),
+                        RuntimeEvent::Error {
+                            message: format!("backend error: {error}"),
                         },
                         RuntimeEvent::Done,
                     ])
-                } else {
-                    info!(
-                        intent = %intent.intent,
-                        turn_id = %intent.turn_id,
-                        "backend routed turn to frontend skill intent"
-                    );
-                    record_backend_turn_total("frontend_skill", "success");
-                    sse_response_timed(&[
-                        RuntimeEvent::FrontendSkillIntent(intent),
-                        RuntimeEvent::Done,
-                    ])
                 }
-            }
-            Err(error) => {
-                warn!(%error, "backend turn request failed");
-                record_backend_turn_total("turn", "error");
-                sse_response_timed(&[
-                    RuntimeEvent::Error {
-                        message: format!("backend error: {error}"),
-                    },
-                    RuntimeEvent::Done,
-                ])
-            }
-        });
+            },
+        ));
     }
 
     if method == Method::POST
@@ -552,9 +646,14 @@ async fn handle_request(
         let request = match decode_json::<FrontendSkillResultRequest>(req).await {
             Ok(value) => value,
             Err(error) => {
-                return Ok(json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("invalid request body: {error}")}),
+                return Ok(with_backend_http_metrics(
+                    &method,
+                    "/v1/turns/:turn_id/frontend-skill-result",
+                    request_started_at,
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error": format!("invalid request body: {error}")}),
+                    ),
                 ));
             }
         };
@@ -568,24 +667,34 @@ async fn handle_request(
         let result = engine.finalize_frontend_skill(turn_id, request).await;
         record_backend_turn_duration("frontend_skill_finalize", started_at.elapsed());
 
-        return Ok(match result {
-            Ok(text) => {
-                record_backend_turn_total("frontend_skill_finalize", "success");
-                sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-            }
-            Err(error) => {
-                record_backend_turn_total("frontend_skill_finalize", "error");
-                sse_response_timed(&[
-                    RuntimeEvent::Error {
-                        message: format!("finalize error: {error}"),
-                    },
-                    RuntimeEvent::Done,
-                ])
-            }
-        });
+        return Ok(with_backend_http_metrics(
+            &method,
+            "/v1/turns/:turn_id/frontend-skill-result",
+            request_started_at,
+            match result {
+                Ok(text) => {
+                    record_backend_turn_total("frontend_skill_finalize", "success");
+                    sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
+                }
+                Err(error) => {
+                    record_backend_turn_total("frontend_skill_finalize", "error");
+                    sse_response_timed(&[
+                        RuntimeEvent::Error {
+                            message: format!("finalize error: {error}"),
+                        },
+                        RuntimeEvent::Done,
+                    ])
+                }
+            },
+        ));
     }
 
-    Ok(plain_response(StatusCode::NOT_FOUND, "not found"))
+    Ok(with_backend_http_metrics(
+        &method,
+        "not_found",
+        request_started_at,
+        plain_response(StatusCode::NOT_FOUND, "not found"),
+    ))
 }
 
 pub struct AiceBackendEngine {
@@ -1068,12 +1177,36 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
     }
 
     const IP_API_URL: &str = "http://ip-api.com/json/?fields=status,city,country,lat,lon";
-    let response = reqwest::Client::new().get(IP_API_URL).send().await.ok()?;
+    let started_at = Instant::now();
+    let response = match reqwest::Client::new().get(IP_API_URL).send().await {
+        Ok(value) => {
+            record_backend_dependency_request("ip_api", "geolocation", "success", None);
+            value
+        }
+        Err(_) => {
+            record_backend_dependency_request("ip_api", "geolocation", "error", Some("request"));
+            record_backend_dependency_request_duration(
+                "ip_api",
+                "geolocation",
+                started_at.elapsed(),
+            );
+            return None;
+        }
+    };
+    record_backend_dependency_request_duration("ip_api", "geolocation", started_at.elapsed());
     if !response.status().is_success() {
+        record_backend_dependency_request("ip_api", "geolocation", "error", Some("http_status"));
         return None;
     }
-    let payload = response.json::<IpApiResponse>().await.ok()?;
+    let payload = match response.json::<IpApiResponse>().await {
+        Ok(value) => value,
+        Err(_) => {
+            record_backend_dependency_request("ip_api", "geolocation", "error", Some("parse"));
+            return None;
+        }
+    };
     if payload.status != "success" {
+        record_backend_dependency_request("ip_api", "geolocation", "error", Some("status"));
         return None;
     }
     let lat = payload.lat?;

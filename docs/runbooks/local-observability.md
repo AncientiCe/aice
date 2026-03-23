@@ -1,23 +1,21 @@
 # Local observability runbook
 
-This runbook covers the local Prometheus + Grafana stack for `desktop-runner`, `aice-backend`, and `aice-macos`.
+This runbook covers the local Prometheus + Grafana stack for `aice-backend` only.
 
 ## Purpose
 
-- scrape local runtime metrics from `desktop-runner`, `aice-backend`, and `aice-macos`
-- provide prebuilt Grafana dashboards for runtime, timings, and skill outcomes
+- scrape local runtime metrics from `aice-backend`
+- provide prebuilt Grafana dashboards for backend service health, latency, skills, and dependency calls
 - keep data on disk locally for before/after tuning checks
 
 ## Prerequisites
 
 - Docker with `docker compose`
-- target runtime(s) running with metrics enabled
+- `aice-backend` running with metrics enabled
 - `config.json` has:
   - `service.metrics_enabled: true`
-  - `service.metrics_bind: "127.0.0.1:9000"` for `desktop-runner` (or matching scrape target)
-  - For split services, use distinct binds to avoid collisions:
+  - backend metrics bind configured to match scrape target, typically:
     - `AICE_BACKEND_METRICS_BIND=127.0.0.1:9001`
-    - `AICE_MACOS_METRICS_BIND=127.0.0.1:9002`
 
 ## Start and stop
 
@@ -58,38 +56,32 @@ Stop:
 
 Both are loopback-only by default in `ops/observability/docker-compose.yml`.
 
-## Split-service startup example
+## Backend startup example
 
 ```bash
 AICE_BACKEND_METRICS_BIND=127.0.0.1:9001 cargo aice-backend
 ```
 
-```bash
-AICE_MACOS_METRICS_BIND=127.0.0.1:9002 cargo aice-macos
-```
-
 Prometheus is preconfigured to scrape:
 
-- `host.docker.internal:9000` (`desktop-runner`)
 - `host.docker.internal:9001` (`aice-backend`)
-- `host.docker.internal:9002` (`aice-macos`)
 
 ## Dashboard pack
 
 Provisioned from `ops/observability/grafana/provisioning/dashboards/json/`:
 
-- `runtime-overview.json`
-- `timing-deep-dive.json`
-- `skills-and-outcomes.json`
-- `backend-timings.json`
-- `frontend-timings.json`
+- `runtime-overview.json` (`Aice Backend Service Overview`)
+- `backend-timings.json` (`Aice Backend Latency`)
+- `skills-and-outcomes.json` (`Aice Backend Skills`)
+- `timing-deep-dive.json` (`Aice Backend Dependency Latency`)
 
-New latency-attribution metric used by backend dashboard:
-- `backend_turn_stage_duration_seconds{stage}` with stages such as `classify_intent`, `skill_execute`, `answer_compose`, `chat_generate`, `sse_write`
+Primary backend metrics covered by these dashboards:
 
-Suggested latency gates for optimization passes:
-- `voice_turn_time_to_first_audio_seconds` p95 <= 2.0s
-- end-to-end `voice_stage_duration_seconds{stage="orchestrator"}` p95 <= 4.5s
+- HTTP: `backend_http_requests_total`, `backend_http_request_duration_seconds`
+- Turn flow: `backend_turn_total`, `backend_turn_duration_seconds`, `backend_turn_stage_duration_seconds`
+- Skills: `backend_skill_execute_total`, `backend_skill_execute_duration_seconds`
+- External dependencies: `backend_dependency_requests_total`, `backend_dependency_request_duration_seconds`
+- mDNS startup: `backend_mdns_advertisement_total`, `backend_mdns_advertisement_duration_seconds`
 
 ## Data persistence
 
@@ -103,12 +95,6 @@ Local persistent storage:
 - `up{job="aice-backend"} == 0`:
   - confirm `aice-backend` is running
   - confirm `AICE_BACKEND_METRICS_BIND` or `service.metrics_bind` is reachable from Docker target `host.docker.internal:9001`
-- `up{job="aice-macos"} == 0`:
-  - confirm `aice-macos` is running
-  - confirm `AICE_MACOS_METRICS_BIND` or `service.metrics_bind` is reachable from Docker target `host.docker.internal:9002`
-- `up{job="desktop-runner"} == 0`:
-  - confirm `desktop-runner` is running
-  - confirm `service.metrics_bind` is reachable from Docker target `host.docker.internal:9000`
 - Grafana has no dashboards:
   - check `grafana` logs for provisioning errors
   - verify JSON in `ops/observability/grafana/provisioning/dashboards/json/` is valid

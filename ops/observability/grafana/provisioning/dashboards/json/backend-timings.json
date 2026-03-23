@@ -1,8 +1,8 @@
 {
   "id": null,
-  "uid": "aice-backend-timings",
-  "title": "Aice Backend Timings",
-  "tags": ["aice", "backend", "timings"],
+  "uid": "aice-backend-latency",
+  "title": "Aice Backend Latency",
+  "tags": ["aice", "backend", "latency"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
@@ -11,45 +11,36 @@
   "templating": { "list": [] },
   "panels": [
     {
-      "type": "stat",
-      "title": "Backend Target Up",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
-      "targets": [
-        { "refId": "A", "expr": "max(up{job=\"aice-backend\"})" }
-      ]
-    },
-    {
       "type": "timeseries",
-      "title": "Turn Throughput / min (by path,result)",
+      "title": "HTTP Request Duration avg by Route (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (path, result) (rate(backend_turn_total{job=\"aice-backend\"}[5m])) * 60",
-          "legendFormat": "{{path}} {{result}}"
+          "expr": "sum by (route) (rate(backend_http_request_duration_seconds_sum{job=\"aice-backend\"}[5m])) / sum by (route) (rate(backend_http_request_duration_seconds_count{job=\"aice-backend\"}[5m])) * 1000",
+          "legendFormat": "{{route}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Backend Turn Duration avg (ms)",
+      "title": "HTTP Request Duration p95 by Route (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(backend_turn_duration_seconds_sum{job=\"aice-backend\"}[5m])) / sum(rate(backend_turn_duration_seconds_count{job=\"aice-backend\"}[5m])) * 1000",
-          "legendFormat": "avg"
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(backend_http_request_duration_seconds_bucket{job=\"aice-backend\"}[5m]))) * 1000",
+          "legendFormat": "{{route}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Backend Turn Duration avg by Path (ms)",
+      "title": "Turn Duration avg by Path (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
           "refId": "A",
@@ -60,39 +51,39 @@
     },
     {
       "type": "timeseries",
-      "title": "Backend Turn Duration p95 (ms) (if available)",
+      "title": "Turn Duration p95 by Path (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
           "refId": "A",
-          "expr": "backend_turn_duration_seconds{job=\"aice-backend\",quantile=\"0.95\"} * 1000",
-          "legendFormat": "p95 {{path}}"
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(backend_turn_duration_seconds_bucket{job=\"aice-backend\"}[5m]))) * 1000",
+          "legendFormat": "{{path}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Backend Error Throughput / min (by path)",
+      "title": "Stage Duration avg by Stage (ms)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (path) (rate(backend_turn_total{job=\"aice-backend\", result=\"error\"}[5m])) * 60",
-          "legendFormat": "{{path}} errors/min"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Backend Stage Duration avg by Stage (ms)",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "targets": [
         {
           "refId": "A",
           "expr": "sum by (stage) (rate(backend_turn_stage_duration_seconds_sum{job=\"aice-backend\"}[5m])) / sum by (stage) (rate(backend_turn_stage_duration_seconds_count{job=\"aice-backend\"}[5m])) * 1000",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage Duration p95 by Stage (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(backend_turn_stage_duration_seconds_bucket{job=\"aice-backend\"}[5m]))) * 1000",
           "legendFormat": "{{stage}}"
         }
       ]

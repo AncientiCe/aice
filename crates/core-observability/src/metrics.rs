@@ -94,6 +94,13 @@ const SCREENSHOT_SKILL_EXECUTE_DURATION_SECONDS: &str = "screenshot_skill_execut
 const BACKEND_TURN_TOTAL: &str = "backend_turn_total";
 const BACKEND_TURN_DURATION_SECONDS: &str = "backend_turn_duration_seconds";
 const BACKEND_TURN_STAGE_DURATION_SECONDS: &str = "backend_turn_stage_duration_seconds";
+const BACKEND_HTTP_REQUESTS_TOTAL: &str = "backend_http_requests_total";
+const BACKEND_HTTP_REQUEST_DURATION_SECONDS: &str = "backend_http_request_duration_seconds";
+const BACKEND_SKILL_EXECUTE_TOTAL: &str = "backend_skill_execute_total";
+const BACKEND_SKILL_EXECUTE_DURATION_SECONDS: &str = "backend_skill_execute_duration_seconds";
+const BACKEND_DEPENDENCY_REQUESTS_TOTAL: &str = "backend_dependency_requests_total";
+const BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS: &str =
+    "backend_dependency_request_duration_seconds";
 const BACKEND_MDNS_ADVERTISEMENT_TOTAL: &str = "backend_mdns_advertisement_total";
 const BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS: &str =
     "backend_mdns_advertisement_duration_seconds";
@@ -182,6 +189,46 @@ pub fn register_metrics() {
         BACKEND_TURN_STAGE_DURATION_SECONDS,
         0.0_f64,
         "stage" => "unknown"
+    );
+    counter!(
+        BACKEND_HTTP_REQUESTS_TOTAL,
+        0,
+        "route" => "unknown",
+        "method" => "unknown",
+        "result" => "unknown",
+        "status_class" => "unknown"
+    );
+    histogram!(
+        BACKEND_HTTP_REQUEST_DURATION_SECONDS,
+        0.0_f64,
+        "route" => "unknown",
+        "method" => "unknown"
+    );
+    counter!(
+        BACKEND_SKILL_EXECUTE_TOTAL,
+        0,
+        "skill" => "unknown",
+        "result" => "unknown",
+        "error_kind" => "none"
+    );
+    histogram!(
+        BACKEND_SKILL_EXECUTE_DURATION_SECONDS,
+        0.0_f64,
+        "skill" => "unknown"
+    );
+    counter!(
+        BACKEND_DEPENDENCY_REQUESTS_TOTAL,
+        0,
+        "dependency" => "unknown",
+        "operation" => "unknown",
+        "result" => "unknown",
+        "error_kind" => "none"
+    );
+    histogram!(
+        BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS,
+        0.0_f64,
+        "dependency" => "unknown",
+        "operation" => "unknown"
     );
     counter!(BACKEND_MDNS_ADVERTISEMENT_TOTAL, 0, "result" => "unknown");
     histogram!(BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS, 0.0_f64);
@@ -361,6 +408,81 @@ pub fn record_backend_turn_stage_duration(stage: &str, duration: Duration) {
         BACKEND_TURN_STAGE_DURATION_SECONDS,
         duration.as_secs_f64(),
         "stage" => stage.to_string()
+    );
+}
+
+pub fn record_backend_http_request(
+    route: &str,
+    method: &str,
+    status_code: u16,
+    duration: Duration,
+) {
+    let status_class = format!("{}xx", status_code / 100);
+    let result = if status_code < 400 {
+        "success"
+    } else {
+        "error"
+    };
+    counter!(
+        BACKEND_HTTP_REQUESTS_TOTAL,
+        1,
+        "route" => route.to_string(),
+        "method" => method.to_string(),
+        "result" => result.to_string(),
+        "status_class" => status_class
+    );
+    histogram!(
+        BACKEND_HTTP_REQUEST_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "route" => route.to_string(),
+        "method" => method.to_string()
+    );
+}
+
+pub fn record_backend_skill_execute(skill: &str, result: &str, error_kind: Option<&str>) {
+    counter!(
+        BACKEND_SKILL_EXECUTE_TOTAL,
+        1,
+        "skill" => skill.to_string(),
+        "result" => result.to_string(),
+        "error_kind" => error_kind.unwrap_or("none").to_string()
+    );
+}
+
+pub fn record_backend_skill_execute_duration(skill: &str, duration: Duration) {
+    histogram!(
+        BACKEND_SKILL_EXECUTE_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "skill" => skill.to_string()
+    );
+}
+
+pub fn record_backend_dependency_request(
+    dependency: &str,
+    operation: &str,
+    result: &str,
+    error_kind: Option<&str>,
+) {
+    counter!(
+        BACKEND_DEPENDENCY_REQUESTS_TOTAL,
+        1,
+        "dependency" => dependency.to_string(),
+        "operation" => operation.to_string(),
+        "result" => result.to_string(),
+        "error_kind" => error_kind.unwrap_or("none").to_string()
+    );
+}
+
+pub fn record_backend_dependency_request_duration(
+    dependency: &str,
+    operation: &str,
+    duration: Duration,
+) {
+    histogram!(
+        BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "dependency" => dependency.to_string(),
+        "operation" => operation.to_string()
     );
 }
 

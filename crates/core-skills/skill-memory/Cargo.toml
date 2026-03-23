@@ -10,6 +10,7 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["clock"] }
+metrics = "0.21"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

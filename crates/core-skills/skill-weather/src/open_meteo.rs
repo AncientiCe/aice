@@ -2,11 +2,18 @@
 
 use crate::types::{ResolvedLocation, WeatherResult, WeatherSkill, WeatherSkillError};
 use async_trait::async_trait;
+use metrics::{counter, histogram};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::time::Instant;
 
 const GEOCODING_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
+const BACKEND_SKILL_EXECUTE_TOTAL: &str = "backend_skill_execute_total";
+const BACKEND_SKILL_EXECUTE_DURATION_SECONDS: &str = "backend_skill_execute_duration_seconds";
+const BACKEND_DEPENDENCY_REQUESTS_TOTAL: &str = "backend_dependency_requests_total";
+const BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS: &str =
+    "backend_dependency_request_duration_seconds";
 
 #[derive(Deserialize)]
 struct GeocodingResponse {
@@ -69,26 +76,38 @@ impl OpenMeteoWeatherSkill {
         &self,
         name: &str,
     ) -> Result<Option<ResolvedLocation>, WeatherSkillError> {
+        let started_at = Instant::now();
         let res = self
             .client
             .get(GEOCODING_URL)
             .query(&[("name", name), ("count", "1")])
             .send()
             .await
-            .map_err(|e| WeatherSkillError::Geocoding(e.to_string()))?;
+            .map_err(|e| {
+                record_dependency_result("geocoding", "error", Some("request"));
+                record_dependency_duration("geocoding", started_at);
+                WeatherSkillError::Geocoding(e.to_string())
+            })?;
         if !res.status().is_success() {
+            record_dependency_result("geocoding", "error", Some("http_status"));
+            record_dependency_duration("geocoding", started_at);
             return Err(WeatherSkillError::Geocoding(format!(
                 "status {}",
                 res.status()
             )));
         }
-        let body: GeocodingResponse = res
-            .json()
-            .await
-            .map_err(|e| WeatherSkillError::Geocoding(e.to_string()))?;
+        let body: GeocodingResponse = res.json().await.map_err(|e| {
+            record_dependency_result("geocoding", "error", Some("parse"));
+            record_dependency_duration("geocoding", started_at);
+            WeatherSkillError::Geocoding(e.to_string())
+        })?;
         let Some(first) = body.results.and_then(|r| r.into_iter().next()) else {
+            record_dependency_result("geocoding", "error", Some("no_results"));
+            record_dependency_duration("geocoding", started_at);
             return Ok(None);
         };
+        record_dependency_result("geocoding", "success", None);
+        record_dependency_duration("geocoding", started_at);
         let display_name = if let Some(ref c) = first.country {
             format!("{}, {}", first.name, c)
         } else {
@@ -105,6 +124,7 @@ impl OpenMeteoWeatherSkill {
         &self,
         loc: &ResolvedLocation,
     ) -> Result<WeatherResult, WeatherSkillError> {
+        let started_at = Instant::now();
         let res = self
             .client
             .get(FORECAST_URL)
@@ -118,20 +138,31 @@ impl OpenMeteoWeatherSkill {
             ])
             .send()
             .await
-            .map_err(|e| WeatherSkillError::Forecast(e.to_string()))?;
+            .map_err(|e| {
+                record_dependency_result("forecast", "error", Some("request"));
+                record_dependency_duration("forecast", started_at);
+                WeatherSkillError::Forecast(e.to_string())
+            })?;
         if !res.status().is_success() {
+            record_dependency_result("forecast", "error", Some("http_status"));
+            record_dependency_duration("forecast", started_at);
             return Err(WeatherSkillError::Forecast(format!(
                 "status {}",
                 res.status()
             )));
         }
-        let body: ForecastResponse = res
-            .json()
-            .await
-            .map_err(|e| WeatherSkillError::Forecast(e.to_string()))?;
-        let current = body
-            .current
-            .ok_or_else(|| WeatherSkillError::Forecast("missing current".to_string()))?;
+        let body: ForecastResponse = res.json().await.map_err(|e| {
+            record_dependency_result("forecast", "error", Some("parse"));
+            record_dependency_duration("forecast", started_at);
+            WeatherSkillError::Forecast(e.to_string())
+        })?;
+        let current = body.current.ok_or_else(|| {
+            record_dependency_result("forecast", "error", Some("missing_current"));
+            record_dependency_duration("forecast", started_at);
+            WeatherSkillError::Forecast("missing current".to_string())
+        })?;
+        record_dependency_result("forecast", "success", None);
+        record_dependency_duration("forecast", started_at);
         let description = weather_code_to_description(current.weather_code);
         let humidity_pct = current
             .relative_humidity_2m
@@ -234,14 +265,70 @@ impl WeatherSkill for OpenMeteoWeatherSkill {
         location: Option<&str>,
         default_location: Option<&ResolvedLocation>,
     ) -> Result<WeatherResult, WeatherSkillError> {
-        let loc = if let Some(name) = location {
-            self.geocode(name.trim()).await?
-        } else if let Some(default) = default_location {
-            default.clone()
-        } else {
-            return Err(WeatherSkillError::NoDefaultLocation);
-        };
-        self.fetch_forecast(&loc).await
+        let started_at = Instant::now();
+        let result = async {
+            let loc = if let Some(name) = location {
+                self.geocode(name.trim()).await?
+            } else if let Some(default) = default_location {
+                default.clone()
+            } else {
+                return Err(WeatherSkillError::NoDefaultLocation);
+            };
+            self.fetch_forecast(&loc).await
+        }
+        .await;
+        match &result {
+            Ok(_) => record_backend_skill_result("success", None),
+            Err(error) => record_backend_skill_result("error", Some(error_kind(error))),
+        }
+        record_backend_skill_duration(started_at);
+        result
+    }
+}
+
+fn record_backend_skill_result(result: &str, error_kind: Option<&str>) {
+    counter!(
+        BACKEND_SKILL_EXECUTE_TOTAL,
+        1,
+        "skill" => "weather",
+        "result" => result.to_string(),
+        "error_kind" => error_kind.unwrap_or("none").to_string()
+    );
+}
+
+fn record_backend_skill_duration(started_at: Instant) {
+    histogram!(
+        BACKEND_SKILL_EXECUTE_DURATION_SECONDS,
+        started_at.elapsed().as_secs_f64(),
+        "skill" => "weather"
+    );
+}
+
+fn record_dependency_result(operation: &str, result: &str, error_kind: Option<&str>) {
+    counter!(
+        BACKEND_DEPENDENCY_REQUESTS_TOTAL,
+        1,
+        "dependency" => "open_meteo",
+        "operation" => operation.to_string(),
+        "result" => result.to_string(),
+        "error_kind" => error_kind.unwrap_or("none").to_string()
+    );
+}
+
+fn record_dependency_duration(operation: &str, started_at: Instant) {
+    histogram!(
+        BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS,
+        started_at.elapsed().as_secs_f64(),
+        "dependency" => "open_meteo",
+        "operation" => operation.to_string()
+    );
+}
+
+fn error_kind(error: &WeatherSkillError) -> &'static str {
+    match error {
+        WeatherSkillError::Geocoding(_) => "geocoding",
+        WeatherSkillError::Forecast(_) => "forecast",
+        WeatherSkillError::NoDefaultLocation => "no_default_location",
     }
 }
 

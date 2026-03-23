@@ -5,11 +5,18 @@
 use crate::types::{TimeResult, TimeSkill, TimeSkillError};
 use async_trait::async_trait;
 use chrono::Utc;
+use metrics::{counter, histogram};
 use serde::Deserialize;
 use skill_weather::ResolvedLocation;
+use std::time::Instant;
 
 const GEOCODING_URL: &str = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL: &str = "https://api.open-meteo.com/v1/forecast";
+const BACKEND_SKILL_EXECUTE_TOTAL: &str = "backend_skill_execute_total";
+const BACKEND_SKILL_EXECUTE_DURATION_SECONDS: &str = "backend_skill_execute_duration_seconds";
+const BACKEND_DEPENDENCY_REQUESTS_TOTAL: &str = "backend_dependency_requests_total";
+const BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS: &str =
+    "backend_dependency_request_duration_seconds";
 
 #[derive(Deserialize)]
 struct GeocodingResponse {
@@ -52,28 +59,88 @@ impl OpenMeteoTimeSkill {
         }
     }
 
+    fn record_backend_skill_result(result: &str, error_kind: Option<&str>) {
+        counter!(
+            BACKEND_SKILL_EXECUTE_TOTAL,
+            1,
+            "skill" => "time",
+            "result" => result.to_string(),
+            "error_kind" => error_kind.unwrap_or("none").to_string()
+        );
+    }
+
+    fn record_backend_skill_duration(started_at: Instant) {
+        histogram!(
+            BACKEND_SKILL_EXECUTE_DURATION_SECONDS,
+            started_at.elapsed().as_secs_f64(),
+            "skill" => "time"
+        );
+    }
+
+    fn record_dependency_result(operation: &str, result: &str, error_kind: Option<&str>) {
+        counter!(
+            BACKEND_DEPENDENCY_REQUESTS_TOTAL,
+            1,
+            "dependency" => "open_meteo",
+            "operation" => operation.to_string(),
+            "result" => result.to_string(),
+            "error_kind" => error_kind.unwrap_or("none").to_string()
+        );
+    }
+
+    fn record_dependency_duration(operation: &str, started_at: Instant) {
+        histogram!(
+            BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS,
+            started_at.elapsed().as_secs_f64(),
+            "dependency" => "open_meteo",
+            "operation" => operation.to_string()
+        );
+    }
+
+    fn error_kind(error: &TimeSkillError) -> &'static str {
+        match error {
+            TimeSkillError::Geocoding(_) => "geocoding",
+            TimeSkillError::TimeRequest(_) => "time_request",
+            TimeSkillError::NoDefaultLocation => "no_default_location",
+        }
+    }
+
     async fn geocode(&self, name: &str) -> Result<ResolvedLocation, TimeSkillError> {
+        let started_at = Instant::now();
         let res = self
             .client
             .get(GEOCODING_URL)
             .query(&[("name", name), ("count", "1")])
             .send()
             .await
-            .map_err(|e| TimeSkillError::Geocoding(e.to_string()))?;
+            .map_err(|e| {
+                Self::record_dependency_result("geocoding", "error", Some("request"));
+                Self::record_dependency_duration("geocoding", started_at);
+                TimeSkillError::Geocoding(e.to_string())
+            })?;
         if !res.status().is_success() {
+            Self::record_dependency_result("geocoding", "error", Some("http_status"));
+            Self::record_dependency_duration("geocoding", started_at);
             return Err(TimeSkillError::Geocoding(format!(
                 "status {}",
                 res.status()
             )));
         }
-        let body: GeocodingResponse = res
-            .json()
-            .await
-            .map_err(|e| TimeSkillError::Geocoding(e.to_string()))?;
+        let body: GeocodingResponse = res.json().await.map_err(|e| {
+            Self::record_dependency_result("geocoding", "error", Some("parse"));
+            Self::record_dependency_duration("geocoding", started_at);
+            TimeSkillError::Geocoding(e.to_string())
+        })?;
         let first = body
             .results
             .and_then(|r| r.into_iter().next())
-            .ok_or_else(|| TimeSkillError::Geocoding("no results".to_string()))?;
+            .ok_or_else(|| {
+                Self::record_dependency_result("geocoding", "error", Some("no_results"));
+                Self::record_dependency_duration("geocoding", started_at);
+                TimeSkillError::Geocoding("no results".to_string())
+            })?;
+        Self::record_dependency_result("geocoding", "success", None);
+        Self::record_dependency_duration("geocoding", started_at);
         let display_name = if let Some(ref c) = first.country {
             format!("{}, {}", first.name, c)
         } else {
@@ -87,6 +154,7 @@ impl OpenMeteoTimeSkill {
     }
 
     async fn fetch_time(&self, loc: &ResolvedLocation) -> Result<TimeResult, TimeSkillError> {
+        let started_at = Instant::now();
         let res = self
             .client
             .get(FORECAST_URL)
@@ -97,17 +165,26 @@ impl OpenMeteoTimeSkill {
             ])
             .send()
             .await
-            .map_err(|e| TimeSkillError::TimeRequest(e.to_string()))?;
+            .map_err(|e| {
+                Self::record_dependency_result("time_lookup", "error", Some("request"));
+                Self::record_dependency_duration("time_lookup", started_at);
+                TimeSkillError::TimeRequest(e.to_string())
+            })?;
         if !res.status().is_success() {
+            Self::record_dependency_result("time_lookup", "error", Some("http_status"));
+            Self::record_dependency_duration("time_lookup", started_at);
             return Err(TimeSkillError::TimeRequest(format!(
                 "status {}",
                 res.status()
             )));
         }
-        let body: ForecastResponse = res
-            .json()
-            .await
-            .map_err(|e| TimeSkillError::TimeRequest(e.to_string()))?;
+        let body: ForecastResponse = res.json().await.map_err(|e| {
+            Self::record_dependency_result("time_lookup", "error", Some("parse"));
+            Self::record_dependency_duration("time_lookup", started_at);
+            TimeSkillError::TimeRequest(e.to_string())
+        })?;
+        Self::record_dependency_result("time_lookup", "success", None);
+        Self::record_dependency_duration("time_lookup", started_at);
         let tz_name = body.timezone.as_deref().unwrap_or("UTC");
         let timezone_abbr = body
             .timezone_abbreviation
@@ -136,13 +213,23 @@ impl TimeSkill for OpenMeteoTimeSkill {
         location: Option<&str>,
         default_location: Option<&ResolvedLocation>,
     ) -> Result<TimeResult, TimeSkillError> {
-        let loc = if let Some(name) = location {
-            self.geocode(name.trim()).await?
-        } else if let Some(default) = default_location {
-            default.clone()
-        } else {
-            return Err(TimeSkillError::NoDefaultLocation);
-        };
-        self.fetch_time(&loc).await
+        let started_at = Instant::now();
+        let result = async {
+            let loc = if let Some(name) = location {
+                self.geocode(name.trim()).await?
+            } else if let Some(default) = default_location {
+                default.clone()
+            } else {
+                return Err(TimeSkillError::NoDefaultLocation);
+            };
+            self.fetch_time(&loc).await
+        }
+        .await;
+        match &result {
+            Ok(_) => Self::record_backend_skill_result("success", None),
+            Err(error) => Self::record_backend_skill_result("error", Some(Self::error_kind(error))),
+        }
+        Self::record_backend_skill_duration(started_at);
+        result
     }
 }

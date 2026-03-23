@@ -448,19 +448,20 @@ Full skill journey, inputs, outputs, failure paths, and metrics are documented a
 
 ---
 
-## 18. Local observability stack (desktop-runner metrics dashboards)
+## 18. Local observability stack (backend-only metrics dashboards)
 
-**Purpose:** Provide local, on-demand operational visibility for desktop runtime metrics and timing analysis with Prometheus + Grafana.
+**Purpose:** Provide local, on-demand operational visibility for backend runtime metrics with Prometheus + Grafana.
 
 ```mermaid
 flowchart LR
-    Desktop[desktop-runner process] --> Exporter[Prometheus exporter at service.metrics_bind]
-    Exporter --> Scrape[Prometheus scrape target desktop-runner]
+    Backend[aice-backend process] --> Exporter[Prometheus exporter at service.metrics_bind]
+    Exporter --> Scrape[Prometheus scrape target aice-backend]
     Scrape --> Store[Prometheus TSDB local persistence]
     Store --> Grafana[Grafana dashboards]
-    Grafana --> Runtime[Runtime Overview]
-    Grafana --> Timings[Timing Deep Dive]
-    Grafana --> Skills[Skills and Outcomes]
+    Grafana --> Runtime[Backend Service Overview]
+    Grafana --> Timings[Backend Latency]
+    Grafana --> Skills[Backend Skills]
+    Grafana --> Deps[Backend Dependency Latency]
 ```
 
 **Notes:**
@@ -471,28 +472,24 @@ flowchart LR
 
 ---
 
-## 19. Latency attribution and optimization gates (backend + macOS)
+## 19. Backend latency attribution and optimization gates
 
-**Purpose:** Attribute each turn to concrete latency stages and apply optimization passes behind config flags with explicit SLO budgets.
+**Purpose:** Attribute each backend turn to concrete latency stages and apply optimization passes behind config flags with explicit SLO budgets.
 
 ```mermaid
 flowchart LR
-    Mac["aice-macos (turn_id)"] --> Backend["aice-backend (same turn_id)"]
-    Mac --> MacMetrics["voice_mic_to_stt, voice_endpointing_wait, voice_llm_first_token, voice_turn_time_to_first_audio"]
-    Backend --> BackendMetrics["backend_turn_duration + backend_turn_stage_duration{stage}"]
-    BackendMetrics --> Grafana["Backend Timings dashboard"]
-    MacMetrics --> Grafana
+    Backend["aice-backend turn flow"] --> BackendMetrics["backend_http_request_duration + backend_turn_duration + backend_turn_stage_duration{stage}"]
+    Backend --> SkillMetrics["backend_skill_execute_duration + backend_dependency_request_duration"]
+    BackendMetrics --> Grafana["Backend Latency dashboard"]
+    SkillMetrics --> Grafana
     Grafana --> Gate{"SLO gates"}
     Gate -->|pass| Keep["Keep optimization pass"]
     Gate -->|fail| Revert["Revert and try next pass"]
 ```
 
 **Notes:**
-- **Inputs:** Per-turn `turn_id` in `/v1/turns`; macOS endpointing settings; backend compose/classifier execution timings.
-- **Outputs:** Comparable stage metrics across macOS and backend; rollout control via config flags:
-  - `audio.enable_endpointing_tuning` (Pass A)
-  - `llm.skip_secondary_llm_for_skill_answers` (Pass B)
-  - `tts.enable_chunked_push_optimization` + `tts.push_chunk_bytes` (Pass C)
+- **Inputs:** Per-turn flow in `/v1/turns`, `/v1/turns/chunks`, and `/v1/turns/:turn_id/frontend-skill-result`; backend skill and dependency timings.
+- **Outputs:** Route-level, stage-level, skill-level, and dependency-level latency views for backend optimization passes.
 - **Failure paths:** If a pass increases p95 latency or errors, disable its flag and continue with the next pass.
 
 ---

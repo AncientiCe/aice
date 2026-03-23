@@ -79,4 +79,7 @@ sequenceDiagram
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| *(none instrumented yet — add when touching this skill)* | — | — |
+| `backend_skill_execute_total` | Counter | `skill="distance"`, `result`, `error_kind` |
+| `backend_skill_execute_duration_seconds` | Histogram | `skill="distance"` |
+| `backend_dependency_requests_total` | Counter | `dependency="open_meteo"`, `operation="geocoding"`, `result`, `error_kind` |
+| `backend_dependency_request_duration_seconds` | Histogram | `dependency="open_meteo"`, `operation="geocoding"` |

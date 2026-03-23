@@ -20,6 +20,9 @@ One document per skill. Each document contains a Mermaid journey diagram, input/
 | Volume | `skill-volume` | Frontend-owned (`aice-macos`), `MacOsVolumeSkill` | [volume.md](volume.md) |
 | Weather | `skill-weather` | Backend-owned (`aice-backend`), `OpenMeteoWeatherSkill` | [weather.md](weather.md) |
 
+Backend-owned skills (`weather`, `time`, `distance`, `smart-home`, `memory`) emit shared backend metrics:
+`backend_skill_execute_total`, `backend_skill_execute_duration_seconds`, and where applicable dependency metrics (`backend_dependency_requests_total`, `backend_dependency_request_duration_seconds`).
+
 ## Document Structure
 
 Each skill document follows this structure:
