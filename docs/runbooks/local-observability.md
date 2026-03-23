@@ -81,7 +81,7 @@ Primary backend metrics covered by these dashboards:
 - Turn flow: `backend_turn_total`, `backend_turn_duration_seconds`, `backend_turn_stage_duration_seconds`
 - Skills: `backend_skill_execute_total`, `backend_skill_execute_duration_seconds`
 - External dependencies: `backend_dependency_requests_total`, `backend_dependency_request_duration_seconds`
-- mDNS startup: `backend_mdns_advertisement_total`, `backend_mdns_advertisement_duration_seconds`
+- UDP LAN discovery: `backend_udp_discovery_listen_total`, `backend_udp_discovery_listen_duration_seconds`, `backend_udp_discovery_requests_total`, `backend_udp_discovery_responses_total`
 
 ## Data persistence
 

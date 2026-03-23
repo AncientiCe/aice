@@ -1,3 +1,5 @@
+pub mod discovery_broadcast;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use core_config::Config;
@@ -8,8 +10,8 @@ use core_observability::{
     record_backend_turn_total,
 };
 use core_orchestrator::{
-    intent_classifier_few_shots, intent_classifier_system_prompt, parse_intent, IntentClassifier,
-    IntentDecision, LlmStream,
+    intent_classifier_few_shots, intent_classifier_system_prompt_for_skills, parse_intent,
+    IntentClassifier, IntentDecision, LlmStream,
 };
 use core_runtime_protocol::{
     sse_data_line, FrontendActivateRequest, FrontendDeactivateRequest, FrontendHeartbeatRequest,
@@ -45,6 +47,35 @@ type TurnChunks = Arc<Mutex<HashMap<String, String>>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 
 const DEFAULT_FRONTEND_SESSION_TTL_SECONDS: u64 = 120;
+const CLASSIFIER_ALL_SKILLS: [&str; 15] = [
+    "skill_weather",
+    "skill_time",
+    "skill_distance",
+    "skill_smart_home",
+    "skill_assistant",
+    "skill_media",
+    "skill_memory",
+    "skill_computer",
+    "skill_screenshot",
+    "skill_app_switcher",
+    "skill_reminder",
+    "skill_timer",
+    "skill_shopping_list",
+    "skill_message",
+    "skill_volume",
+];
+const FRONTEND_CLASSIFIER_SKILLS: [&str; 10] = [
+    "skill_assistant",
+    "skill_media",
+    "skill_computer",
+    "skill_screenshot",
+    "skill_app_switcher",
+    "skill_reminder",
+    "skill_timer",
+    "skill_shopping_list",
+    "skill_message",
+    "skill_volume",
+];
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FrontendSessionKey {
@@ -304,6 +335,65 @@ fn frontend_intent_allowed(intent: &str, supported_frontend_intents: Option<&[St
         return false;
     };
     intents.iter().any(|allowed| allowed == &normalized)
+}
+
+fn build_intent_classification_prompt(user_text: &str) -> String {
+    format!(
+        "Classify this user request. Reply with only the JSON object.\nUser request: \"{}\"",
+        user_text.trim()
+    )
+}
+
+fn frontend_classifier_skills_from_context(context: Option<&Value>) -> Vec<String> {
+    let Some(value) = context else {
+        return Vec::new();
+    };
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    let Some(intents) = object.get("frontend_supported_intents") else {
+        return Vec::new();
+    };
+    let Some(intents_array) = intents.as_array() else {
+        return Vec::new();
+    };
+    let mut normalized: Vec<String> = intents_array
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .filter_map(normalize_frontend_intent)
+        .filter(|intent| FRONTEND_CLASSIFIER_SKILLS.contains(&intent.as_str()))
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn build_available_classifier_skills(
+    smart_home_enabled: bool,
+    memory_enabled: bool,
+    context: Option<&Value>,
+) -> Vec<String> {
+    let mut skills = vec![
+        "skill_weather".to_string(),
+        "skill_time".to_string(),
+        "skill_distance".to_string(),
+    ];
+    if smart_home_enabled {
+        skills.push("skill_smart_home".to_string());
+    }
+    if memory_enabled {
+        skills.push("skill_memory".to_string());
+    }
+    let frontend_intents = frontend_classifier_skills_from_context(context);
+    for skill in FRONTEND_CLASSIFIER_SKILLS {
+        if frontend_intents
+            .iter()
+            .any(|intent| intent.as_str() == skill)
+        {
+            skills.push(skill.to_string());
+        }
+    }
+    skills
 }
 
 async fn handle_request(
@@ -699,7 +789,6 @@ async fn handle_request(
 
 pub struct AiceBackendEngine {
     llm: Arc<OllamaLlmStream>,
-    classifier_prompt: String,
     weather_skill: OpenMeteoWeatherSkill,
     time_skill: OpenMeteoTimeSkill,
     distance_skill: OpenMeteoDistanceSkill,
@@ -721,7 +810,7 @@ impl<'a, L> LlmIntentClassifier<'a, L> {
     pub fn new(llm: &'a L) -> Self {
         Self {
             llm,
-            system_prompt: intent_classifier_system_prompt(),
+            system_prompt: intent_classifier_system_prompt_for_skills(&CLASSIFIER_ALL_SKILLS),
         }
     }
 }
@@ -786,7 +875,6 @@ impl AiceBackendEngine {
 
         Self {
             llm: Arc::new(llm),
-            classifier_prompt: intent_classifier_system_prompt(),
             weather_skill,
             time_skill: OpenMeteoTimeSkill::new(),
             distance_skill: OpenMeteoDistanceSkill::new(),
@@ -830,18 +918,20 @@ impl AiceBackendEngine {
         Ok(output)
     }
 
-    async fn classify_intent(&self, user_text: &str) -> Result<IntentDecision, DynError> {
-        let prompt = format!(
-            "Classify this user request. Reply with only the JSON object.\\nUser request: \"{}\"",
-            user_text.trim()
-        );
+    async fn classify_intent(
+        &self,
+        user_text: &str,
+        available_skills: &[&str],
+    ) -> Result<IntentDecision, DynError> {
+        let prompt = build_intent_classification_prompt(user_text);
+        let classifier_prompt = intent_classifier_system_prompt_for_skills(available_skills);
         let few_shot_history = intent_classifier_few_shots();
         let raw = self
             .collect_llm(
                 "intent_classification",
                 &prompt,
                 few_shot_history.as_slice(),
-                Some(self.classifier_prompt.as_str()),
+                Some(classifier_prompt.as_str()),
             )
             .await?;
         Ok(parse_intent(raw.trim())?)
@@ -931,8 +1021,18 @@ impl BackendEngine for AiceBackendEngine {
             .unwrap_or_else(|| next_backend_turn_id(&self.turn_counter));
         let request_text = request.transcript.clone();
         let request_session_id = request.session_id.clone();
+        let available_skills = build_available_classifier_skills(
+            self.smart_home_skill.is_some(),
+            self.memory_skill.is_some(),
+            request.context.as_ref(),
+        );
+        let available_skill_refs: Vec<&str> = available_skills.iter().map(String::as_str).collect();
+
         let classify_started = Instant::now();
-        let decision = match self.classify_intent(&request.transcript).await {
+        let decision = match self
+            .classify_intent(&request.transcript, available_skill_refs.as_slice())
+            .await
+        {
             Ok(value) => value,
             Err(error) => {
                 warn!(%error, "intent classification failed in backend; falling back to chat");
@@ -1227,12 +1327,14 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 #[cfg(test)]
 mod tests {
     use super::{
+        build_available_classifier_skills, build_intent_classification_prompt,
         compose_distance_answer, compose_frontend_skill_outcome, compose_time_answer,
         compose_weather_answer,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
     use core_skills::{DistanceResult, TimeResult, WeatherResult};
+    use serde_json::json;
 
     #[test]
     fn compose_time_answer_is_deterministic() {
@@ -1331,6 +1433,37 @@ mod tests {
         assert_eq!(
             spoken,
             "I could not complete that action: contact not found"
+        );
+    }
+
+    #[test]
+    fn intent_prompt_uses_real_newline_before_user_request() {
+        let prompt = build_intent_classification_prompt("what's the time?");
+        assert!(prompt.contains("JSON object.\nUser request:"));
+        assert!(!prompt.contains("JSON object.\\nUser request:"));
+    }
+
+    #[test]
+    fn available_classifier_skills_include_backend_and_frontend_session_intents() {
+        let context = json!({
+            "frontend_supported_intents": [
+                " skill_message ",
+                "SKILL_TIMER",
+                "skill_message",
+                "unknown_intent"
+            ]
+        });
+        let skills = build_available_classifier_skills(true, false, Some(&context));
+        assert_eq!(
+            skills,
+            vec![
+                "skill_weather".to_string(),
+                "skill_time".to_string(),
+                "skill_distance".to_string(),
+                "skill_smart_home".to_string(),
+                "skill_timer".to_string(),
+                "skill_message".to_string(),
+            ]
         );
     }
 }

@@ -69,14 +69,24 @@
     },
     {
       "type": "timeseries",
-      "title": "mDNS Advertisement Outcomes / min",
+      "title": "UDP broadcast discovery / min",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (result) (rate(backend_mdns_advertisement_total{job=\"aice-backend\"}[5m])) * 60",
-          "legendFormat": "{{result}}"
+          "expr": "sum by (result) (rate(backend_udp_discovery_listen_total{job=\"aice-backend\"}[5m])) * 60",
+          "legendFormat": "listen_{{result}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum (rate(backend_udp_discovery_requests_total{job=\"aice-backend\"}[5m])) * 60",
+          "legendFormat": "find_requests"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (result) (rate(backend_udp_discovery_responses_total{job=\"aice-backend\"}[5m])) * 60",
+          "legendFormat": "response_{{result}}"
         }
       ]
     }

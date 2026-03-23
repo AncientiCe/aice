@@ -101,9 +101,11 @@ const BACKEND_SKILL_EXECUTE_DURATION_SECONDS: &str = "backend_skill_execute_dura
 const BACKEND_DEPENDENCY_REQUESTS_TOTAL: &str = "backend_dependency_requests_total";
 const BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS: &str =
     "backend_dependency_request_duration_seconds";
-const BACKEND_MDNS_ADVERTISEMENT_TOTAL: &str = "backend_mdns_advertisement_total";
-const BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS: &str =
-    "backend_mdns_advertisement_duration_seconds";
+const BACKEND_UDP_DISCOVERY_LISTEN_TOTAL: &str = "backend_udp_discovery_listen_total";
+const BACKEND_UDP_DISCOVERY_LISTEN_DURATION_SECONDS: &str =
+    "backend_udp_discovery_listen_duration_seconds";
+const BACKEND_UDP_DISCOVERY_REQUESTS_TOTAL: &str = "backend_udp_discovery_requests_total";
+const BACKEND_UDP_DISCOVERY_RESPONSES_TOTAL: &str = "backend_udp_discovery_responses_total";
 const FRONTEND_RPC_DURATION_SECONDS: &str = "frontend_rpc_duration_seconds";
 const FRONTEND_SKILL_DURATION_SECONDS: &str = "frontend_skill_duration_seconds";
 const FRONTEND_TTS_PLAYBACK_DURATION_SECONDS: &str = "frontend_tts_playback_duration_seconds";
@@ -230,8 +232,10 @@ pub fn register_metrics() {
         "dependency" => "unknown",
         "operation" => "unknown"
     );
-    counter!(BACKEND_MDNS_ADVERTISEMENT_TOTAL, 0, "result" => "unknown");
-    histogram!(BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS, 0.0_f64);
+    counter!(BACKEND_UDP_DISCOVERY_LISTEN_TOTAL, 0, "result" => "unknown");
+    histogram!(BACKEND_UDP_DISCOVERY_LISTEN_DURATION_SECONDS, 0.0_f64);
+    counter!(BACKEND_UDP_DISCOVERY_REQUESTS_TOTAL, 0);
+    counter!(BACKEND_UDP_DISCOVERY_RESPONSES_TOTAL, 0, "result" => "unknown");
     histogram!(FRONTEND_RPC_DURATION_SECONDS, 0.0_f64, "endpoint" => "unknown");
     histogram!(FRONTEND_SKILL_DURATION_SECONDS, 0.0_f64, "skill" => "unknown");
     histogram!(FRONTEND_TTS_PLAYBACK_DURATION_SECONDS, 0.0_f64);
@@ -486,18 +490,30 @@ pub fn record_backend_dependency_request_duration(
     );
 }
 
-pub fn record_backend_mdns_advertisement_total(result: &str) {
+pub fn record_backend_udp_discovery_listen_total(result: &str) {
     counter!(
-        BACKEND_MDNS_ADVERTISEMENT_TOTAL,
+        BACKEND_UDP_DISCOVERY_LISTEN_TOTAL,
         1,
         "result" => result.to_string()
     );
 }
 
-pub fn record_backend_mdns_advertisement_duration(duration: Duration) {
+pub fn record_backend_udp_discovery_listen_duration(duration: Duration) {
     histogram!(
-        BACKEND_MDNS_ADVERTISEMENT_DURATION_SECONDS,
+        BACKEND_UDP_DISCOVERY_LISTEN_DURATION_SECONDS,
         duration.as_secs_f64()
+    );
+}
+
+pub fn record_backend_udp_discovery_request_total() {
+    counter!(BACKEND_UDP_DISCOVERY_REQUESTS_TOTAL, 1);
+}
+
+pub fn record_backend_udp_discovery_response_total(result: &str) {
+    counter!(
+        BACKEND_UDP_DISCOVERY_RESPONSES_TOTAL,
+        1,
+        "result" => result.to_string()
     );
 }
 

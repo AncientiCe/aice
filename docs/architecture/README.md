@@ -494,25 +494,29 @@ flowchart LR
 
 ---
 
-## 20. Backend mDNS advertisement for frontend discovery
+## 20. Backend UDP broadcast discovery for frontend
 
-**Purpose:** Make `aice-backend` discoverable on local networks across host OSes (Windows/macOS/Linux) without manual IP input.
+**Purpose:** Make `aice-backend` discoverable on the **local broadcast domain** (same subnet) on macOS, Linux, and Windows without mDNS, Bonjour, or Avahi. No extra OS services or native dependencies beyond UDP.
 
 ```mermaid
 flowchart LR
-    Start["aice-backend starts (AICE_BACKEND_BIND)"] --> Bind["HTTP server binds host:port"]
-    Bind --> Mdns["Register mDNS service _aice-backend._tcp.local."]
-    Mdns --> HostType{"Bind host"}
-    HostType -->|specific IP| Fixed["Advertise bound IP + port"]
-    HostType -->|0.0.0.0/::| Auto["Advertise active interface IPs + port"]
-    Fixed --> Browse["aice-macos browses Bonjour/mDNS"]
-    Auto --> Browse
-    Browse --> Probe["Frontend health probe GET /healthz"]
-    Probe -->|ok| Ready["Frontend uses discovered backend URL"]
-    Probe -->|fail| Reject["Candidate rejected"]
+    Start["aice-backend starts"] --> Bind["HTTP server binds AICE_BACKEND_BIND"]
+    Bind --> Udp["UDP socket bind 0.0.0.0:AICE_BACKEND_DISCOVERY_UDP_PORT default 9999"]
+    Udp --> Loop["Recv datagram"]
+    Loop -->|payload starts with FIND| Reply["Send HERE:http_port to sender"]
+    Loop -->|other| Loop
+    Reply --> Loop
+    Fe["Frontend"] --> Bc["UDP send FIND to 255.255.255.255:discovery_port"]
+    Bc --> Reply
+    Reply --> Url["Build http://sender_ip:http_port"]
+    Url --> Probe["GET /healthz"]
+    Probe -->|ok| Ready["Use backend URL"]
+    Probe -->|fail| Retry["Try other candidates or retry"]
 ```
 
 **Notes:**
-- **Inputs:** `AICE_BACKEND_BIND`, optional `AICE_BACKEND_MDNS_SERVICE_TYPE`, optional `AICE_BACKEND_MDNS_INSTANCE`, optional `AICE_BACKEND_MDNS_HOSTNAME`.
-- **Outputs:** Backend DNS-SD advertisement and discovery-compatible URL candidates for frontend startup.
-- **Failure paths:** If mDNS registration fails, backend exits with startup error; metrics record `backend_mdns_advertisement_total{result="error"}`.
+- **Protocol:** Request body exactly `FIND` (4 bytes). Response UTF-8 `HERE:<port>` where `<port>` is the HTTP listen port parsed from `AICE_BACKEND_BIND` (e.g. `HERE:8781`).
+- **Inputs:** `AICE_BACKEND_BIND` (default `0.0.0.0:8781`), optional `AICE_BACKEND_DISCOVERY_UDP_PORT` (default `9999`). Frontend uses the same discovery port env for the probe destination.
+- **Scope:** Broadcast reaches the **local subnet only** (same as typical LAN discovery). Routers do not forward `255.255.255.255`.
+- **Outputs:** Frontend collects one or more candidate URLs, then selects a healthy backend via existing `/healthz` probing.
+- **Failure paths:** If the UDP bind fails, backend exits at startup; metrics record `backend_udp_discovery_listen_total{result="error"}`. Each `FIND` increments `backend_udp_discovery_requests_total`; each reply increments `backend_udp_discovery_responses_total`.
