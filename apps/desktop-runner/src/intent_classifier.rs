@@ -2,7 +2,7 @@
 
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_system_prompt, parse_intent, IntentClassifier,
-    IntentDecision, LlmStream,
+    IntentDecision, LlmCallOptions, LlmStream,
 };
 use futures::StreamExt;
 use tracing::info;
@@ -43,12 +43,14 @@ where
             llm_history = %llm_history,
             "llm_intent_input"
         );
+        let classification_options = LlmCallOptions::for_classification();
         let mut stream = self
             .llm
             .chat_stream(
                 &user_message,
                 few_shot_history.as_slice(),
                 Some(self.system_prompt.as_str()),
+                Some(&classification_options),
             )
             .await?;
         let mut raw = String::new();
@@ -110,6 +112,7 @@ mod tests {
             _user_text: &str,
             history: &[(String, String)],
             _system_prompt_override: Option<&str>,
+            _call_options: Option<&core_orchestrator::LlmCallOptions>,
         ) -> Result<
             Box<dyn futures::Stream<Item = String> + Send + Unpin>,
             Box<dyn std::error::Error + Send + Sync>,

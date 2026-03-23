@@ -83,6 +83,15 @@ sequenceDiagram
 | `Timeout` | Bridge is unreachable within the request timeout. |
 | `Device` | Bridge returns an error for the light operation. |
 
+## Classification / Routing
+
+The canonical routing rules live in [`crates/core-orchestrator/src/classifier_contract.rs`](../../crates/core-orchestrator/src/classifier_contract.rs).
+
+- **Domain**: physical devices — lights, switches, rooms, scenes, brightness, climate.
+- **Allowed `command` values**: `on`, `off`, `toggle`, `status`, `set`.
+- **Distinguished from `skill_media`**: music, audio, playback, and track control never route here; they always route to `skill_media`.
+- Decisions with an `action` outside the allowed set are rejected by `validate_intent_decision` before reaching this skill.
+
 ## Setup / Provisioning
 
 - `discover_bridge()` — calls `https://discovery.meethue.com/` to find bridge IP.

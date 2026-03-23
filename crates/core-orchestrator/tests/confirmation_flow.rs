@@ -62,6 +62,7 @@ impl LlmStream for CollectLlm {
         _user_text: &str,
         _history: &[(String, String)],
         _system_prompt_override: Option<&str>,
+        _call_options: Option<&core_orchestrator::LlmCallOptions>,
     ) -> Result<
         Box<dyn futures::Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,

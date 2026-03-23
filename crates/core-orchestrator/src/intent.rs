@@ -284,6 +284,87 @@ pub trait IntentClassifier: Send + Sync {
     ) -> Result<IntentDecision, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+const SMART_HOME_ACTIONS: &[&str] = &["on", "off", "toggle", "status", "set"];
+const MEDIA_ACTIONS: &[&str] = &[
+    "play",
+    "pause",
+    "resume",
+    "next",
+    "previous",
+    "shuffle_on",
+    "shuffle_off",
+    "status",
+];
+const APP_SWITCHER_ACTIONS: &[&str] = &["switch", "next", "previous", "hide", "quit", "force_quit"];
+const COMPUTER_ACTIONS: &[&str] = &["open", "launch", "browse", "run"];
+const VOLUME_ACTIONS: &[&str] = &["set", "up", "down", "mute", "unmute", "get"];
+const SHOPPING_LIST_ACTIONS: &[&str] = &["add", "remove"];
+const MESSAGE_COMMANDS: &[&str] = &["send"];
+
+fn action_allowed(action: &Option<String>, allowlist: &[&str]) -> bool {
+    match action.as_deref() {
+        None => true,
+        Some(a) => allowlist.contains(&a),
+    }
+}
+
+/// Validate a parsed `IntentDecision` against the published per-skill command allowlists.
+///
+/// If the model returned a `command` / `action` value that is not in the allowlist for the
+/// chosen skill, the model produced internally inconsistent output relative to its own system
+/// prompt.  In that case this function logs a warning and returns `IntentDecision::Chat` so
+/// the turn falls back gracefully instead of reaching skill execution with an invalid action.
+pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
+    let invalid = match &decision {
+        IntentDecision::SkillSmartHome { action, .. } => {
+            !action_allowed(action, SMART_HOME_ACTIONS)
+        }
+        IntentDecision::SkillMedia { action, .. } => !action_allowed(action, MEDIA_ACTIONS),
+        IntentDecision::SkillAppSwitcher { action, .. } => {
+            !action_allowed(action, APP_SWITCHER_ACTIONS)
+        }
+        IntentDecision::SkillComputer { action, .. } => !action_allowed(action, COMPUTER_ACTIONS),
+        IntentDecision::SkillVolume { action, .. } => !action_allowed(action, VOLUME_ACTIONS),
+        IntentDecision::SkillShoppingList { action, .. } => {
+            !action_allowed(action, SHOPPING_LIST_ACTIONS)
+        }
+        IntentDecision::SkillMessage { command, .. } => !action_allowed(command, MESSAGE_COMMANDS),
+        _ => false,
+    };
+    if invalid {
+        let skill = match &decision {
+            IntentDecision::SkillSmartHome { action, .. } => {
+                format!("skill_smart_home action={:?}", action)
+            }
+            IntentDecision::SkillMedia { action, .. } => format!("skill_media action={:?}", action),
+            IntentDecision::SkillAppSwitcher { action, .. } => {
+                format!("skill_app_switcher action={:?}", action)
+            }
+            IntentDecision::SkillComputer { action, .. } => {
+                format!("skill_computer action={:?}", action)
+            }
+            IntentDecision::SkillVolume { action, .. } => {
+                format!("skill_volume action={:?}", action)
+            }
+            IntentDecision::SkillShoppingList { action, .. } => {
+                format!("skill_shopping_list action={:?}", action)
+            }
+            IntentDecision::SkillMessage { command, .. } => {
+                format!("skill_message command={:?}", command)
+            }
+            other => format!("{:?}", other),
+        };
+        tracing::warn!(
+            invalid_decision = %skill,
+            "intent decision failed contract validation; falling back to chat"
+        );
+        core_observability::record_intent_validation_rejected(&skill);
+        IntentDecision::Chat
+    } else {
+        decision
+    }
+}
+
 #[cfg(test)]
 mod tests {
     pub trait TestResultExt<T, E> {
@@ -298,7 +379,7 @@ mod tests {
             }
         }
     }
-    use super::{parse_intent, IntentDecision};
+    use super::{parse_intent, validate_intent_decision, IntentDecision};
 
     #[test]
     fn parse_intent_smart_home() {
@@ -562,6 +643,121 @@ mod tests {
                 assert!(target.is_none());
             }
             _ => panic!("expected SkillAppSwitcher"),
+        }
+    }
+
+    // --- validate_intent_decision tests ---
+
+    #[test]
+    fn validation_passes_valid_smart_home_action() {
+        for action in ["on", "off", "toggle", "status", "set"] {
+            let d = IntentDecision::SkillSmartHome {
+                target: None,
+                action: Some(action.to_string()),
+            };
+            assert_eq!(
+                validate_intent_decision(d.clone()),
+                d,
+                "expected valid smart_home action '{action}' to pass"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_smart_home_action() {
+        // The exact failure observed in production logs: command:"next" on skill_smart_home
+        let d = IntentDecision::SkillSmartHome {
+            target: None,
+            action: Some("next".to_string()),
+        };
+        assert_eq!(
+            validate_intent_decision(d),
+            IntentDecision::Chat,
+            "expected skill_smart_home with action='next' to be rejected"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_invented_smart_home_command() {
+        let d = IntentDecision::SkillSmartHome {
+            target: None,
+            action: Some("play_next_song".to_string()),
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_passes_none_action_for_smart_home() {
+        let d = IntentDecision::SkillSmartHome {
+            target: None,
+            action: None,
+        };
+        assert_eq!(validate_intent_decision(d.clone()), d);
+    }
+
+    #[test]
+    fn validation_passes_valid_media_actions() {
+        for action in [
+            "play",
+            "pause",
+            "resume",
+            "next",
+            "previous",
+            "shuffle_on",
+            "shuffle_off",
+            "status",
+        ] {
+            let d = IntentDecision::SkillMedia {
+                action: Some(action.to_string()),
+                target: None,
+            };
+            assert_eq!(
+                validate_intent_decision(d.clone()),
+                d,
+                "expected valid media action '{action}' to pass"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_media_action() {
+        let d = IntentDecision::SkillMedia {
+            action: Some("turn_on".to_string()),
+            target: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_passes_valid_volume_actions() {
+        for action in ["set", "up", "down", "mute", "unmute", "get"] {
+            let d = IntentDecision::SkillVolume {
+                action: Some(action.to_string()),
+                level: None,
+            };
+            assert_eq!(validate_intent_decision(d.clone()), d);
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_volume_action() {
+        let d = IntentDecision::SkillVolume {
+            action: Some("louder".to_string()),
+            level: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_passes_chat_and_non_action_skills_unchanged() {
+        let cases = [
+            IntentDecision::Chat,
+            IntentDecision::SkillWeather { location: None },
+            IntentDecision::SkillTime { location: None },
+            IntentDecision::SkillScreenshot { filename: None },
+        ];
+        for d in cases {
+            assert_eq!(validate_intent_decision(d.clone()), d);
         }
     }
 }

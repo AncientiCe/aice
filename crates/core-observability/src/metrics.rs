@@ -53,6 +53,7 @@ const POD_TTS_CHUNKS_TOTAL: &str = "pod_tts_chunks_total";
 const POD_TTS_BYTES_TOTAL: &str = "pod_tts_bytes_total";
 const POD_EGRESS_DEVICE_LOCK_POISON_TOTAL: &str = "pod_egress_device_lock_poison_total";
 const VOICE_INTENT_CLASSIFIER_TOTAL: &str = "voice_intent_classifier_total";
+const VOICE_INTENT_VALIDATION_REJECTED_TOTAL: &str = "voice_intent_validation_rejected_total";
 const VOICE_INTENT_ROUTED_TOTAL: &str = "voice_intent_routed_total";
 const VOICE_WEATHER_SKILL_TOTAL: &str = "voice_weather_skill_total";
 const VOICE_TIME_SKILL_TOTAL: &str = "voice_time_skill_total";
@@ -543,6 +544,11 @@ pub fn record_frontend_tts_playback_duration(duration: Duration) {
 /// Record an intent classification call.
 pub fn record_intent_classifier() {
     counter!(VOICE_INTENT_CLASSIFIER_TOTAL, 1);
+}
+
+/// Record an intent decision rejected by contract validation (invalid action for the chosen skill).
+pub fn record_intent_validation_rejected(skill: &str) {
+    counter!(VOICE_INTENT_VALIDATION_REJECTED_TOTAL, 1, "skill" => skill.to_string());
 }
 
 /// Record routed intent (chat or skill_weather).

@@ -41,7 +41,7 @@ impl ConversationEngine {
 
         let t1 = Instant::now();
         let mut stream = llm
-            .chat_stream(&user_text, history, None)
+            .chat_stream(&user_text, history, None, None)
             .await
             .inspect_err(|_| record_error("llm_stream"))?;
         record_stage_duration(Stage::Llm, t1.elapsed());
@@ -108,7 +108,7 @@ impl ConversationEngine {
     {
         let t1 = Instant::now();
         let mut stream = llm
-            .chat_stream(user_text, history, None)
+            .chat_stream(user_text, history, None, None)
             .await
             .inspect_err(|_| record_error("llm_stream"))?;
         record_stage_duration(Stage::Llm, t1.elapsed());
@@ -149,7 +149,7 @@ impl ConversationEngine {
 
         let t1 = Instant::now();
         let mut stream = llm
-            .chat_stream(&user_text, history, None)
+            .chat_stream(&user_text, history, None, None)
             .await
             .inspect_err(|_| record_error("llm_stream"))?;
         record_stage_duration(Stage::Llm, t1.elapsed());

@@ -2,7 +2,7 @@
 
 use crate::LlmError;
 use async_trait::async_trait;
-use core_orchestrator::LlmStream;
+use core_orchestrator::{LlmCallOptions, LlmStream};
 use futures::Stream;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -22,12 +22,16 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<ChatOptions>,
 }
 
 #[derive(serde::Serialize)]
 struct ChatOptions {
     num_predict: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -129,6 +133,7 @@ impl LlmStream for OllamaLlmStream {
         user_text: &str,
         history: &[(String, String)],
         system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
     ) -> Result<
         Box<dyn Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
@@ -163,12 +168,18 @@ impl LlmStream for OllamaLlmStream {
             role: "user".to_string(),
             content: user_message,
         });
+        let format = call_options
+            .filter(|o| o.format_json)
+            .map(|_| "json".to_string());
+        let temperature = call_options.and_then(|o| o.temperature);
         let body = ChatRequest {
             model: self.model.clone(),
             messages,
             stream: true,
+            format,
             options: Some(ChatOptions {
                 num_predict: self.max_output_tokens.max(16),
+                temperature,
             }),
         };
         let url = format!("{}/api/chat", self.base_url);

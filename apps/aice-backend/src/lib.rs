@@ -11,7 +11,7 @@ use core_observability::{
 };
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_system_prompt_for_skills, parse_intent,
-    IntentClassifier, IntentDecision, LlmStream,
+    validate_intent_decision, IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
 };
 use core_runtime_protocol::{
     sse_data_line, FrontendActivateRequest, FrontendDeactivateRequest, FrontendHeartbeatRequest,
@@ -444,6 +444,16 @@ async fn handle_request(
                 ));
             }
         };
+        info!(
+            device_id = %request.device_id,
+            session_id = %request.session_id,
+            platform = %request.platform,
+            frontend_version = %request.frontend_version,
+            supported_frontend_intents = ?request.supported_frontend_intents,
+            expires_in_seconds = ?request.expires_in_seconds,
+            protocol_version = ?request.protocol_version,
+            "frontend activate request received"
+        );
         if let Some(version) = request.protocol_version {
             if version != CURRENT_PROTOCOL_VERSION {
                 record_backend_turn_total("frontend_activate", "error");
@@ -828,15 +838,22 @@ where
             "Classify this user request. Reply with only the JSON object.\nUser request: \"{}\"",
             user_text.trim()
         );
+        let classification_options = LlmCallOptions::for_classification();
         let mut stream = self
             .llm
-            .chat_stream(&prompt, &[], Some(self.system_prompt.as_str()))
+            .chat_stream(
+                &prompt,
+                &[],
+                Some(self.system_prompt.as_str()),
+                Some(&classification_options),
+            )
             .await?;
         let mut raw = String::new();
         while let Some(token) = stream.next().await {
             raw.push_str(&token);
         }
-        parse_intent(raw.trim()).map_err(|e| e.into())
+        let decision = parse_intent(raw.trim())?;
+        Ok(validate_intent_decision(decision))
     }
 }
 
@@ -893,6 +910,7 @@ impl AiceBackendEngine {
         user_text: &str,
         history: &[(String, String)],
         system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
     ) -> Result<String, DynError> {
         let history_len = history.len();
         info!(
@@ -904,7 +922,7 @@ impl AiceBackendEngine {
         );
         let mut stream = self
             .llm
-            .chat_stream(user_text, history, system_prompt_override)
+            .chat_stream(user_text, history, system_prompt_override, call_options)
             .await?;
         let mut output = String::new();
         while let Some(token) = stream.next().await {
@@ -926,15 +944,18 @@ impl AiceBackendEngine {
         let prompt = build_intent_classification_prompt(user_text);
         let classifier_prompt = intent_classifier_system_prompt_for_skills(available_skills);
         let few_shot_history = intent_classifier_few_shots();
+        let classification_options = LlmCallOptions::for_classification();
         let raw = self
             .collect_llm(
                 "intent_classification",
                 &prompt,
                 few_shot_history.as_slice(),
                 Some(classifier_prompt.as_str()),
+                Some(&classification_options),
             )
             .await?;
-        Ok(parse_intent(raw.trim())?)
+        let decision = parse_intent(raw.trim())?;
+        Ok(validate_intent_decision(decision))
     }
 
     async fn compose_skill_answer(
@@ -947,7 +968,7 @@ impl AiceBackendEngine {
             user_text.trim(),
             context
         );
-        self.collect_llm("skill_answer_composer", &prompt, &[], None)
+        self.collect_llm("skill_answer_composer", &prompt, &[], None, None)
             .await
     }
 }
@@ -1208,7 +1229,7 @@ impl BackendEngine for AiceBackendEngine {
                 };
                 let chat_started = Instant::now();
                 let text = self
-                    .collect_llm("chat", &request.transcript, &history, None)
+                    .collect_llm("chat", &request.transcript, &history, None, None)
                     .await?;
                 record_backend_turn_stage_duration("chat_generate", chat_started.elapsed());
                 {

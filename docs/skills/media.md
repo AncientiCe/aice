@@ -82,6 +82,16 @@ sequenceDiagram
 - Library search order: playlist name → exact album → partial album → exact track → partial track.
 - iTunes catalog fallback only fires when the library search yields no result.
 
+## Classification / Routing
+
+The canonical routing rules live in [`crates/core-orchestrator/src/classifier_contract.rs`](../../crates/core-orchestrator/src/classifier_contract.rs).
+
+- **Domain**: music, audio playback, tracks, queues, shuffle — anything about controlling what is playing.
+- **Allowed `command` values**: `play`, `pause`, `resume`, `next`, `previous`, `shuffle_on`, `shuffle_off`, `status`.
+- **Distinguished from `skill_smart_home`**: physical devices (lights, switches, scenes) route to smart home; audio playback always routes here.
+- **Distinguished from `skill_app_switcher`**: `next` / `previous` here advance the media track; the same commands in `skill_app_switcher` switch the focused application or window.
+- Decisions with an `action` outside the allowed set are rejected by `validate_intent_decision` before reaching this skill.
+
 ## Metrics
 
 | Metric | Kind | Labels |
