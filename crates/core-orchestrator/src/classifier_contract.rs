@@ -1,8 +1,148 @@
 //! Canonical intent-classifier contract shared by backend and desktop runtimes.
 
+const ALL_CLASSIFIER_SKILLS: [&str; 15] = [
+    "skill_weather",
+    "skill_time",
+    "skill_distance",
+    "skill_smart_home",
+    "skill_assistant",
+    "skill_media",
+    "skill_memory",
+    "skill_computer",
+    "skill_screenshot",
+    "skill_app_switcher",
+    "skill_reminder",
+    "skill_timer",
+    "skill_shopping_list",
+    "skill_message",
+    "skill_volume",
+];
+
+fn has_skill(available_skills: &[&str], skill: &str) -> bool {
+    available_skills
+        .iter()
+        .any(|value| value.trim().eq_ignore_ascii_case(skill))
+}
+
+fn render_decision_order(available_skills: &[&str]) -> String {
+    let mut steps = Vec::new();
+    if has_skill(available_skills, "skill_message") {
+        steps.push("If the user wants to send or contact a person, use \"skill_message\".");
+    }
+    if has_skill(available_skills, "skill_timer") {
+        steps.push("Else if the user wants to create a timer, use \"skill_timer\".");
+    }
+    if has_skill(available_skills, "skill_reminder") {
+        steps.push("Else if the user wants to create a reminder, use \"skill_reminder\".");
+    }
+    if has_skill(available_skills, "skill_assistant") {
+        steps.push("Else if the user wants calendar help, use \"skill_assistant\".");
+    }
+    steps.push("Else classify the best matching skill from the valid intents list.");
+    steps.push("If no skill clearly matches, use \"chat\".");
+    let mut output = String::new();
+    for (index, step) in steps.iter().enumerate() {
+        output.push_str(&format!("{}. {step}\n", index + 1));
+    }
+    output
+}
+
+fn render_per_intent_rules(available_skills: &[&str]) -> String {
+    let mut lines = vec!["- chat -> command must be null.".to_string()];
+    if has_skill(available_skills, "skill_weather") {
+        lines.push("- skill_weather -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_time") {
+        lines.push("- skill_time -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_distance") {
+        lines.push("- skill_distance -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_smart_home") {
+        lines.push(
+            "- skill_smart_home -> command in [\"on\",\"off\",\"toggle\",\"status\",\"set\"]"
+                .to_string(),
+        );
+    }
+    if has_skill(available_skills, "skill_assistant") {
+        lines.push(
+            "- skill_assistant -> command=\"calendar\", assistant_kind=\"calendar\"".to_string(),
+        );
+    }
+    if has_skill(available_skills, "skill_media") {
+        lines.push("- skill_media -> command in [\"play\",\"pause\",\"resume\",\"next\",\"previous\",\"shuffle_on\",\"shuffle_off\",\"status\"]".to_string());
+    }
+    if has_skill(available_skills, "skill_memory") {
+        lines.push("- skill_memory -> command in [\"store\",\"recall\"]".to_string());
+    }
+    if has_skill(available_skills, "skill_computer") {
+        lines.push(
+            "- skill_computer -> command in [\"open\",\"launch\",\"browse\",\"run\"]".to_string(),
+        );
+    }
+    if has_skill(available_skills, "skill_screenshot") {
+        lines.push("- skill_screenshot -> command=\"take\"".to_string());
+    }
+    if has_skill(available_skills, "skill_app_switcher") {
+        lines.push("- skill_app_switcher -> command in [\"switch\",\"next\",\"previous\",\"hide\",\"quit\",\"force_quit\"]".to_string());
+    }
+    if has_skill(available_skills, "skill_reminder") {
+        lines.push("- skill_reminder -> command=\"add\", reminder_title required".to_string());
+    }
+    if has_skill(available_skills, "skill_timer") {
+        lines.push("- skill_timer -> command=\"set\", timer_duration required".to_string());
+    }
+    if has_skill(available_skills, "skill_shopping_list") {
+        lines.push(
+            "- skill_shopping_list -> command in [\"add\",\"remove\"], shopping_items required"
+                .to_string(),
+        );
+    }
+    if has_skill(available_skills, "skill_message") {
+        lines.push("- skill_message -> command=\"send\", message_contact required".to_string());
+        lines.push("- skill_message message_text:".to_string());
+        lines.push("  - if user provided message content, include message_text".to_string());
+        lines.push(
+            "  - if user did not provide message content, omit message_text (do not invent)"
+                .to_string(),
+        );
+    }
+    if has_skill(available_skills, "skill_volume") {
+        lines.push(
+            "- skill_volume -> command in [\"set\",\"up\",\"down\",\"mute\",\"unmute\",\"get\"]"
+                .to_string(),
+        );
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
 /// Build the canonical system prompt for LLM intent classification.
 pub fn intent_classifier_system_prompt() -> String {
-    r#"You are a strict intent classifier.
+    intent_classifier_system_prompt_for_skills(&ALL_CLASSIFIER_SKILLS)
+}
+
+/// Build the canonical system prompt for a set of available skills.
+pub fn intent_classifier_system_prompt_for_skills(available_skills: &[&str]) -> String {
+    let mut valid_intents = vec!["chat".to_string()];
+    for skill in ALL_CLASSIFIER_SKILLS {
+        if has_skill(available_skills, skill) {
+            valid_intents.push(skill.to_string());
+        }
+    }
+    let valid_intents_json = format!(
+        "[{}]",
+        valid_intents
+            .iter()
+            .map(|intent| format!("\"{intent}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let decision_order = render_decision_order(available_skills);
+    let per_intent_rules = render_per_intent_rules(available_skills);
+    let include_assistant_restriction = has_skill(available_skills, "skill_assistant");
+    let include_message_restriction = has_skill(available_skills, "skill_message");
+    let include_message_rewrite_block = has_skill(available_skills, "skill_message");
+    let mut prompt = r#"You are a strict intent classifier.
 
 Reply with only valid JSON.
 Do not output markdown.
@@ -12,17 +152,21 @@ Return the smallest valid JSON object for the chosen intent.
 Always include "intent".
 Include "command" for every non-chat intent.
 Do not include null fields.
+Think about what the user wants, then pick the most specific skill from the available list.
 
 Valid intents:
-["chat","skill_weather","skill_time","skill_distance","skill_smart_home","skill_assistant","skill_media","skill_memory","skill_computer","skill_screenshot","skill_app_switcher","skill_reminder","skill_timer","skill_shopping_list","skill_message","skill_volume"]
+"#
+    .to_string();
+    prompt.push_str(&valid_intents_json);
+    prompt.push_str(
+        r#"
 
 Decision order:
-1. If the user wants to send or contact a person, use "skill_message".
-2. Else if the user wants to create a timer, use "skill_timer".
-3. Else if the user wants to create a reminder, use "skill_reminder".
-4. Else if the user wants calendar help, use "skill_assistant".
-5. Else classify the best matching skill.
-6. If no skill clearly matches, use "chat".
+"#,
+    );
+    prompt.push_str(&decision_order);
+    prompt.push_str(
+        r#"
 
 Output schema:
 {
@@ -56,31 +200,30 @@ Output schema:
 }
 
 Per-intent rules:
-- chat -> command must be null.
-- skill_weather -> command="get"
-- skill_time -> command="get"
-- skill_distance -> command="get"
-- skill_smart_home -> command in ["on","off","toggle","status","set"]
-- skill_assistant -> command="calendar", assistant_kind="calendar"
-- skill_media -> command in ["play","pause","resume","next","previous","shuffle_on","shuffle_off","status"]
-- skill_memory -> command in ["store","recall"]
-- skill_computer -> command in ["open","launch","browse","run"]
-- skill_screenshot -> command="take"
-- skill_app_switcher -> command in ["switch","next","previous","hide","quit","force_quit"]
-- skill_reminder -> command="add", reminder_title required
-- skill_timer -> command="set", timer_duration required
-- skill_shopping_list -> command in ["add","remove"], shopping_items required
-- skill_message -> command="send", message_contact required
-- skill_message message_text:
-  - if user provided message content, include message_text
-  - if user did not provide message content, omit message_text (do not invent)
-- skill_volume -> command in ["set","up","down","mute","unmute","get"]
+"#,
+    );
+    prompt.push_str(&per_intent_rules);
+    prompt.push_str(
+        r#"
 
 Field restrictions:
 - For each intent, include only relevant fields.
-- Never include reminder/timer/message fields for skill_assistant.
-- Requests to contact or send a message to a person always use skill_message.
-- Never classify message-sending as skill_assistant.
+"#,
+    );
+    if include_assistant_restriction {
+        prompt.push_str("- Never include reminder/timer/message fields for skill_assistant.\n");
+    }
+    if include_message_restriction {
+        prompt.push_str(
+            "- Requests to contact or send a message to a person always use skill_message.\n",
+        );
+        if include_assistant_restriction {
+            prompt.push_str("- Never classify message-sending as skill_assistant.\n");
+        }
+    }
+    if include_message_rewrite_block {
+        prompt.push_str(
+            r#"
 
 If message_text is used, rewrite the user's requested content into the exact final text that should be sent to the recipient.
 Convert indirect or third-person phrasing into direct recipient-facing language.
@@ -91,7 +234,10 @@ Examples:
 - "how she is" -> "How are you?"
 - "if he can call me" -> "Can you call me?"
 - "that I am running late" -> "I'm running late."
-Output only the final send-ready message in message_text."#.to_string()
+Output only the final send-ready message in message_text."#,
+        );
+    }
+    prompt
 }
 
 /// Canonical few-shot examples for intent classification.
@@ -114,6 +260,19 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
         (
             "time in Tokyo".to_string(),
             "{\"intent\":\"skill_time\",\"command\":\"get\",\"location\":\"Tokyo, Japan\"}"
+                .to_string(),
+        ),
+        (
+            "what's the time?".to_string(),
+            "{\"intent\":\"skill_time\",\"command\":\"get\"}".to_string(),
+        ),
+        (
+            "what time is it?".to_string(),
+            "{\"intent\":\"skill_time\",\"command\":\"get\"}".to_string(),
+        ),
+        (
+            "what time is it in London?".to_string(),
+            "{\"intent\":\"skill_time\",\"command\":\"get\",\"location\":\"London, UK\"}"
                 .to_string(),
         ),
         (
@@ -143,7 +302,10 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{intent_classifier_few_shots, intent_classifier_system_prompt};
+    use super::{
+        intent_classifier_few_shots, intent_classifier_system_prompt,
+        intent_classifier_system_prompt_for_skills,
+    };
 
     #[test]
     fn prompt_lists_message_and_assistant_disambiguation() {
@@ -163,6 +325,19 @@ mod tests {
         assert!(prompt.contains(
             "- skill_volume -> command in [\"set\",\"up\",\"down\",\"mute\",\"unmute\",\"get\"]"
         ));
+    }
+
+    #[test]
+    fn prompt_can_be_scoped_to_available_skills() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_time", "skill_timer"]);
+        assert!(prompt.contains("Valid intents:"));
+        assert!(prompt.contains("\"chat\""));
+        assert!(prompt.contains("\"skill_time\""));
+        assert!(prompt.contains("\"skill_timer\""));
+        assert!(!prompt.contains("\"skill_weather\""));
+        assert!(prompt.contains("- skill_time -> command=\"get\""));
+        assert!(prompt.contains("- skill_timer -> command=\"set\", timer_duration required"));
+        assert!(!prompt.contains("- skill_weather -> command=\"get\""));
     }
 
     #[test]
@@ -194,6 +369,27 @@ mod tests {
                 && a.contains("\"intent\":\"skill_reminder\"")
                 && a.contains("\"command\":\"add\"")
                 && a.contains("\"reminder_when\":\"PT5M\"")
+        }));
+    }
+
+    #[test]
+    fn few_shots_cover_local_time_queries() {
+        let few_shots = intent_classifier_few_shots();
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("what's the time?")
+                && a.contains("\"intent\":\"skill_time\"")
+                && a.contains("\"command\":\"get\"")
+        }));
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("what time is it?")
+                && a.contains("\"intent\":\"skill_time\"")
+                && a.contains("\"command\":\"get\"")
+        }));
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("what time is it in London?")
+                && a.contains("\"intent\":\"skill_time\"")
+                && a.contains("\"command\":\"get\"")
+                && a.contains("\"location\":\"London, UK\"")
         }));
     }
 }

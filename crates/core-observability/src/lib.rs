@@ -12,9 +12,10 @@ pub use log::init_json_logging;
 pub use metrics::{
     record_app_switcher_skill, record_assistant_skill, record_backend_dependency_request,
     record_backend_dependency_request_duration, record_backend_http_request,
-    record_backend_mdns_advertisement_duration, record_backend_mdns_advertisement_total,
     record_backend_skill_execute, record_backend_skill_execute_duration,
     record_backend_turn_duration, record_backend_turn_stage_duration, record_backend_turn_total,
+    record_backend_udp_discovery_listen_duration, record_backend_udp_discovery_listen_total,
+    record_backend_udp_discovery_request_total, record_backend_udp_discovery_response_total,
     record_cancellation_success, record_computer_skill, record_distance_skill,
     record_endpointing_wait_duration, record_error, record_first_audio_latency,
     record_first_token_latency, record_frontend_rpc_duration, record_frontend_skill_duration,

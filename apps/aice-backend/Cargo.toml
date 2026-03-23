@@ -23,7 +23,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
-mdns-sd = "0.11"
 core-config = { path = "../../crates/core-config" }
 core-llm = { path = "../../crates/core-llm" }
 core-observability = { path = "../../crates/core-observability" }
@@ -32,3 +31,4 @@ core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
 core-skills = { path = "../../crates/core-skills" }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

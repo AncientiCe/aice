@@ -116,11 +116,26 @@ Fix any failure before marking the task complete.
 
 ---
 
+## 10.1. No Manual Fallback Routing or Speech Interpretation
+
+- **Do not add manual fallback routing for speech requests.** If classification/routing fails, fix the LLM contract, prompts, schemas, or orchestration instead of adding heuristic bypasses.
+- **Do not manually interpret speech/transcript content in fallback paths** (no keyword handlers, regex routers, phrase maps, or hardcoded utterance-to-skill mappings).
+- **No "temporary" manual fallback logic** may be merged, even behind flags.
+
+---
+
 ## 11. No Unsafe `unwrap`/`expect`
 
 - **Do not use `unwrap()` or `expect()` in production code.** These can panic and crash the process.
 - Handle failures safely using explicit error propagation (`Result`/`?`), recoverable branches, or well-defined fallbacks.
 - If a value is logically guaranteed, prove it through types/validation rather than runtime panics.
+
+---
+
+## 12. Close Running Instances When Done
+
+- If you start a long-running process for verification (e.g. dev server, watcher, background job), ensure it is stopped/killed before marking the task complete.
+- Avoid leaving stuck sessions running after verification; resolve or terminate them so they do not interfere with future tasks.
 
 ---
 
@@ -138,5 +153,7 @@ Fix any failure before marking the task complete.
 | No mocks | No mocks; use real impls, integration tests, or explicit test doubles |
 | No placeholders | No placeholders ever; only real implementations |
 | No manual STT interpretation | Never parse/match STT transcripts manually; all intent classification goes through the LLM |
+| No manual fallback speech routing | Never add heuristic fallback routing or manual speech interpretation paths |
 | No unsafe unwrap/expect | Never use `unwrap()`/`expect()` in production code; handle errors safely |
+| Close running instances | Stop any long-running verification processes when done |
 | System impact | Consider callers, storage, API, sync, outbox, observability |
