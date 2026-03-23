@@ -1,3 +1,5 @@
+#![deprecated(note = "aice-macos is deprecated; do not extend or ship new work here.")]
+
 use async_trait::async_trait;
 use core_audio::{AudioCapture, CaptureError, CpalCapture, SAMPLE_RATE};
 use core_config::{Config, WakeWordConfig};

@@ -1,3 +1,4 @@
+#[allow(deprecated)]
 use aice_macos::run_macos_frontend;
 use core_config::Config;
 use core_observability::{
