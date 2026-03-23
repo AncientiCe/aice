@@ -109,13 +109,16 @@ mod tests {
 
     #[test]
     fn resolve_discovery_udp_port_defaults() {
-        assert_eq!(resolve_discovery_udp_port(None).unwrap(), 9999);
         assert_eq!(
-            resolve_discovery_udp_port(Some("".to_string())).unwrap(),
+            resolve_discovery_udp_port(None).unwrap_or_else(|e| panic!("{e}")),
             9999
         );
         assert_eq!(
-            resolve_discovery_udp_port(Some("  ".to_string())).unwrap(),
+            resolve_discovery_udp_port(Some("".to_string())).unwrap_or_else(|e| panic!("{e}")),
+            9999
+        );
+        assert_eq!(
+            resolve_discovery_udp_port(Some("  ".to_string())).unwrap_or_else(|e| panic!("{e}")),
             9999
         );
     }
@@ -123,13 +126,16 @@ mod tests {
     #[test]
     fn resolve_discovery_udp_port_parses_number() {
         assert_eq!(
-            resolve_discovery_udp_port(Some("12345".to_string())).unwrap(),
+            resolve_discovery_udp_port(Some("12345".to_string())).unwrap_or_else(|e| panic!("{e}")),
             12345
         );
     }
 
     #[test]
     fn parse_http_port_from_bind_works() {
-        assert_eq!(parse_http_port_from_bind("0.0.0.0:8781").unwrap(), 8781);
+        assert_eq!(
+            parse_http_port_from_bind("0.0.0.0:8781").unwrap_or_else(|e| panic!("{e}")),
+            8781
+        );
     }
 }
