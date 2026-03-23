@@ -76,6 +76,7 @@ fn render_per_intent_rules(available_skills: &[&str]) -> String {
     }
     if has_skill(available_skills, "skill_media") {
         lines.push("- skill_media -> command in [\"play\",\"pause\",\"resume\",\"next\",\"previous\",\"shuffle_on\",\"shuffle_off\",\"status\"]".to_string());
+        lines.push("  - Use \"resume\" for unpause/continue/resume requests. Use \"play\" only for starting new playback.".to_string());
     }
     if has_skill(available_skills, "skill_memory") {
         lines.push("- skill_memory -> command in [\"store\",\"recall\"]".to_string());
@@ -324,6 +325,14 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
             "{\"intent\":\"skill_media\",\"command\":\"pause\"}".to_string(),
         ),
         (
+            "unpause.".to_string(),
+            "{\"intent\":\"skill_media\",\"command\":\"resume\"}".to_string(),
+        ),
+        (
+            "resume the music".to_string(),
+            "{\"intent\":\"skill_media\",\"command\":\"resume\"}".to_string(),
+        ),
+        (
             "turn on the kitchen lights".to_string(),
             "{\"intent\":\"skill_smart_home\",\"command\":\"on\",\"smart_home_target\":\"kitchen lights\"}".to_string(),
         ),
@@ -494,6 +503,31 @@ mod tests {
                     && a.contains("\"command\":\"pause\"")
             }),
             "expected 'pause the music' -> skill_media pause few-shot"
+        );
+        assert!(
+            few_shots.iter().any(|(u, a)| {
+                u.contains("unpause")
+                    && a.contains("\"intent\":\"skill_media\"")
+                    && a.contains("\"command\":\"resume\"")
+            }),
+            "expected 'unpause' -> skill_media resume few-shot"
+        );
+        assert!(
+            few_shots.iter().any(|(u, a)| {
+                u.contains("resume the music")
+                    && a.contains("\"intent\":\"skill_media\"")
+                    && a.contains("\"command\":\"resume\"")
+            }),
+            "expected 'resume the music' -> skill_media resume few-shot"
+        );
+    }
+
+    #[test]
+    fn prompt_distinguishes_play_from_resume_for_media() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_media"]);
+        assert!(
+            prompt.contains("Use \"resume\" for unpause/continue/resume requests"),
+            "expected play-vs-resume disambiguation in media per-intent rules"
         );
     }
 
