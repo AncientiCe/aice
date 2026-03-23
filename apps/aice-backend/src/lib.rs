@@ -1251,19 +1251,45 @@ impl BackendEngine for AiceBackendEngine {
         _turn_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError> {
-        Ok(compose_frontend_skill_outcome(&request))
+        if request.status.eq_ignore_ascii_case("error") {
+            return Ok(compose_frontend_skill_error_outcome(&request));
+        }
+
+        // Skill-agnostic: any non-empty structured context from the frontend is composed like backend skills.
+        let context_opt = request
+            .structured_result_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if let Some(context) = context_opt {
+            if self.skip_secondary_llm_for_skill_answers {
+                return Ok(compose_direct_skill_answer(context)
+                    .unwrap_or_else(|| "The action completed successfully.".to_string()));
+            }
+            let compose_started = Instant::now();
+            let composed = self
+                .compose_skill_answer(&request.user_text, context)
+                .await?;
+            record_backend_turn_stage_duration(
+                "frontend_skill_answer_compose",
+                compose_started.elapsed(),
+            );
+            return Ok(composed);
+        }
+
+        Ok(compose_frontend_skill_success_echo(&request))
     }
 }
 
-fn compose_frontend_skill_outcome(request: &FrontendSkillResultRequest) -> String {
-    if request.status.eq_ignore_ascii_case("error") {
-        let fallback = request
-            .error
-            .clone()
-            .unwrap_or_else(|| "The action failed.".to_string());
-        return format!("I could not complete that action: {fallback}");
-    }
+fn compose_frontend_skill_error_outcome(request: &FrontendSkillResultRequest) -> String {
+    let fallback = request
+        .error
+        .clone()
+        .unwrap_or_else(|| "The action failed.".to_string());
+    format!("I could not complete that action: {fallback}")
+}
 
+fn compose_frontend_skill_success_echo(request: &FrontendSkillResultRequest) -> String {
     request
         .structured_result_context
         .clone()
@@ -1349,8 +1375,8 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 mod tests {
     use super::{
         build_available_classifier_skills, build_intent_classification_prompt,
-        compose_distance_answer, compose_frontend_skill_outcome, compose_time_answer,
-        compose_weather_answer,
+        compose_distance_answer, compose_frontend_skill_error_outcome,
+        compose_frontend_skill_success_echo, compose_time_answer, compose_weather_answer,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -1424,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn frontend_skill_success_returns_outcome_without_llm_rewrite() {
+    fn frontend_skill_success_echo_returns_context_when_no_compose_path() {
         let request = FrontendSkillResultRequest {
             status: "ok".to_string(),
             user_text: "ask my wife how she is".to_string(),
@@ -1434,10 +1460,24 @@ mod tests {
             error: None,
         };
 
-        let spoken = compose_frontend_skill_outcome(&request);
+        let spoken = compose_frontend_skill_success_echo(&request);
         assert_eq!(
             spoken,
             "Sent iMessage to Tetiana. Message: \"How are you?\"."
+        );
+    }
+
+    #[test]
+    fn frontend_skill_success_echo_falls_back_when_context_missing() {
+        let request = FrontendSkillResultRequest {
+            status: "success".to_string(),
+            user_text: "do something".to_string(),
+            structured_result_context: None,
+            error: None,
+        };
+        assert_eq!(
+            compose_frontend_skill_success_echo(&request),
+            "The action completed successfully."
         );
     }
 
@@ -1450,7 +1490,7 @@ mod tests {
             error: Some("contact not found".to_string()),
         };
 
-        let spoken = compose_frontend_skill_outcome(&request);
+        let spoken = compose_frontend_skill_error_outcome(&request);
         assert_eq!(
             spoken,
             "I could not complete that action: contact not found"

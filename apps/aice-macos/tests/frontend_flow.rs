@@ -1,4 +1,5 @@
 use aice_backend::{spawn_server, BackendEngine, BackendEngineDecision};
+#[allow(deprecated)]
 use aice_macos::{FrontendClient, FrontendSkillExecutor};
 use async_trait::async_trait;
 use core_runtime_protocol::{FrontendSkillIntent, FrontendSkillResultRequest, TurnRequest};

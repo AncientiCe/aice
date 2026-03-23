@@ -1,5 +1,6 @@
 [package]
 name = "aice-macos"
+# Deprecated: do not extend or ship new functionality in this application.
 version = "0.1.0"
 edition = "2021"
 
