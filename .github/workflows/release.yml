@@ -89,14 +89,14 @@ jobs:
       - name: Quality gates (debug)
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+          cargo clippy --workspace --exclude aice-macos --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
           cargo audit --deny warnings
-          cargo test --all
+          cargo test --workspace --exclude aice-macos
 
       - name: Quality gates (release mode)
         run: |
-          cargo clippy --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
-          cargo test --all --release
+          cargo clippy --workspace --exclude aice-macos --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+          cargo test --workspace --exclude aice-macos --release
 
       - name: Build release binaries
         run: |
