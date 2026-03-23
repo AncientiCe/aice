@@ -4,6 +4,8 @@
 
 **Purpose:** Control macOS Music.app playback via AppleScript. Supports play (with library search and iTunes catalog fallback), pause, stop, resume, next/previous track, shuffle, and status queries.
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

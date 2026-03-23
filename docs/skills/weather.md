@@ -4,6 +4,8 @@
 
 **Purpose:** Fetch the current weather conditions for a named place or the user's default location. No API key required; uses the Open-Meteo public API.
 
+**Execution Owner (Split Runtime):** `aice-backend`
+
 ---
 
 ## Full Journey
@@ -22,12 +24,12 @@ sequenceDiagram
     alt location provided
         Runtime->>Normalizer: normalize to City, Country JSON
         alt normalization ok
-            Runtime->>Skill: execute(normalized_location, default_location)
+            Runtime->>Skill: execute(normalized_location, resolved_location)
         else ambiguous/unknown
             Runtime-->>LLM: clarification prompt to user
         end
-    else no location, default_location present
-        Runtime->>Skill: execute(None, default_location)
+    else no location, resolved_location present
+        Runtime->>Skill: execute(None, resolved_location)
     else neither provided
         Runtime->>Skill: execute(None, None)
         Skill-->>LLM: Err(NoDefaultLocation)
@@ -52,7 +54,7 @@ sequenceDiagram
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `location` | `Option<&str>` | Named place from intent route; runtime first normalizes with LLM location contract to `City, Country`. |
-| `default_location` | `Option<&ResolvedLocation>` | Pre-resolved lat/lon from startup; used when `location` is absent. |
+| `resolved_location` | `Option<&ResolvedLocation>` | Pre-resolved lat/lon from startup; used when `location` is absent. |
 
 ## Outputs
 
@@ -64,7 +66,7 @@ sequenceDiagram
 |-------|-------|
 | `Geocoding` | Geocoding API unreachable or returns no results after candidate retries (punctuation-stripped phrase, known alias expansions such as `LA`). |
 | `Forecast` | Forecast API unreachable or returns unexpected shape. |
-| `NoDefaultLocation` | Neither `location` nor `default_location` is available. |
+| `NoDefaultLocation` | Neither `location` nor `resolved_location` is available. |
 
 ## Metrics
 

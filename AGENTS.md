@@ -116,15 +116,7 @@ Fix any failure before marking the task complete.
 
 ---
 
-## 11. Benchmark Logging Discipline
-
-- Whenever you run latency benchmarks or review `turn_timing` logs, append the results to **`docs/benchmarks/turn-timings.md`**.
-- Every benchmark entry must include an explicit **UTC timestamp** from the log and the measured timing fields (at minimum: `mic_to_stt_ms`, `stt_ms`, `llm_ms`, `tts_ms`, `journey_ms`; include new fields when available).
-- Keep the benchmark table/history up to date in git so each change has a traceable before/after timing record.
-
----
-
-## 12. No Unsafe `unwrap`/`expect`
+## 11. No Unsafe `unwrap`/`expect`
 
 - **Do not use `unwrap()` or `expect()` in production code.** These can panic and crash the process.
 - Handle failures safely using explicit error propagation (`Result`/`?`), recoverable branches, or well-defined fallbacks.
@@ -146,6 +138,5 @@ Fix any failure before marking the task complete.
 | No mocks | No mocks; use real impls, integration tests, or explicit test doubles |
 | No placeholders | No placeholders ever; only real implementations |
 | No manual STT interpretation | Never parse/match STT transcripts manually; all intent classification goes through the LLM |
-| Benchmark logging | Every timing run/log review must be appended to `docs/benchmarks/turn-timings.md` with UTC timestamp |
 | No unsafe unwrap/expect | Never use `unwrap()`/`expect()` in production code; handle errors safely |
 | System impact | Consider callers, storage, API, sync, outbox, observability |

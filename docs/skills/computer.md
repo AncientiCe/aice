@@ -4,6 +4,8 @@
 
 **Purpose:** Open apps, files, and URLs on macOS from LLM-classified voice commands such as "open GoLand", "open Apple TV", and "open github.com".
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

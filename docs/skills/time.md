@@ -4,6 +4,8 @@
 
 **Purpose:** Return the current local time at a named or default location. Uses Open-Meteo to resolve an IANA timezone, then derives the accurate local time from the system clock.
 
+**Execution Owner (Split Runtime):** `aice-backend`
+
 ---
 
 ## Full Journey
@@ -17,12 +19,12 @@ sequenceDiagram
     participant Clock as System Clock (Utc::now)
     participant Composer as AnswerComposerLLM
 
-    LLM->>Skill: execute(location, default_location)
+    LLM->>Skill: execute(location, resolved_location)
     alt location provided
         Skill->>Geo: GET /v1/search?name=<location>
         Geo-->>Skill: lat, lon, display_name
-    else no location, default_location present
-        Skill->>Skill: use default_location (lat, lon)
+    else no location, resolved_location present
+        Skill->>Skill: use resolved_location (lat, lon)
     else neither provided
         Skill-->>LLM: Err(NoDefaultLocation)
     end
@@ -45,7 +47,7 @@ sequenceDiagram
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `location` | `Option<&str>` | Named place (e.g. `"Tokyo"`). |
-| `default_location` | `Option<&ResolvedLocation>` | Pre-resolved lat/lon from startup. |
+| `resolved_location` | `Option<&ResolvedLocation>` | Pre-resolved lat/lon from startup. |
 
 ## Outputs
 

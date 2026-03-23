@@ -4,6 +4,8 @@
 
 **Purpose:** Persistent key-value fact store backed by SQLite with FTS5 full-text search. Supports explicit recall/store via `execute` and proactive fact extraction from every conversation turn via `ingest_turn`.
 
+**Execution Owner (Split Runtime):** `aice-backend`
+
 ---
 
 ## Full Journey

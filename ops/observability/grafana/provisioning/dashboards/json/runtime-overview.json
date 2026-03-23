@@ -16,7 +16,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
       "targets": [
-        { "refId": "A", "expr": "max(up{job=\"desktop-runner\"})" }
+        { "refId": "A", "expr": "max(up{job=~\"desktop-runner|aice-backend|aice-macos\"})" }
       ]
     },
     {

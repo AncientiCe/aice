@@ -78,6 +78,8 @@ fn to_prompt_context_includes_contact_and_message() {
     let prompt = result.to_prompt_context();
     assert!(prompt.contains("Jane Doe"));
     assert!(prompt.contains("How are you?"));
+    assert!(!prompt.contains("+15551234567"));
+    assert_eq!(prompt, "Sent \"How are you?\" to Jane Doe.");
 }
 
 #[test]

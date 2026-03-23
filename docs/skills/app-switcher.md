@@ -4,6 +4,8 @@
 
 **Purpose:** Control foreground app flow on macOS via local actions: switch focus, cycle app switcher, hide apps, quit, and force-quit (with runtime confirmation).
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

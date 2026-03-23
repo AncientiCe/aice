@@ -4,6 +4,8 @@
 
 **Purpose:** Start a countdown timer in macOS Clock.app via the `clock-timer://` URL scheme. Accepts natural language durations and auto-names timers ordinally when no name is given.
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

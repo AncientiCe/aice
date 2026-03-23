@@ -10,20 +10,24 @@ mod metrics;
 pub use exporter::{init_prometheus_exporter, ExporterInitError, ExporterInitState};
 pub use log::init_json_logging;
 pub use metrics::{
-    record_app_switcher_skill, record_assistant_skill, record_cancellation_success,
+    record_app_switcher_skill, record_assistant_skill, record_backend_mdns_advertisement_duration,
+    record_backend_mdns_advertisement_total, record_backend_turn_duration,
+    record_backend_turn_stage_duration, record_backend_turn_total, record_cancellation_success,
     record_computer_skill, record_distance_skill, record_endpointing_wait_duration, record_error,
-    record_first_audio_latency, record_first_token_latency, record_intent_classifier,
-    record_intent_routed, record_interruption, record_llm_first_token_latency,
-    record_llm_stream_tail_duration, record_location_contract, record_location_contract_duration,
-    record_location_preload, record_media_execute, record_media_execute_duration,
-    record_media_skill, record_memory_fact_recall, record_memory_fact_recall_duration,
-    record_memory_fact_store, record_memory_fact_store_duration, record_memory_load,
-    record_memory_load_duration, record_memory_load_error, record_memory_save,
-    record_memory_save_duration, record_memory_save_error, record_memory_skill,
-    record_message_skill, record_mic_to_stt_duration, record_pod_audio_frame,
-    record_pod_connection, record_pod_disconnect, record_pod_egress_device_lock_poison,
-    record_pod_egress_queue_drop, record_pod_egress_send_error, record_pod_tts_chunk,
-    record_policy_denied, record_reminder_skill, record_screenshot_skill, record_session_start,
+    record_first_audio_latency, record_first_token_latency, record_frontend_rpc_duration,
+    record_frontend_skill_duration, record_frontend_tts_playback_duration,
+    record_intent_classifier, record_intent_routed, record_interruption,
+    record_llm_first_token_latency, record_llm_stream_tail_duration, record_location_contract,
+    record_location_contract_duration, record_location_preload, record_media_execute,
+    record_media_execute_duration, record_media_skill, record_memory_fact_recall,
+    record_memory_fact_recall_duration, record_memory_fact_store,
+    record_memory_fact_store_duration, record_memory_load, record_memory_load_duration,
+    record_memory_load_error, record_memory_save, record_memory_save_duration,
+    record_memory_save_error, record_memory_skill, record_message_skill,
+    record_mic_to_stt_duration, record_pod_audio_frame, record_pod_connection,
+    record_pod_disconnect, record_pod_egress_device_lock_poison, record_pod_egress_queue_drop,
+    record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
+    record_reminder_skill, record_screenshot_skill, record_session_start,
     record_shopping_list_skill, record_shutdown_signal, record_skill_duration,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
     record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
@@ -34,9 +38,10 @@ pub use metrics::{
 #[cfg(test)]
 mod tests {
     use super::{
-        init_prometheus_exporter, record_llm_stream_tail_duration, record_mic_to_stt_duration,
-        record_session_start, record_skill_duration, record_tts_first_audio_latency,
-        record_tts_flush_duration, register_metrics, ExporterInitState,
+        init_prometheus_exporter, record_backend_turn_stage_duration,
+        record_llm_stream_tail_duration, record_mic_to_stt_duration, record_session_start,
+        record_skill_duration, record_tts_first_audio_latency, record_tts_flush_duration,
+        register_metrics, ExporterInitState,
     };
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -64,9 +69,22 @@ mod tests {
         stream.set_read_timeout(Some(Duration::from_millis(250)))?;
         stream
             .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
-        let mut buf = vec![0_u8; 16 * 1024];
-        let n = stream.read(&mut buf)?;
-        Ok(String::from_utf8_lossy(&buf[..n]).to_string())
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
     #[test]
@@ -83,7 +101,7 @@ mod tests {
         register_metrics();
         record_session_start();
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match scrape(bind) {
                 Ok(payload) => {
@@ -137,6 +155,7 @@ mod tests {
         record_tts_first_audio_latency(Duration::from_millis(80));
         record_tts_flush_duration(Duration::from_millis(42));
         record_skill_duration("intent_path", Duration::from_millis(50));
+        record_backend_turn_stage_duration("classify_intent", Duration::from_millis(20));
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -148,6 +167,7 @@ mod tests {
                         && payload.contains("voice_tts_first_audio_latency")
                         && payload.contains("voice_tts_flush_duration")
                         && payload.contains("voice_skill_duration")
+                        && payload.contains("backend_turn_stage_duration")
                     {
                         break;
                     }

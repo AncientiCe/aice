@@ -4,6 +4,8 @@
 
 **Purpose:** Resolve a natural-language contact phrase (for example, `"my wife"`) via native macOS Contacts APIs and send an iMessage through Messages.app.
 
+**Execution Owner (Split Runtime):** `aice-macos`
+
 ---
 
 ## Full Journey

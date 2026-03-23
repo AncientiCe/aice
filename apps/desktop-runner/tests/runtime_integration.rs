@@ -2474,6 +2474,7 @@ async fn intent_message_routes_to_skill_and_speaks_deterministic_success() {
     let llm = FailLlm;
     let mut tts = MockTts::new();
     let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        command: Some("send".to_string()),
         contact: Some("my wife".to_string()),
         message: Some("How are you?".to_string()),
     });
@@ -2519,6 +2520,7 @@ async fn intent_message_contact_not_found_speaks_deterministic_apology() {
     let llm = FailLlm;
     let mut tts = MockTts::new();
     let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        command: Some("send".to_string()),
         contact: Some("my wife".to_string()),
         message: Some("How are you?".to_string()),
     });
@@ -2565,6 +2567,7 @@ async fn intent_message_send_failed_speaks_deterministic_error_without_llm() {
     let llm = FailLlm;
     let mut tts = MockTts::new();
     let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        command: Some("send".to_string()),
         contact: Some("my wife".to_string()),
         message: Some("How are you?".to_string()),
     });
@@ -2600,6 +2603,57 @@ async fn intent_message_send_failed_speaks_deterministic_error_without_llm() {
         tts.text(),
         "I'm sorry, I couldn't send an iMessage to 'your wife' right now."
     );
+}
+
+#[tokio::test]
+async fn intent_message_missing_text_asks_for_message_content() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("send a message to my wife".to_string());
+    let message_result = MessageResult {
+        summary: "Sent iMessage to Jane Doe".to_string(),
+        recipient_name: "Jane Doe".to_string(),
+        recipient_handle: "+15551234567".to_string(),
+        message: "How are you?".to_string(),
+    };
+    let message_skill = MockMessageSkill::ok(message_result);
+    let llm = FailLlm;
+    let mut tts = MockTts::new();
+    let classifier = MockIntentClassifier(IntentDecision::SkillMessage {
+        command: Some("send".to_string()),
+        contact: Some("my wife".to_string()),
+        message: None,
+    });
+    let skills = SkillRunContext {
+        intent_classifier: Some(&classifier),
+        weather_skill: None::<&dyn WeatherSkill>,
+        time_skill: None::<&dyn core_skills::TimeSkill>,
+        distance_skill: None::<&dyn core_skills::DistanceSkill>,
+        smart_home_skill: None::<&dyn core_skills::SmartHomeSkill>,
+        assistant_skill: None::<&dyn core_skills::AssistantSkill>,
+        media_skill: None::<&dyn core_skills::MediaSkill>,
+        memory_skill: None::<&dyn core_skills::MemorySkill>,
+        computer_skill: None::<&dyn core_skills::ComputerSkill>,
+        app_switcher_skill: None,
+        reminder_skill: None::<&dyn core_skills::ReminderSkill>,
+        message_skill: Some(&message_skill),
+        timer_skill: None::<&dyn core_skills::TimerSkill>,
+        shopping_list_skill: None::<&dyn core_skills::ShoppingListSkill>,
+        volume_skill: None::<&dyn core_skills::VolumeSkill>,
+        resolved_location: None::<&ResolvedLocation>,
+        memory: None,
+        policy: None,
+    };
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+
+    let outcome = runtime
+        .run_one_turn_with_skills(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx, &skills)
+        .await
+        .must();
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    assert_eq!(tts.text(), "What should I say in the message?");
 }
 
 #[tokio::test]

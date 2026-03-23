@@ -4,6 +4,8 @@
 
 **Purpose:** Control Philips Hue lights via the Hue CLIP v2 API. Supports status queries, power toggling, brightness adjustment, and colour temperature changes.
 
+**Execution Owner (Split Runtime):** `aice-backend`
+
 ---
 
 ## Full Journey

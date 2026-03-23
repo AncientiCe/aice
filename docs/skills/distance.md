@@ -4,6 +4,8 @@
 
 **Purpose:** Compute the straight-line (Haversine) distance in kilometres between two named places. Either endpoint can be omitted and will fall back to the user's default (current) location.
 
+**Execution Owner (Split Runtime):** `aice-backend`
+
 ---
 
 ## Full Journey
@@ -16,7 +18,7 @@ sequenceDiagram
     participant Math as Haversine (local)
     participant Composer as AnswerComposerLLM
 
-    LLM->>Skill: execute(origin, destination, default_location)
+    LLM->>Skill: execute(origin, destination, resolved_location)
 
     alt both origin and destination absent
         Skill-->>LLM: Err(MissingPlaces)
@@ -25,8 +27,8 @@ sequenceDiagram
     alt origin provided
         Skill->>Geo: GET /v1/search?name=<origin>
         Geo-->>Skill: origin lat/lon, display_name
-    else origin absent, default_location present
-        Skill->>Skill: use default_location as origin
+    else origin absent, resolved_location present
+        Skill->>Skill: use resolved_location as origin
     else origin absent, no default
         Skill-->>LLM: Err(NoDefaultLocation)
     end
@@ -34,8 +36,8 @@ sequenceDiagram
     alt destination provided
         Skill->>Geo: GET /v1/search?name=<destination>
         Geo-->>Skill: destination lat/lon, display_name
-    else destination absent, default_location present
-        Skill->>Skill: use default_location as destination
+    else destination absent, resolved_location present
+        Skill->>Skill: use resolved_location as destination
     else destination absent, no default
         Skill-->>LLM: Err(NoDefaultLocation)
     end
@@ -52,9 +54,9 @@ sequenceDiagram
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `origin` | `Option<&str>` | Starting place name. Falls back to `default_location`. |
-| `destination` | `Option<&str>` | Ending place name. Falls back to `default_location`. |
-| `default_location` | `Option<&ResolvedLocation>` | Pre-resolved lat/lon used when an endpoint is omitted. |
+| `origin` | `Option<&str>` | Starting place name. Falls back to `resolved_location`. |
+| `destination` | `Option<&str>` | Ending place name. Falls back to `resolved_location`. |
+| `resolved_location` | `Option<&ResolvedLocation>` | Pre-resolved lat/lon used when an endpoint is omitted. |
 
 ## Outputs
 
@@ -65,7 +67,7 @@ sequenceDiagram
 | Error | Cause |
 |-------|-------|
 | `MissingPlaces` | Both `origin` and `destination` are absent with no fallback logic possible. |
-| `NoDefaultLocation` | One endpoint is absent and no `default_location` is available. |
+| `NoDefaultLocation` | One endpoint is absent and no `resolved_location` is available. |
 | `Geocoding` | Open-Meteo geocoding returns no results for a named place. |
 
 ## Notes
