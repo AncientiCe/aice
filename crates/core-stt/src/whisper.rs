@@ -2,7 +2,9 @@
 
 use crate::SttError;
 use async_trait::async_trait;
-use core_observability::{record_error, record_stage_duration, Stage};
+#[cfg(feature = "whisper")]
+use core_observability::record_error;
+use core_observability::{record_stage_duration, Stage};
 use core_orchestrator::SttStream;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;

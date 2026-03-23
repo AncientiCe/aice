@@ -24,10 +24,15 @@ pub struct LlmCallOptions {
 }
 
 impl LlmCallOptions {
-    /// Options appropriate for classification calls: deterministic, JSON output.
+    /// Options appropriate for classification calls: near-deterministic, JSON output.
+    ///
+    /// A small non-zero temperature (0.1) avoids the greedy-decoding collapse that causes
+    /// small models to default to `chat` for short or single-word inputs when temperature is
+    /// exactly 0.  It still produces highly consistent output while allowing the model to
+    /// escape local minima on ambiguous tokens.
     pub fn for_classification() -> Self {
         Self {
-            temperature: Some(0.0),
+            temperature: Some(0.1),
             format_json: true,
         }
     }
