@@ -23,3 +23,4 @@ members = [
 # the patch below to use local sources instead of the git dependency.
 # [patch."ssh://git@github.com/AncientiCe/aice-skills.git"]
 # core-skills = { path = "../aice-skills" }
+
