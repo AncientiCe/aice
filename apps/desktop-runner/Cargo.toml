@@ -29,7 +29,7 @@ aice-backend = { path = "../aice-backend" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-policy = { path = "../../crates/core-policy" }
 core-search = { path = "../../crates/core-search" }
-core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "f0bea4525055b08728907ef2a21467f13f7ca9de" }
+core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "7e98d6ab38fad4f5f7772693de7e7e0b51a46af4" }
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-llm = { path = "../../crates/core-llm" }
 core-tts = { path = "../../crates/core-tts" }
@@ -48,7 +48,7 @@ async-trait = "0.1"
 core-config = { path = "../../crates/core-config" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-search = { path = "../../crates/core-search" }
-core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "f0bea4525055b08728907ef2a21467f13f7ca9de" }
+core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "7e98d6ab38fad4f5f7772693de7e7e0b51a46af4" }
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 tempfile = "3"

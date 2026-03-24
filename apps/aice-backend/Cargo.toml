@@ -28,7 +28,7 @@ core-llm = { path = "../../crates/core-llm" }
 core-observability = { path = "../../crates/core-observability" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
-core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "f0bea4525055b08728907ef2a21467f13f7ca9de" }
+core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "7e98d6ab38fad4f5f7772693de7e7e0b51a46af4" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
