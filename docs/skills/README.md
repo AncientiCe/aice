@@ -2,6 +2,8 @@
 
 One document per skill. Each document contains a Mermaid journey diagram, input/output specification, failure paths, and metric names.
 
+All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository (`github.com/AncientiCe/aice-skills`), consumed by `aice` via a Cargo git dependency. Both the backend and frontend apps depend on this shared repo: the backend uses the skill implementations it executes directly and imports `ALL_SKILL_IDS` for classifier prompt construction; frontend apps import the full `core-skills` umbrella and wire up whichever implementations their platform supports. Each frontend declares its supported skill IDs at activation time via `FrontendActivateRequest.supported_frontend_intents`.
+
 | Skill | Crate | Status | Document |
 |-------|-------|--------|----------|
 | Assistant | `skill-assistant` | Frontend-owned (`aice-macos`); trait only currently | [assistant.md](assistant.md) |
