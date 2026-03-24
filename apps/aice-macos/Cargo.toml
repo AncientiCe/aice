@@ -25,7 +25,7 @@ core-config = { path = "../../crates/core-config" }
 core-observability = { path = "../../crates/core-observability" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
-core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "8854b8c0b947ae473a2368e93e0feb7d6b0811f9" }
+core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "f0bea4525055b08728907ef2a21467f13f7ca9de" }
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-tts = { path = "../../crates/core-tts" }
 core-vad = { path = "../../crates/core-vad" }
