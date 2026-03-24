@@ -32,3 +32,5 @@ core-vad = { path = "../../crates/core-vad" }
 
 [dev-dependencies]
 aice-backend = { path = "../aice-backend" }
+
+

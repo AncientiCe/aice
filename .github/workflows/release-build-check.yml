@@ -12,6 +12,17 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: Configure git auth for private dependencies
+        shell: bash
+        env:
+          AICE_SKILLS_READ_TOKEN: ${{ secrets.AICE_SKILLS_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AICE_SKILLS_READ_TOKEN:-}" ]; then
+            echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

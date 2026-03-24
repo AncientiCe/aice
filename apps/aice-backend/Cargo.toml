@@ -32,3 +32,4 @@ core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
