@@ -65,8 +65,8 @@ jobs:
             echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
             exit 1
           fi
-          git config --global url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-          git config --global url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
 
       - name: Verify checked out ref is tag
         shell: bash
