@@ -12,17 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure git auth for private dependencies
+      - name: Start SSH agent for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AICE_SKILLS_SSH_KEY }}
+      - name: Trust GitHub SSH host key
         shell: bash
-        env:
-          AICE_SKILLS_READ_TOKEN: ${{ secrets.AICE_SKILLS_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${AICE_SKILLS_READ_TOKEN:-}" ]; then
-            echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
 
       - name: Install Linux system dependencies
         run: |
@@ -66,17 +65,16 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Configure git auth for private dependencies
+      - name: Start SSH agent for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AICE_SKILLS_SSH_KEY }}
+      - name: Trust GitHub SSH host key
         shell: bash
-        env:
-          AICE_SKILLS_READ_TOKEN: ${{ secrets.AICE_SKILLS_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${AICE_SKILLS_READ_TOKEN:-}" ]; then
-            echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "https://github.com/"
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
