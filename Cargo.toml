@@ -12,11 +12,14 @@ members = [
     "crates/core-policy",
     "crates/core-search",
     "crates/core-runtime-protocol",
-    "crates/core-skills",
-    "crates/core-skills/skill-app-switcher",
     "crates/pod-protocol",
     "apps/desktop-runner",
     "apps/aice-backend",
     "apps/aice-macos",
     "apps/pod-gateway",
 ]
+
+# Local development: clone aice-skills as a sibling directory and uncomment
+# the patch below to use local sources instead of the git dependency.
+# [patch."ssh://git@github.com/AncientiCe/aice-skills.git"]
+# core-skills = { path = "../aice-skills" }

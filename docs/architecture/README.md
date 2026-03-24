@@ -140,6 +140,8 @@ flowchart LR
 
 **Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
 
+All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills it is configured for (weather, time, distance, smart home, memory); platform-specific skills (media, computer, screenshot, app switcher, etc.) are forwarded as `FrontendSkillIntent` to the connected frontend. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
+
 ```mermaid
 flowchart LR
     UserInput[UserInputText] --> ClassifierLLM[IntentClassifierLLM]

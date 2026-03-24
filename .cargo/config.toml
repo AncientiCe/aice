@@ -1,3 +1,6 @@
+[net]
+git-fetch-with-cli = true
+
 [alias]
 aice-pod-voice = "run -p desktop-runner --bin pod-voice"
 aice-desktop = "run -p desktop-runner --bin desktop-runner"
