@@ -25,11 +25,11 @@ use core_skills::{
     FuelPriceLookupResult, FuelPriceLookupSkill, HolidayLookupError, HolidayLookupResult,
     HolidayLookupSkill, HolidayQuery, HoroscopeDailyError, HoroscopeDailyQuery,
     HoroscopeDailyResult, HoroscopeDailySkill, HttpFuelPriceLookupSkill, HttpHolidayLookupSkill,
-    HttpHoroscopeDailySkill, HttpNewsHeadlinesSkill, HttpSportsLiveSkill, HueSmartHomeSkill,
-    MemorySkill, NewsHeadlinesError, NewsHeadlinesQuery, NewsHeadlinesResult, NewsHeadlinesSkill,
-    OpenMeteoDistanceSkill, OpenMeteoTimeSkill, OpenMeteoWeatherSkill, ResolvedLocation,
-    SmartHomeSkill, SportsLiveError, SportsLiveQuery, SportsLiveResult, SportsLiveSkill,
-    SqliteMemorySkill, TimeResult, TimeSkill, WeatherResult, WeatherSkill, ENABLED_SKILL_IDS,
+    HttpHoroscopeDailySkill, HttpNewsHeadlinesSkill, HttpSportsLiveSkill, NewsHeadlinesError,
+    NewsHeadlinesQuery, NewsHeadlinesResult, NewsHeadlinesSkill, OpenMeteoDistanceSkill,
+    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, ResolvedLocation, SportsLiveError, SportsLiveQuery,
+    SportsLiveResult, SportsLiveSkill, TimeResult, TimeSkill, WeatherResult, WeatherSkill,
+    ENABLED_SKILL_IDS,
 };
 use futures::StreamExt;
 use http_body_util::{BodyExt, Full};
@@ -39,6 +39,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
+use skill_chain::EffectiveCapabilities;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::error::Error;
@@ -55,7 +56,9 @@ type TurnChunks = Arc<Mutex<HashMap<String, String>>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 
 const DEFAULT_FRONTEND_SESSION_TTL_SECONDS: u64 = 120;
-const FRONTEND_CLASSIFIER_SKILLS: [&str; 10] = [
+const FRONTEND_CLASSIFIER_SKILLS: [&str; 12] = [
+    "skill_smart_home",
+    "skill_memory",
     "skill_assistant",
     "skill_media",
     "skill_computer",
@@ -359,48 +362,15 @@ fn frontend_classifier_skills_from_context(context: Option<&Value>) -> Vec<Strin
     normalized
 }
 
-fn build_available_classifier_skills(
-    smart_home_enabled: bool,
-    memory_enabled: bool,
-    context: Option<&Value>,
-) -> Vec<String> {
-    let mut skills: Vec<String> = ENABLED_SKILL_IDS
-        .iter()
-        .copied()
-        .filter(|skill| {
-            matches!(
-                *skill,
-                "skill_weather"
-                    | "skill_time"
-                    | "skill_distance"
-                    | "skill_sports_live"
-                    | "skill_holiday_lookup"
-                    | "skill_fuel_price_lookup"
-                    | "skill_horoscope_daily"
-                    | "skill_news_headlines"
-            )
-        })
-        .map(str::to_string)
-        .collect();
-    if smart_home_enabled && ENABLED_SKILL_IDS.contains(&"skill_smart_home") {
-        skills.push("skill_smart_home".to_string());
-    }
-    if memory_enabled && ENABLED_SKILL_IDS.contains(&"skill_memory") {
-        skills.push("skill_memory".to_string());
-    }
+fn build_available_classifier_skills(context: Option<&Value>) -> Vec<String> {
     let frontend_intents = frontend_classifier_skills_from_context(context);
-    for skill in FRONTEND_CLASSIFIER_SKILLS {
-        if ENABLED_SKILL_IDS.contains(&skill)
-            && frontend_intents
-                .iter()
-                .any(|intent| intent.as_str() == skill)
-        {
-            skills.push(skill.to_string());
-        }
-    }
-    skills
+    let backend_skills: Vec<String> = ENABLED_SKILL_IDS
+        .iter()
+        .map(|skill| skill.to_string())
+        .collect();
+    let capabilities = EffectiveCapabilities::from_handshake(frontend_intents, backend_skills);
+    capabilities.classifier_enabled_skills
 }
-
 async fn handle_request(
     req: Request<Incoming>,
     engine: Arc<dyn BackendEngine>,
@@ -812,8 +782,6 @@ pub struct AiceBackendEngine {
     fuel_price_lookup_skill: HttpFuelPriceLookupSkill,
     horoscope_daily_skill: HttpHoroscopeDailySkill,
     news_headlines_skill: HttpNewsHeadlinesSkill,
-    smart_home_skill: Option<HueSmartHomeSkill>,
-    memory_skill: Option<SqliteMemorySkill>,
     session_history: SessionHistory,
     turn_counter: Arc<std::sync::atomic::AtomicU64>,
     resolved_location: Option<ResolvedLocation>,
@@ -878,28 +846,6 @@ impl AiceBackendEngine {
         );
         let weather_skill = OpenMeteoWeatherSkill::new();
         let resolved_location = resolve_startup_location(config, &weather_skill).await;
-        let smart_home_skill = if config.smart_home.hue.enabled {
-            match (
-                config.smart_home.hue.bridge_host.as_deref(),
-                config.smart_home.hue.app_key.as_deref(),
-            ) {
-                (Some(host), Some(key)) => Some(HueSmartHomeSkill::new(
-                    host,
-                    key,
-                    &config.smart_home.hue.default_light_name,
-                )),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        let memory_skill = if config.memory.enabled {
-            SqliteMemorySkill::new(std::path::Path::new(&config.memory.sqlite_path)).ok()
-        } else {
-            None
-        };
-
         Self {
             llm: Arc::new(llm),
             weather_skill,
@@ -910,8 +856,6 @@ impl AiceBackendEngine {
             fuel_price_lookup_skill: HttpFuelPriceLookupSkill::new(),
             horoscope_daily_skill: HttpHoroscopeDailySkill::new(),
             news_headlines_skill: HttpNewsHeadlinesSkill::new(),
-            smart_home_skill,
-            memory_skill,
             session_history: Arc::new(Mutex::new(HashMap::new())),
             turn_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             resolved_location,
@@ -1158,11 +1102,7 @@ impl BackendEngine for AiceBackendEngine {
             .unwrap_or_else(|| next_backend_turn_id(&self.turn_counter));
         let request_text = request.transcript.clone();
         let request_session_id = request.session_id.clone();
-        let available_skills = build_available_classifier_skills(
-            self.smart_home_skill.is_some(),
-            self.memory_skill.is_some(),
-            request.context.as_ref(),
-        );
+        let available_skills = build_available_classifier_skills(request.context.as_ref());
         let available_skill_refs: Vec<&str> = available_skills.iter().map(String::as_str).collect();
 
         let classify_started = Instant::now();
@@ -1410,66 +1350,14 @@ impl BackendEngine for AiceBackendEngine {
                     compose_news_headlines_answer(&result),
                 ))
             }
-            IntentDecision::SkillSmartHome { target, action } => {
-                if let Some(skill) = self.smart_home_skill.as_ref() {
-                    let skill_started = Instant::now();
-                    let result = skill
-                        .execute(target.as_deref(), action.as_deref())
-                        .await
-                        .map_err(|error| format!("smart-home skill failed: {error}"))?;
-                    record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                    let context = result.to_prompt_context();
-                    let answer = if self.skip_secondary_llm_for_skill_answers {
-                        compose_direct_skill_answer(&context)
-                            .unwrap_or_else(|| "Smart home action completed.".to_string())
-                    } else {
-                        let compose_started = Instant::now();
-                        let composed = self
-                            .compose_skill_answer(&request.transcript, &context)
-                            .await?;
-                        record_backend_turn_stage_duration(
-                            "answer_compose",
-                            compose_started.elapsed(),
-                        );
-                        composed
-                    };
-                    Ok(BackendEngineDecision::BackendSkill(answer))
-                } else {
-                    Ok(BackendEngineDecision::BackendSkill(
-                        "Smart home is not configured.".to_string(),
-                    ))
-                }
-            }
-            IntentDecision::SkillMemory { query, store } => {
-                if let Some(skill) = self.memory_skill.as_ref() {
-                    let skill_started = Instant::now();
-                    let result = skill
-                        .execute(query.as_deref(), store)
-                        .await
-                        .map_err(|error| format!("memory skill failed: {error}"))?;
-                    record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                    let context = result.to_prompt_context();
-                    let answer = if self.skip_secondary_llm_for_skill_answers {
-                        compose_direct_skill_answer(&context)
-                            .unwrap_or_else(|| "Memory updated.".to_string())
-                    } else {
-                        let compose_started = Instant::now();
-                        let composed = self
-                            .compose_skill_answer(&request.transcript, &context)
-                            .await?;
-                        record_backend_turn_stage_duration(
-                            "answer_compose",
-                            compose_started.elapsed(),
-                        );
-                        composed
-                    };
-                    Ok(BackendEngineDecision::BackendSkill(answer))
-                } else {
-                    Ok(BackendEngineDecision::BackendSkill(
-                        "Memory is not configured.".to_string(),
-                    ))
-                }
-            }
+            IntentDecision::SkillSmartHome { target, action } => Ok(build_frontend_intent(
+                "skill_smart_home",
+                json!({"smart_home_target": target, "smart_home_action": action}),
+            )),
+            IntentDecision::SkillMemory { query, store } => Ok(build_frontend_intent(
+                "skill_memory",
+                json!({"memory_query": query, "memory_store": store}),
+            )),
             IntentDecision::SkillComputer { action, target } => Ok(build_frontend_intent(
                 "skill_computer",
                 json!({"computer_action": action, "computer_target": target}),
@@ -1818,41 +1706,49 @@ mod tests {
                 "unknown_intent"
             ]
         });
-        let skills = build_available_classifier_skills(true, false, Some(&context));
+        let skills = build_available_classifier_skills(Some(&context));
         assert_eq!(
             skills,
             vec![
-                "skill_weather".to_string(),
-                "skill_time".to_string(),
                 "skill_distance".to_string(),
-                "skill_sports_live".to_string(),
-                "skill_holiday_lookup".to_string(),
                 "skill_fuel_price_lookup".to_string(),
+                "skill_holiday_lookup".to_string(),
                 "skill_horoscope_daily".to_string(),
-                "skill_news_headlines".to_string(),
-                "skill_smart_home".to_string(),
-                "skill_timer".to_string(),
                 "skill_message".to_string(),
+                "skill_news_headlines".to_string(),
+                "skill_sports_live".to_string(),
+                "skill_time".to_string(),
+                "skill_timer".to_string(),
+                "skill_weather".to_string(),
             ]
         );
     }
 
     #[test]
     fn available_classifier_skills_include_enabled_core_common_defaults() {
-        let skills = build_available_classifier_skills(false, false, None);
+        let skills = build_available_classifier_skills(None);
         assert_eq!(
             skills,
             vec![
-                "skill_weather".to_string(),
-                "skill_time".to_string(),
                 "skill_distance".to_string(),
-                "skill_sports_live".to_string(),
-                "skill_holiday_lookup".to_string(),
                 "skill_fuel_price_lookup".to_string(),
+                "skill_holiday_lookup".to_string(),
                 "skill_horoscope_daily".to_string(),
                 "skill_news_headlines".to_string(),
+                "skill_sports_live".to_string(),
+                "skill_time".to_string(),
+                "skill_weather".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn available_classifier_skills_do_not_include_macos_only_defaults() {
+        let skills = build_available_classifier_skills(None);
+        assert!(!skills.contains(&"skill_message".to_string()));
+        assert!(!skills.contains(&"skill_timer".to_string()));
+        assert!(!skills.contains(&"skill_smart_home".to_string()));
+        assert!(!skills.contains(&"skill_memory".to_string()));
     }
 
     #[test]
