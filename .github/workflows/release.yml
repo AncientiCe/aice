@@ -112,7 +112,7 @@ jobs:
 
       - name: Build release binaries
         run: |
-          cargo build --release -p desktop-runner --bin pod-voice
+          cargo build --release -p aice-backend --bin aice-backend
 
       - name: Package release archive and checksums
         shell: bash
@@ -120,9 +120,9 @@ jobs:
           set -euo pipefail
           tag="${{ github.event.inputs.release_tag }}"
           mkdir -p dist
-          cp target/release/pod-voice dist/
+          cp target/release/aice-backend dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
-          tar -C dist -czf "dist/${archive}" pod-voice
+          tar -C dist -czf "dist/${archive}" aice-backend
           shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets
