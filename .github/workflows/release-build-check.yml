@@ -44,4 +44,3 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release -p desktop-runner --bin pod-voice
-          cargo build --release -p desktop-runner --bin desktop-runner
