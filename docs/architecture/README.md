@@ -114,7 +114,7 @@ sequenceDiagram
 
 ## 5. Desktop runtime (wake word and continuous loop)
 
-**Purpose:** The desktop-runner composes config, wake-word gate, microphone capture, Whisper STT, Ollama LLM, and streaming Piper TTS routing. It continuously captures audio windows and streams LLM tokens directly to TTS with cancellation support.
+**Purpose:** The desktop-runner composes config, wake-word gate, microphone capture, Whisper STT, Ollama LLM, and streaming Piper TTS routing. It continuously captures audio windows and streams LLM tokens directly to TTS with cancellation support. The `desktop-runner` binary is deprecated; `pod-voice` and split runtime are the supported paths.
 
 ```mermaid
 flowchart LR
@@ -136,11 +136,11 @@ flowchart LR
 
 ---
 
-## 6. Intent classification and skills (weather, time, distance, smart home, assistant, media, memory, computer, screenshot, app switcher, volume)
+## 6. Intent classification and skills (weather, time, distance, sports, holidays, fuel, horoscope, news, smart home, assistant, media, memory, computer, screenshot, app switcher, volume)
 
 **Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
 
-All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills it is configured for (weather, time, distance, smart home, memory); platform-specific skills (media, computer, screenshot, app switcher, etc.) are forwarded as `FrontendSkillIntent` to the connected frontend. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
+All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills it is configured for (weather, time, distance, sports-live, holiday-lookup, fuel-price-lookup, horoscope-daily, news-headlines, smart home, memory); platform-specific skills (media, computer, screenshot, app switcher, etc.) are forwarded as `FrontendSkillIntent` to the connected frontend. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
 
 ```mermaid
 flowchart LR
@@ -183,9 +183,12 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, smart_home, assistant, media, memory, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
+- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, sports_live, holiday_lookup, fuel_price_lookup, horoscope_daily, news_headlines, smart_home, assistant, media, memory, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
 - **Outputs:** Streamed TTS to desktop or pod; metrics `voice_intent_classifier_total`, `voice_intent_routed_total{intent}`, `voice_*_skill_total` per skill, `voice_policy_denied_total`, `voice_location_contract_total{intent,result}`, `voice_location_contract_duration_seconds{intent}`; audit log events `skill_executed` and policy denial warnings.
 - **Failure paths:** Classification parse failure or skill error fall back to chat path; policy denial (emergency stop or budget exhausted) falls back to chat; weather location contract ambiguity returns a short clarification and does not execute the weather skill.
+
+Core-common live-info skill docs:
+[sports-live](../skills/sports-live.md) · [holiday-lookup](../skills/holiday-lookup.md) · [fuel-price-lookup](../skills/fuel-price-lookup.md) · [horoscope-daily](../skills/horoscope-daily.md) · [news-headlines](../skills/news-headlines.md)
 
 ### 6.1 Autonomy policy engine
 

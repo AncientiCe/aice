@@ -23,12 +23,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
+chrono = "0.4"
 core-config = { path = "../../crates/core-config" }
 core-llm = { path = "../../crates/core-llm" }
 core-observability = { path = "../../crates/core-observability" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
-core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "7e98d6ab38fad4f5f7772693de7e7e0b51a46af4" }
+core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "eeb04b41f5424841198228298df8a0fa218cdb34", default-features = false, features = ["core-common", "macos"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

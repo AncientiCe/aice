@@ -1,9 +1,14 @@
 //! Canonical intent-classifier contract shared by backend and desktop runtimes.
 
-const ALL_CLASSIFIER_SKILLS: [&str; 15] = [
+const ALL_CLASSIFIER_SKILLS: [&str; 20] = [
     "skill_weather",
     "skill_time",
     "skill_distance",
+    "skill_sports_live",
+    "skill_holiday_lookup",
+    "skill_fuel_price_lookup",
+    "skill_horoscope_daily",
+    "skill_news_headlines",
     "skill_smart_home",
     "skill_assistant",
     "skill_media",
@@ -62,6 +67,21 @@ fn render_per_intent_rules(available_skills: &[&str]) -> String {
     }
     if has_skill(available_skills, "skill_distance") {
         lines.push("- skill_distance -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_sports_live") {
+        lines.push("- skill_sports_live -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_holiday_lookup") {
+        lines.push("- skill_holiday_lookup -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_fuel_price_lookup") {
+        lines.push("- skill_fuel_price_lookup -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_horoscope_daily") {
+        lines.push("- skill_horoscope_daily -> command=\"get\"".to_string());
+    }
+    if has_skill(available_skills, "skill_news_headlines") {
+        lines.push("- skill_news_headlines -> command=\"get\"".to_string());
     }
     if has_skill(available_skills, "skill_smart_home") {
         lines.push(
@@ -181,6 +201,21 @@ Output schema:
   "location": string,
   "origin": string,
   "destination": string,
+  "sports_query": string,
+  "sports_date": string,
+  "holiday_name": string,
+  "holiday_date": string,
+  "holiday_country_code": string,
+  "holiday_region_code": string,
+  "holiday_year": number,
+  "fuel_country_code": string,
+  "fuel_region": string,
+  "fuel_type": string,
+  "horoscope_sign": string,
+  "horoscope_date": string,
+  "news_topic": string,
+  "news_country_code": string,
+  "news_limit": number,
   "smart_home_target": string,
   "smart_home_action": string,
   "media_target": string,
@@ -271,6 +306,26 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
             "what's the weather in Paris?".to_string(),
             "{\"intent\":\"skill_weather\",\"command\":\"get\",\"location\":\"Paris, France\"}"
                 .to_string(),
+        ),
+        (
+            "sports update for lakers vs celtics today".to_string(),
+            "{\"intent\":\"skill_sports_live\",\"command\":\"get\",\"sports_query\":\"lakers vs celtics\"}".to_string(),
+        ),
+        (
+            "is there a holiday in Germany on 2026-10-03?".to_string(),
+            "{\"intent\":\"skill_holiday_lookup\",\"command\":\"get\",\"holiday_country_code\":\"DE\",\"holiday_date\":\"2026-10-03\"}".to_string(),
+        ),
+        (
+            "fuel price in the uk for diesel".to_string(),
+            "{\"intent\":\"skill_fuel_price_lookup\",\"command\":\"get\",\"fuel_country_code\":\"GB\",\"fuel_type\":\"diesel\"}".to_string(),
+        ),
+        (
+            "today horoscope for aries".to_string(),
+            "{\"intent\":\"skill_horoscope_daily\",\"command\":\"get\",\"horoscope_sign\":\"aries\"}".to_string(),
+        ),
+        (
+            "top technology headlines in the us".to_string(),
+            "{\"intent\":\"skill_news_headlines\",\"command\":\"get\",\"news_topic\":\"technology\",\"news_country_code\":\"US\"}".to_string(),
         ),
         (
             "what's the weather?".to_string(),
@@ -381,6 +436,27 @@ mod tests {
         assert!(prompt.contains("- skill_time -> command=\"get\""));
         assert!(prompt.contains("- skill_timer -> command=\"set\", timer_duration required"));
         assert!(!prompt.contains("- skill_weather -> command=\"get\""));
+    }
+
+    #[test]
+    fn prompt_can_include_new_core_common_skills() {
+        let prompt = intent_classifier_system_prompt_for_skills(&[
+            "skill_sports_live",
+            "skill_holiday_lookup",
+            "skill_fuel_price_lookup",
+            "skill_horoscope_daily",
+            "skill_news_headlines",
+        ]);
+        assert!(prompt.contains("\"skill_sports_live\""));
+        assert!(prompt.contains("\"skill_holiday_lookup\""));
+        assert!(prompt.contains("\"skill_fuel_price_lookup\""));
+        assert!(prompt.contains("\"skill_horoscope_daily\""));
+        assert!(prompt.contains("\"skill_news_headlines\""));
+        assert!(prompt.contains("- skill_sports_live -> command=\"get\""));
+        assert!(prompt.contains("- skill_holiday_lookup -> command=\"get\""));
+        assert!(prompt.contains("- skill_fuel_price_lookup -> command=\"get\""));
+        assert!(prompt.contains("- skill_horoscope_daily -> command=\"get\""));
+        assert!(prompt.contains("- skill_news_headlines -> command=\"get\""));
     }
 
     #[test]
@@ -556,5 +632,35 @@ mod tests {
             }),
             "expected app-switcher next few-shot"
         );
+    }
+
+    #[test]
+    fn few_shots_cover_new_core_common_skills() {
+        let few_shots = intent_classifier_few_shots();
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("sports")
+                && a.contains("\"intent\":\"skill_sports_live\"")
+                && a.contains("\"command\":\"get\"")
+        }));
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("holiday")
+                && a.contains("\"intent\":\"skill_holiday_lookup\"")
+                && a.contains("\"command\":\"get\"")
+        }));
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("fuel")
+                && a.contains("\"intent\":\"skill_fuel_price_lookup\"")
+                && a.contains("\"command\":\"get\"")
+        }));
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("horoscope")
+                && a.contains("\"intent\":\"skill_horoscope_daily\"")
+                && a.contains("\"command\":\"get\"")
+        }));
+        assert!(few_shots.iter().any(|(u, a)| {
+            u.contains("headline")
+                && a.contains("\"intent\":\"skill_news_headlines\"")
+                && a.contains("\"command\":\"get\"")
+        }));
     }
 }
