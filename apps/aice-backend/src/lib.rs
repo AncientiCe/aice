@@ -2,12 +2,14 @@ pub mod discovery_broadcast;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::{Datelike, NaiveDate, Utc};
 use core_config::Config;
 use core_llm::OllamaLlmStream;
 use core_observability::{
     record_backend_dependency_request, record_backend_dependency_request_duration,
-    record_backend_http_request, record_backend_turn_duration, record_backend_turn_stage_duration,
-    record_backend_turn_total,
+    record_backend_http_request, record_backend_skill_execute,
+    record_backend_skill_execute_duration, record_backend_turn_duration,
+    record_backend_turn_stage_duration, record_backend_turn_total,
 };
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_system_prompt_for_skills, parse_intent,
@@ -19,9 +21,15 @@ use core_runtime_protocol::{
     CURRENT_PROTOCOL_VERSION,
 };
 use core_skills::{
-    DistanceResult, DistanceSkill, HueSmartHomeSkill, MemorySkill, OpenMeteoDistanceSkill,
-    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, ResolvedLocation, SmartHomeSkill, SqliteMemorySkill,
-    TimeResult, TimeSkill, WeatherResult, WeatherSkill,
+    DistanceResult, DistanceSkill, FuelPriceLookupError, FuelPriceLookupQuery,
+    FuelPriceLookupResult, FuelPriceLookupSkill, HolidayLookupError, HolidayLookupResult,
+    HolidayLookupSkill, HolidayQuery, HoroscopeDailyError, HoroscopeDailyQuery,
+    HoroscopeDailyResult, HoroscopeDailySkill, HttpFuelPriceLookupSkill, HttpHolidayLookupSkill,
+    HttpHoroscopeDailySkill, HttpNewsHeadlinesSkill, HttpSportsLiveSkill, HueSmartHomeSkill,
+    MemorySkill, NewsHeadlinesError, NewsHeadlinesQuery, NewsHeadlinesResult, NewsHeadlinesSkill,
+    OpenMeteoDistanceSkill, OpenMeteoTimeSkill, OpenMeteoWeatherSkill, ResolvedLocation,
+    SmartHomeSkill, SportsLiveError, SportsLiveQuery, SportsLiveResult, SportsLiveSkill,
+    SqliteMemorySkill, TimeResult, TimeSkill, WeatherResult, WeatherSkill, ENABLED_SKILL_IDS,
 };
 use futures::StreamExt;
 use http_body_util::{BodyExt, Full};
@@ -47,23 +55,6 @@ type TurnChunks = Arc<Mutex<HashMap<String, String>>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 
 const DEFAULT_FRONTEND_SESSION_TTL_SECONDS: u64 = 120;
-const CLASSIFIER_ALL_SKILLS: [&str; 15] = [
-    "skill_weather",
-    "skill_time",
-    "skill_distance",
-    "skill_smart_home",
-    "skill_assistant",
-    "skill_media",
-    "skill_memory",
-    "skill_computer",
-    "skill_screenshot",
-    "skill_app_switcher",
-    "skill_reminder",
-    "skill_timer",
-    "skill_shopping_list",
-    "skill_message",
-    "skill_volume",
-];
 const FRONTEND_CLASSIFIER_SKILLS: [&str; 10] = [
     "skill_assistant",
     "skill_media",
@@ -373,22 +364,36 @@ fn build_available_classifier_skills(
     memory_enabled: bool,
     context: Option<&Value>,
 ) -> Vec<String> {
-    let mut skills = vec![
-        "skill_weather".to_string(),
-        "skill_time".to_string(),
-        "skill_distance".to_string(),
-    ];
-    if smart_home_enabled {
+    let mut skills: Vec<String> = ENABLED_SKILL_IDS
+        .iter()
+        .copied()
+        .filter(|skill| {
+            matches!(
+                *skill,
+                "skill_weather"
+                    | "skill_time"
+                    | "skill_distance"
+                    | "skill_sports_live"
+                    | "skill_holiday_lookup"
+                    | "skill_fuel_price_lookup"
+                    | "skill_horoscope_daily"
+                    | "skill_news_headlines"
+            )
+        })
+        .map(str::to_string)
+        .collect();
+    if smart_home_enabled && ENABLED_SKILL_IDS.contains(&"skill_smart_home") {
         skills.push("skill_smart_home".to_string());
     }
-    if memory_enabled {
+    if memory_enabled && ENABLED_SKILL_IDS.contains(&"skill_memory") {
         skills.push("skill_memory".to_string());
     }
     let frontend_intents = frontend_classifier_skills_from_context(context);
     for skill in FRONTEND_CLASSIFIER_SKILLS {
-        if frontend_intents
-            .iter()
-            .any(|intent| intent.as_str() == skill)
+        if ENABLED_SKILL_IDS.contains(&skill)
+            && frontend_intents
+                .iter()
+                .any(|intent| intent.as_str() == skill)
         {
             skills.push(skill.to_string());
         }
@@ -802,6 +807,11 @@ pub struct AiceBackendEngine {
     weather_skill: OpenMeteoWeatherSkill,
     time_skill: OpenMeteoTimeSkill,
     distance_skill: OpenMeteoDistanceSkill,
+    sports_live_skill: HttpSportsLiveSkill,
+    holiday_lookup_skill: HttpHolidayLookupSkill,
+    fuel_price_lookup_skill: HttpFuelPriceLookupSkill,
+    horoscope_daily_skill: HttpHoroscopeDailySkill,
+    news_headlines_skill: HttpNewsHeadlinesSkill,
     smart_home_skill: Option<HueSmartHomeSkill>,
     memory_skill: Option<SqliteMemorySkill>,
     session_history: SessionHistory,
@@ -820,7 +830,7 @@ impl<'a, L> LlmIntentClassifier<'a, L> {
     pub fn new(llm: &'a L) -> Self {
         Self {
             llm,
-            system_prompt: intent_classifier_system_prompt_for_skills(&CLASSIFIER_ALL_SKILLS),
+            system_prompt: intent_classifier_system_prompt_for_skills(ENABLED_SKILL_IDS),
         }
     }
 }
@@ -895,6 +905,11 @@ impl AiceBackendEngine {
             weather_skill,
             time_skill: OpenMeteoTimeSkill::new(),
             distance_skill: OpenMeteoDistanceSkill::new(),
+            sports_live_skill: HttpSportsLiveSkill::new(),
+            holiday_lookup_skill: HttpHolidayLookupSkill::new(),
+            fuel_price_lookup_skill: HttpFuelPriceLookupSkill::new(),
+            horoscope_daily_skill: HttpHoroscopeDailySkill::new(),
+            news_headlines_skill: HttpNewsHeadlinesSkill::new(),
             smart_home_skill,
             memory_skill,
             session_history: Arc::new(Mutex::new(HashMap::new())),
@@ -1019,6 +1034,107 @@ fn compose_distance_answer(result: &DistanceResult) -> String {
     )
 }
 
+fn compose_sports_live_answer(result: &SportsLiveResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_holiday_lookup_answer(result: &HolidayLookupResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_fuel_price_lookup_answer(result: &FuelPriceLookupResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_horoscope_daily_answer(result: &HoroscopeDailyResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_news_headlines_answer(result: &NewsHeadlinesResult) -> String {
+    result.to_prompt_context()
+}
+
+fn parse_naive_date(input: Option<String>) -> Option<NaiveDate> {
+    input
+        .and_then(|value| NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok())
+        .or_else(|| Some(Utc::now().date_naive()))
+}
+
+fn infer_country_code(resolved_location: Option<&ResolvedLocation>) -> Option<String> {
+    let country = resolved_location?
+        .display_name
+        .rsplit(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let normalized = country.to_ascii_lowercase();
+    let code = match normalized.as_str() {
+        "germany" => "DE",
+        "united states" | "united states of america" | "usa" => "US",
+        "united kingdom" | "uk" => "GB",
+        "france" => "FR",
+        "spain" => "ES",
+        "italy" => "IT",
+        "austria" => "AT",
+        "netherlands" => "NL",
+        "poland" => "PL",
+        "switzerland" => "CH",
+        "belgium" => "BE",
+        _ if country.len() == 2 => country,
+        _ => return None,
+    };
+    Some(code.to_string())
+}
+
+fn sports_live_error_kind(error: &SportsLiveError) -> &'static str {
+    match error {
+        SportsLiveError::InvalidQuery(_) => "invalid_query",
+        SportsLiveError::ProviderUnavailable(_) => "provider_unavailable",
+        SportsLiveError::UpstreamTimeout => "upstream_timeout",
+        SportsLiveError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn holiday_lookup_error_kind(error: &HolidayLookupError) -> &'static str {
+    match error {
+        HolidayLookupError::InvalidCountry(_) => "invalid_country",
+        HolidayLookupError::InvalidQuery(_) => "invalid_query",
+        HolidayLookupError::ProviderUnavailable(_) => "provider_unavailable",
+        HolidayLookupError::UpstreamTimeout => "upstream_timeout",
+        HolidayLookupError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn fuel_price_lookup_error_kind(error: &FuelPriceLookupError) -> &'static str {
+    match error {
+        FuelPriceLookupError::InvalidCountry(_) => "invalid_country",
+        FuelPriceLookupError::UnsupportedCountry(_) => "unsupported_country",
+        FuelPriceLookupError::MissingApiKey => "missing_api_key",
+        FuelPriceLookupError::ProviderUnavailable(_) => "provider_unavailable",
+        FuelPriceLookupError::UpstreamTimeout => "upstream_timeout",
+        FuelPriceLookupError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn horoscope_daily_error_kind(error: &HoroscopeDailyError) -> &'static str {
+    match error {
+        HoroscopeDailyError::InvalidSign(_) => "invalid_sign",
+        HoroscopeDailyError::UnsupportedDate(_) => "unsupported_date",
+        HoroscopeDailyError::ProviderUnavailable(_) => "provider_unavailable",
+        HoroscopeDailyError::UpstreamTimeout => "upstream_timeout",
+        HoroscopeDailyError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn news_headlines_error_kind(error: &NewsHeadlinesError) -> &'static str {
+    match error {
+        NewsHeadlinesError::InvalidQuery(_) => "invalid_query",
+        NewsHeadlinesError::ProviderUnavailable(_) => "provider_unavailable",
+        NewsHeadlinesError::UpstreamTimeout => "upstream_timeout",
+        NewsHeadlinesError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
 fn compose_direct_skill_answer(context: &str) -> Option<String> {
     let trimmed = context.trim();
     if trimmed.is_empty() {
@@ -1110,6 +1226,189 @@ impl BackendEngine for AiceBackendEngine {
                 record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
                 let answer = compose_distance_answer(&result);
                 Ok(BackendEngineDecision::BackendSkill(answer))
+            }
+            IntentDecision::SkillSportsLive { query, date } => {
+                let skill_started = Instant::now();
+                let skill_query = SportsLiveQuery {
+                    query: query.unwrap_or_else(|| request.transcript.clone()),
+                    date: parse_naive_date(date),
+                };
+                let result = match self.sports_live_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_backend_skill_execute("skill_sports_live", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        record_backend_skill_execute(
+                            "skill_sports_live",
+                            "error",
+                            Some(sports_live_error_kind(&error)),
+                        );
+                        return Err(format!("sports-live skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_sports_live", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_sports_live_answer(&result),
+                ))
+            }
+            IntentDecision::SkillHolidayLookup {
+                name,
+                date,
+                country_code,
+                region_code,
+                year,
+            } => {
+                let Some(resolved_country) =
+                    country_code.or_else(|| infer_country_code(self.resolved_location.as_ref()))
+                else {
+                    return Ok(BackendEngineDecision::Chat(
+                        "Please tell me the country for the holiday lookup.".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let parsed_date = parse_naive_date(date);
+                let holiday_year = year.or_else(|| parsed_date.map(|value| value.year()));
+                let skill_query = HolidayQuery {
+                    holiday_name: name,
+                    date: parsed_date,
+                    country_code: resolved_country,
+                    region_code,
+                    year: holiday_year,
+                };
+                let result = match self.holiday_lookup_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_backend_skill_execute("skill_holiday_lookup", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        record_backend_skill_execute(
+                            "skill_holiday_lookup",
+                            "error",
+                            Some(holiday_lookup_error_kind(&error)),
+                        );
+                        return Err(format!("holiday-lookup skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration(
+                    "skill_holiday_lookup",
+                    skill_started.elapsed(),
+                );
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_holiday_lookup_answer(&result),
+                ))
+            }
+            IntentDecision::SkillFuelPriceLookup {
+                country_code,
+                region,
+                fuel_type,
+            } => {
+                let Some(resolved_country) =
+                    country_code.or_else(|| infer_country_code(self.resolved_location.as_ref()))
+                else {
+                    return Ok(BackendEngineDecision::Chat(
+                        "Please tell me the country for the fuel price lookup.".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let skill_query = FuelPriceLookupQuery {
+                    country_code: resolved_country,
+                    region,
+                    fuel_type,
+                };
+                let result = match self.fuel_price_lookup_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_backend_skill_execute("skill_fuel_price_lookup", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        record_backend_skill_execute(
+                            "skill_fuel_price_lookup",
+                            "error",
+                            Some(fuel_price_lookup_error_kind(&error)),
+                        );
+                        return Err(format!("fuel-price-lookup skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration(
+                    "skill_fuel_price_lookup",
+                    skill_started.elapsed(),
+                );
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_fuel_price_lookup_answer(&result),
+                ))
+            }
+            IntentDecision::SkillHoroscopeDaily { sign, date } => {
+                let Some(sign) = sign else {
+                    return Ok(BackendEngineDecision::Chat(
+                        "Please tell me your zodiac sign for the horoscope.".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let skill_query = HoroscopeDailyQuery {
+                    sign,
+                    date: parse_naive_date(date),
+                };
+                let result = match self.horoscope_daily_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_backend_skill_execute("skill_horoscope_daily", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        record_backend_skill_execute(
+                            "skill_horoscope_daily",
+                            "error",
+                            Some(horoscope_daily_error_kind(&error)),
+                        );
+                        return Err(format!("horoscope-daily skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration(
+                    "skill_horoscope_daily",
+                    skill_started.elapsed(),
+                );
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_horoscope_daily_answer(&result),
+                ))
+            }
+            IntentDecision::SkillNewsHeadlines {
+                topic,
+                country_code,
+                limit,
+            } => {
+                let skill_started = Instant::now();
+                let skill_query = NewsHeadlinesQuery {
+                    topic: topic.unwrap_or_else(|| "top headlines".to_string()),
+                    country_code: country_code
+                        .or_else(|| infer_country_code(self.resolved_location.as_ref())),
+                    limit,
+                };
+                let result = match self.news_headlines_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_backend_skill_execute("skill_news_headlines", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        record_backend_skill_execute(
+                            "skill_news_headlines",
+                            "error",
+                            Some(news_headlines_error_kind(&error)),
+                        );
+                        return Err(format!("news-headlines skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration(
+                    "skill_news_headlines",
+                    skill_started.elapsed(),
+                );
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_news_headlines_answer(&result),
+                ))
             }
             IntentDecision::SkillSmartHome { target, action } => {
                 if let Some(skill) = self.smart_home_skill.as_ref() {
@@ -1380,8 +1679,13 @@ mod tests {
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
-    use core_skills::{DistanceResult, TimeResult, WeatherResult};
+    use core_skills::{
+        DistanceResult, FuelPriceLookupResult, HolidayLookupResult, HoroscopeDailyResult,
+        NewsHeadline, NewsHeadlinesResult, SportsEvent, SportsLiveResult, TimeResult,
+        WeatherResult,
+    };
     use serde_json::json;
+    use std::time::SystemTime;
 
     #[test]
     fn compose_time_answer_is_deterministic() {
@@ -1521,10 +1825,114 @@ mod tests {
                 "skill_weather".to_string(),
                 "skill_time".to_string(),
                 "skill_distance".to_string(),
+                "skill_sports_live".to_string(),
+                "skill_holiday_lookup".to_string(),
+                "skill_fuel_price_lookup".to_string(),
+                "skill_horoscope_daily".to_string(),
+                "skill_news_headlines".to_string(),
                 "skill_smart_home".to_string(),
                 "skill_timer".to_string(),
                 "skill_message".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn available_classifier_skills_include_enabled_core_common_defaults() {
+        let skills = build_available_classifier_skills(false, false, None);
+        assert_eq!(
+            skills,
+            vec![
+                "skill_weather".to_string(),
+                "skill_time".to_string(),
+                "skill_distance".to_string(),
+                "skill_sports_live".to_string(),
+                "skill_holiday_lookup".to_string(),
+                "skill_fuel_price_lookup".to_string(),
+                "skill_horoscope_daily".to_string(),
+                "skill_news_headlines".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_sports_live_answer_is_deterministic() {
+        let result = SportsLiveResult {
+            events: vec![SportsEvent {
+                league: Some("NBA".to_string()),
+                event: "Lakers vs Celtics".to_string(),
+                home_team: Some("Lakers".to_string()),
+                away_team: Some("Celtics".to_string()),
+                start_time: Some("20:00".to_string()),
+                status: Some("scheduled".to_string()),
+                home_score: None,
+                away_score: None,
+                scorers: vec![],
+            }],
+            as_of: SystemTime::UNIX_EPOCH,
+        };
+        let spoken = super::compose_sports_live_answer(&result);
+        assert_eq!(spoken, "Sports events: Lakers vs Celtics.");
+    }
+
+    #[test]
+    fn compose_holiday_lookup_answer_is_deterministic() {
+        let result = HolidayLookupResult {
+            country_code: "DE".to_string(),
+            region_code: None,
+            matches: vec![],
+            as_of: SystemTime::UNIX_EPOCH,
+        };
+        let spoken = super::compose_holiday_lookup_answer(&result);
+        assert_eq!(spoken, "No holiday matches found for DE.");
+    }
+
+    #[test]
+    fn compose_fuel_price_lookup_answer_is_deterministic() {
+        let result = FuelPriceLookupResult {
+            country_code: "GB".to_string(),
+            region: None,
+            fuel_type: "diesel".to_string(),
+            price: 1.589,
+            currency: "GBP".to_string(),
+            unit: "liter".to_string(),
+            source_granularity: "national".to_string(),
+            as_of: SystemTime::UNIX_EPOCH,
+        };
+        let spoken = super::compose_fuel_price_lookup_answer(&result);
+        assert_eq!(spoken, "diesel fuel price in GB: 1.589 GBP per liter");
+    }
+
+    #[test]
+    fn compose_horoscope_daily_answer_is_deterministic() {
+        let result = HoroscopeDailyResult {
+            sign: "Aries".to_string(),
+            day: "today".to_string(),
+            summary: "Good energy for focused work".to_string(),
+            mood: None,
+            color: None,
+            lucky_number: None,
+            as_of: SystemTime::UNIX_EPOCH,
+        };
+        let spoken = super::compose_horoscope_daily_answer(&result);
+        assert_eq!(
+            spoken,
+            "Aries horoscope for today: Good energy for focused work"
+        );
+    }
+
+    #[test]
+    fn compose_news_headlines_answer_is_deterministic() {
+        let result = NewsHeadlinesResult {
+            headlines: vec![NewsHeadline {
+                title: "Market rallies on AI demand".to_string(),
+                source: Some("Reuters".to_string()),
+                url: None,
+                published_at: None,
+            }],
+            as_of: SystemTime::UNIX_EPOCH,
+        };
+        let spoken = super::compose_news_headlines_answer(&result);
+        assert_eq!(spoken, "Top headlines: Market rallies on AI demand.");
     }
 }

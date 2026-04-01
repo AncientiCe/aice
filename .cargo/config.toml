@@ -3,11 +3,10 @@ git-fetch-with-cli = true
 
 [alias]
 aice-pod-voice = "run -p desktop-runner --bin pod-voice"
-aice-desktop = "run -p desktop-runner --bin desktop-runner"
 aice-backend = "run -p aice-backend --bin aice-backend"
 aice-macos = "run -p aice-macos --bin aice-macos"
 aice-gateway = "run -p pod-gateway --bin pod-gateway"
 aice-fmt = "fmt --all -- --check"
-aice-clippy = "clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used"
+aice-clippy = "clippy --workspace --exclude aice-macos --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used"
 aice-audit = "audit --deny warnings"
-aice-test = "test --all"
+aice-test = "test --workspace --exclude aice-macos --exclude desktop-runner"

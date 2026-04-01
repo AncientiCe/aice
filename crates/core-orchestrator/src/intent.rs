@@ -62,6 +62,36 @@ pub enum IntentDecision {
         origin: Option<String>,
         destination: Option<String>,
     },
+    /// Sports live info by matchup/team query and optional date.
+    SkillSportsLive {
+        query: Option<String>,
+        date: Option<String>,
+    },
+    /// Holiday lookup by optional name/date and country/region/year filters.
+    SkillHolidayLookup {
+        name: Option<String>,
+        date: Option<String>,
+        country_code: Option<String>,
+        region_code: Option<String>,
+        year: Option<i32>,
+    },
+    /// Fuel price lookup by country, optional region, and optional fuel type.
+    SkillFuelPriceLookup {
+        country_code: Option<String>,
+        region: Option<String>,
+        fuel_type: Option<String>,
+    },
+    /// Daily horoscope by sign and optional date.
+    SkillHoroscopeDaily {
+        sign: Option<String>,
+        date: Option<String>,
+    },
+    /// News headlines by topic and optional country/limit filters.
+    SkillNewsHeadlines {
+        topic: Option<String>,
+        country_code: Option<String>,
+        limit: Option<usize>,
+    },
     /// Smart home: lights, climate, scenes, device control.
     SkillSmartHome {
         target: Option<String>,
@@ -141,6 +171,36 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         #[serde(default)]
         destination: Option<String>,
         #[serde(default)]
+        sports_query: Option<String>,
+        #[serde(default)]
+        sports_date: Option<String>,
+        #[serde(default)]
+        holiday_name: Option<String>,
+        #[serde(default)]
+        holiday_date: Option<String>,
+        #[serde(default)]
+        holiday_country_code: Option<String>,
+        #[serde(default)]
+        holiday_region_code: Option<String>,
+        #[serde(default)]
+        holiday_year: Option<i32>,
+        #[serde(default)]
+        fuel_country_code: Option<String>,
+        #[serde(default)]
+        fuel_region: Option<String>,
+        #[serde(default)]
+        fuel_type: Option<String>,
+        #[serde(default)]
+        horoscope_sign: Option<String>,
+        #[serde(default)]
+        horoscope_date: Option<String>,
+        #[serde(default)]
+        news_topic: Option<String>,
+        #[serde(default)]
+        news_country_code: Option<String>,
+        #[serde(default)]
+        news_limit: Option<usize>,
+        #[serde(default)]
         smart_home_target: Option<String>,
         #[serde(default)]
         smart_home_action: Option<String>,
@@ -207,6 +267,33 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         "skill_distance" | "distance" => Ok(IntentDecision::SkillDistance {
             origin,
             destination,
+        }),
+        "skill_sports_live" | "sports_live" => Ok(IntentDecision::SkillSportsLive {
+            query: opt_str(p.sports_query),
+            date: opt_str(p.sports_date),
+        }),
+        "skill_holiday_lookup" | "holiday_lookup" => Ok(IntentDecision::SkillHolidayLookup {
+            name: opt_str(p.holiday_name),
+            date: opt_str(p.holiday_date),
+            country_code: opt_str(p.holiday_country_code),
+            region_code: opt_str(p.holiday_region_code),
+            year: p.holiday_year,
+        }),
+        "skill_fuel_price_lookup" | "fuel_price_lookup" => {
+            Ok(IntentDecision::SkillFuelPriceLookup {
+                country_code: opt_str(p.fuel_country_code),
+                region: opt_str(p.fuel_region),
+                fuel_type: opt_str(p.fuel_type),
+            })
+        }
+        "skill_horoscope_daily" | "horoscope_daily" => Ok(IntentDecision::SkillHoroscopeDaily {
+            sign: opt_str(p.horoscope_sign),
+            date: opt_str(p.horoscope_date),
+        }),
+        "skill_news_headlines" | "news_headlines" => Ok(IntentDecision::SkillNewsHeadlines {
+            topic: opt_str(p.news_topic),
+            country_code: opt_str(p.news_country_code),
+            limit: p.news_limit,
         }),
         "skill_smart_home" | "smart_home" => Ok(IntentDecision::SkillSmartHome {
             target: opt_str(p.smart_home_target),
@@ -643,6 +730,90 @@ mod tests {
                 assert!(target.is_none());
             }
             _ => panic!("expected SkillAppSwitcher"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_sports_live() {
+        let raw = r#"{"intent":"skill_sports_live","command":"get","sports_query":"lakers vs celtics","sports_date":"2026-04-01"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillSportsLive { query, date } => {
+                assert_eq!(query.as_deref(), Some("lakers vs celtics"));
+                assert_eq!(date.as_deref(), Some("2026-04-01"));
+            }
+            _ => panic!("expected SkillSportsLive"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_holiday_lookup() {
+        let raw = r#"{"intent":"skill_holiday_lookup","command":"get","holiday_name":"easter","holiday_country_code":"DE","holiday_year":2026}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillHolidayLookup {
+                name,
+                date,
+                country_code,
+                region_code,
+                year,
+            } => {
+                assert_eq!(name.as_deref(), Some("easter"));
+                assert!(date.is_none());
+                assert_eq!(country_code.as_deref(), Some("DE"));
+                assert!(region_code.is_none());
+                assert_eq!(*year, Some(2026));
+            }
+            _ => panic!("expected SkillHolidayLookup"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_fuel_price_lookup() {
+        let raw = r#"{"intent":"skill_fuel_price_lookup","command":"get","fuel_country_code":"GB","fuel_region":"london","fuel_type":"diesel"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillFuelPriceLookup {
+                country_code,
+                region,
+                fuel_type,
+            } => {
+                assert_eq!(country_code.as_deref(), Some("GB"));
+                assert_eq!(region.as_deref(), Some("london"));
+                assert_eq!(fuel_type.as_deref(), Some("diesel"));
+            }
+            _ => panic!("expected SkillFuelPriceLookup"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_horoscope_daily() {
+        let raw = r#"{"intent":"skill_horoscope_daily","command":"get","horoscope_sign":"aries","horoscope_date":"2026-04-01"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillHoroscopeDaily { sign, date } => {
+                assert_eq!(sign.as_deref(), Some("aries"));
+                assert_eq!(date.as_deref(), Some("2026-04-01"));
+            }
+            _ => panic!("expected SkillHoroscopeDaily"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_news_headlines() {
+        let raw = r#"{"intent":"skill_news_headlines","command":"get","news_topic":"technology","news_country_code":"US","news_limit":5}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillNewsHeadlines {
+                topic,
+                country_code,
+                limit,
+            } => {
+                assert_eq!(topic.as_deref(), Some("technology"));
+                assert_eq!(country_code.as_deref(), Some("US"));
+                assert_eq!(*limit, Some(5));
+            }
+            _ => panic!("expected SkillNewsHeadlines"),
         }
     }
 

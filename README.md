@@ -14,7 +14,7 @@ Use metrics dashboards for latency tracking and SLO checks:
 - `backend-timings`
 - `frontend-timings`
 
-## Local metrics dashboard (desktop-runner)
+## Local metrics dashboard
 
 Start local Prometheus + Grafana stack on demand:
 
@@ -43,6 +43,7 @@ License: Apache-2.0 (see [LICENSE](LICENSE)).
 ## Stability and support matrix
 
 - Stable runtime path: `apps/desktop-runner` via `pod-voice` on macOS arm64.
+- `desktop-runner` binary is deprecated; prefer `pod-voice` or split runtime (`aice-backend` + `aice-macos`).
 - Advanced path: `apps/pod-gateway` is available for transport-focused deployments and experimentation.
 - Experimental hardware path: `pod-firmware` and M5Stack ATOM Echo integration are not covered by binary release guarantees.
 - Compatibility policy: `0.1.x` preserves current `config.example.json` defaults unless release notes state otherwise.
@@ -98,7 +99,7 @@ cargo aice-test
 3. Start the primary runtime:
 
 ```bash
-cargo aice-desktop
+cargo aice-pod-voice
 ```
 
 Split runtime (two services):
@@ -113,14 +114,13 @@ cargo aice-macos
 Defined in `.cargo/config.toml`:
 
 - `cargo aice-pod-voice` -> run local Jarvis runtime (primary path)
-- `cargo aice-desktop` -> desktop-only runtime
 - `cargo aice-backend` -> backend LLM/orchestration service
 - `cargo aice-macos` -> macOS frontend service (STT/TTS + macOS skills)
 - `cargo aice-gateway` -> standalone pod transport service
 - `cargo aice-fmt` -> `cargo fmt --all -- --check`
-- `cargo aice-clippy` -> `cargo clippy --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo aice-clippy` -> `cargo clippy --workspace --exclude aice-macos --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo aice-audit` -> dependency audit
-- `cargo aice-test` -> full test suite
+- `cargo aice-test` -> workspace tests excluding deprecated apps (`aice-macos`, `desktop-runner`)
 
 ## Releases (v0.1.0)
 
@@ -158,7 +158,7 @@ Current notable integrations:
 
 ## Repository layout
 
-- `apps/desktop-runner`: local voice runtime binaries (`desktop-runner`, `pod-voice`)
+- `apps/desktop-runner`: local voice runtime binaries (`desktop-runner` deprecated, `pod-voice` primary)
 - `apps/pod-gateway`: standalone WebSocket ingest/egress transport
 - `crates/core-*`: core pipeline and platform modules
 - `crates/core-skills`: pluggable skills
