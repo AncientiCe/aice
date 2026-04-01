@@ -8,7 +8,7 @@ Standardize how `v0.1.0-rc.1` and `v0.1.0` are cut, validated, published, and ro
 
 - Distribution channel: GitHub Releases only.
 - Official binary support for `v0.1.0`: macOS arm64.
-- Release assets: `pod-voice` tarball and SHA256 checksum.
+- Release assets: `aice-backend` tarball and SHA256 checksum.
 - Firmware (`pod-firmware`) remains experimental and source-driven for `v0.1.0` (no firmware release artifact).
 - Backward compatibility target: preserve current runtime and config defaults from `config.example.json` for the `0.1.x` line unless explicitly documented in release notes.
 
@@ -50,6 +50,8 @@ cargo test --workspace --exclude aice-macos --exclude desktop-runner
 2. Run macOS arm64 smoke checks:
 
 ```bash
+brew install llvm
+export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
 ./scripts/release/smoke-macos-arm64.sh
 ```
 
@@ -73,9 +75,9 @@ Soak period: March 24, 2026 through March 30, 2026.
 
 Required checks:
 
-1. Startup preflight with local dependencies (`ollama`, `whisper-cli`, `piper`) present.
-2. `pod-voice` end-to-end voice turn (`speech -> STT -> LLM -> TTS`).
-3. `pod-voice` binary starts and responds to `--help`.
+1. `aice-backend` binary starts and responds to `--help`.
+2. Backend health endpoint responds for a local startup check.
+3. Core skill routing smoke test passes on release build artifact.
 4. At least one real skill path (weather or media) and one policy-denied path.
 5. Metrics/log review confirms expected success and error emissions.
 
