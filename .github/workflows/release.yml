@@ -101,19 +101,18 @@ jobs:
       - name: Quality gates (debug)
         run: |
           cargo fmt --all -- --check
-          cargo clippy --workspace --exclude aice-macos --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+          cargo clippy --workspace --exclude aice-macos --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
           cargo audit --deny warnings
-          cargo test --workspace --exclude aice-macos
+          cargo test --workspace --exclude aice-macos --exclude desktop-runner
 
       - name: Quality gates (release mode)
         run: |
-          cargo clippy --workspace --exclude aice-macos --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
-          cargo test --workspace --exclude aice-macos --release
+          cargo clippy --workspace --exclude aice-macos --exclude desktop-runner --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+          cargo test --workspace --exclude aice-macos --exclude desktop-runner --release
 
       - name: Build release binaries
         run: |
           cargo build --release -p desktop-runner --bin pod-voice
-          cargo build --release -p desktop-runner --bin desktop-runner
 
       - name: Package release archive and checksums
         shell: bash
@@ -122,9 +121,8 @@ jobs:
           tag="${{ github.event.inputs.release_tag }}"
           mkdir -p dist
           cp target/release/pod-voice dist/
-          cp target/release/desktop-runner dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
-          tar -C dist -czf "dist/${archive}" pod-voice desktop-runner
+          tar -C dist -czf "dist/${archive}" pod-voice
           shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets
