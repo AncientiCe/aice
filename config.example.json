@@ -5,7 +5,12 @@
     "short_replies": true,
     "max_output_tokens": 48,
     "system_prompt": null,
-    "skip_secondary_llm_for_skill_answers": false
+    "skip_secondary_llm_for_skill_answers": false,
+    "classifier_nonstream_enabled": false,
+    "classifier_prompt_cache_enabled": false,
+    "classifier_compact_fewshots_enabled": false,
+    "classifier_retry_on_invalid_enabled": false,
+    "classifier_max_output_tokens": 24
   },
   "pod_bind": "0.0.0.0:8765",
   "audio": {

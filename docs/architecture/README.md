@@ -494,7 +494,8 @@ flowchart LR
 
 **Notes:**
 - **Inputs:** Per-turn flow in `/v1/turns`, `/v1/turns/chunks`, and `/v1/turns/:turn_id/frontend-skill-result`; backend skill and dependency timings.
-- **Outputs:** Route-level, stage-level, skill-level, and dependency-level latency views for backend optimization passes.
+- **Outputs:** Route-level, stage-level, skill-level, and dependency-level latency views for backend optimization passes. The `/v1/turns` stage breakdown includes `decode_request`, `merge_chunks`, `capability_resolution`, `classifier_prompt_build`, `classifier_llm_roundtrip`, `intent_parse_validate`, and `response_serialize`.
+- **SLO Gates:** For optimization passes, enforce p95 `< 300ms` on `/v1/turns` and continuously track p50/p95 for `classifier_llm_roundtrip` from `backend_turn_stage_duration_seconds{stage="classifier_llm_roundtrip"}`.
 - **Failure paths:** If a pass increases p95 latency or errors, disable its flag and continue with the next pass.
 
 ---
