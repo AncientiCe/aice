@@ -302,6 +302,21 @@ pub struct LlmConfig {
     /// Skip secondary LLM answer-composer calls for backend skill summaries.
     #[serde(default)]
     pub skip_secondary_llm_for_skill_answers: bool,
+    /// Enable non-streaming classifier calls for lower overhead.
+    #[serde(default)]
+    pub classifier_nonstream_enabled: bool,
+    /// Enable prompt artifact caching for classifier calls.
+    #[serde(default)]
+    pub classifier_prompt_cache_enabled: bool,
+    /// Enable compact few-shots scoped to available skills.
+    #[serde(default)]
+    pub classifier_compact_fewshots_enabled: bool,
+    /// Retry classification with strict full prompt when first parse/validation fails.
+    #[serde(default)]
+    pub classifier_retry_on_invalid_enabled: bool,
+    /// Max output tokens for classifier calls.
+    #[serde(default = "default_classifier_max_output_tokens")]
+    pub classifier_max_output_tokens: u32,
 }
 
 impl Default for LlmConfig {
@@ -311,6 +326,11 @@ impl Default for LlmConfig {
             max_output_tokens: default_max_output_tokens(),
             system_prompt: None,
             skip_secondary_llm_for_skill_answers: false,
+            classifier_nonstream_enabled: false,
+            classifier_prompt_cache_enabled: false,
+            classifier_compact_fewshots_enabled: false,
+            classifier_retry_on_invalid_enabled: false,
+            classifier_max_output_tokens: default_classifier_max_output_tokens(),
         }
     }
 }
@@ -321,6 +341,10 @@ fn default_short_replies() -> bool {
 
 fn default_max_output_tokens() -> u32 {
     48
+}
+
+fn default_classifier_max_output_tokens() -> u32 {
+    24
 }
 
 /// Assistant profile: persona, units, and user identity for prompt context.
@@ -562,6 +586,11 @@ mod tests {
         assert_eq!(config.model, "llama3.2");
         assert!(config.llm.short_replies);
         assert_eq!(config.llm.max_output_tokens, 48);
+        assert!(!config.llm.classifier_nonstream_enabled);
+        assert!(!config.llm.classifier_prompt_cache_enabled);
+        assert!(!config.llm.classifier_compact_fewshots_enabled);
+        assert!(!config.llm.classifier_retry_on_invalid_enabled);
+        assert_eq!(config.llm.classifier_max_output_tokens, 24);
         assert_eq!(config.pod_bind, "0.0.0.0:8765");
         assert_eq!(config.audio.chunk_timeout_ms, 80);
         assert_eq!(config.audio.turn_window_ms, 1500);
@@ -622,6 +651,11 @@ mod tests {
             config.llm.system_prompt.as_deref(),
             Some("You are concise.")
         );
+        assert!(!config.llm.classifier_nonstream_enabled);
+        assert!(!config.llm.classifier_prompt_cache_enabled);
+        assert!(!config.llm.classifier_compact_fewshots_enabled);
+        assert!(!config.llm.classifier_retry_on_invalid_enabled);
+        assert_eq!(config.llm.classifier_max_output_tokens, 24);
         assert_eq!(config.pod_bind, "0.0.0.0:9000");
         assert_eq!(config.audio.turn_window_ms, 900);
         assert_eq!(config.audio.speech_end_silence_ms, 180);

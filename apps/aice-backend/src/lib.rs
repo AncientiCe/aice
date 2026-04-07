@@ -12,8 +12,9 @@ use core_observability::{
     record_backend_turn_stage_duration, record_backend_turn_total,
 };
 use core_orchestrator::{
-    intent_classifier_few_shots, intent_classifier_system_prompt_for_skills, parse_intent,
-    validate_intent_decision, IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
+    intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
+    intent_classifier_system_prompt_for_skills, parse_intent, validate_intent_decision,
+    IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
 };
 use core_runtime_protocol::{
     sse_data_line, FrontendActivateRequest, FrontendDeactivateRequest, FrontendHeartbeatRequest,
@@ -43,17 +44,18 @@ use skill_chain::EffectiveCapabilities;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub type DynError = Box<dyn Error + Send + Sync>;
 type RespBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 type SessionHistory = Arc<Mutex<HashMap<String, Vec<(String, String)>>>>;
 type TurnChunks = Arc<Mutex<HashMap<String, String>>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
+type ClassifierPromptCache = Arc<RwLock<HashMap<String, ClassifierPromptArtifacts>>>;
 
 const DEFAULT_FRONTEND_SESSION_TTL_SECONDS: u64 = 120;
 const FRONTEND_CLASSIFIER_SKILLS: [&str; 12] = [
@@ -70,6 +72,21 @@ const FRONTEND_CLASSIFIER_SKILLS: [&str; 12] = [
     "skill_message",
     "skill_volume",
 ];
+
+#[derive(Clone, Debug)]
+struct ClassifierPromptArtifacts {
+    system_prompt: String,
+    compact_few_shots: Vec<(String, String)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClassifierOptimizationConfig {
+    nonstream_enabled: bool,
+    prompt_cache_enabled: bool,
+    compact_fewshots_enabled: bool,
+    retry_on_invalid_enabled: bool,
+    max_output_tokens: u32,
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FrontendSessionKey {
@@ -371,6 +388,42 @@ fn build_available_classifier_skills(context: Option<&Value>) -> Vec<String> {
     let capabilities = EffectiveCapabilities::from_handshake(frontend_intents, backend_skills);
     capabilities.classifier_enabled_skills
 }
+
+fn classifier_cache_key(available_skills: &[&str]) -> String {
+    let mut normalized = available_skills
+        .iter()
+        .map(|skill| skill.trim().to_ascii_lowercase())
+        .filter(|skill| !skill.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized.join("|")
+}
+
+fn build_classifier_prompt_artifacts(available_skills: &[&str]) -> ClassifierPromptArtifacts {
+    ClassifierPromptArtifacts {
+        system_prompt: intent_classifier_system_prompt_for_skills(available_skills),
+        compact_few_shots: intent_classifier_few_shots_for_skills(available_skills),
+    }
+}
+
+fn parse_validated_intent(raw: &str) -> Option<IntentDecision> {
+    parse_intent(raw.trim()).ok().map(validate_intent_decision)
+}
+
+fn choose_classification_decision(
+    fast: Option<IntentDecision>,
+    retry: Option<IntentDecision>,
+    retry_enabled: bool,
+) -> IntentDecision {
+    if let Some(decision) = fast {
+        return decision;
+    }
+    if retry_enabled {
+        return retry.unwrap_or(IntentDecision::Chat);
+    }
+    IntentDecision::Chat
+}
 async fn handle_request(
     req: Request<Incoming>,
     engine: Arc<dyn BackendEngine>,
@@ -584,6 +637,7 @@ async fn handle_request(
     }
 
     if method == Method::POST && path == "/v1/turns" {
+        let decode_started = Instant::now();
         let mut request = match decode_json::<TurnRequest>(req).await {
             Ok(value) => value,
             Err(error) => {
@@ -598,6 +652,7 @@ async fn handle_request(
                 ));
             }
         };
+        record_backend_turn_stage_duration("decode_request", decode_started.elapsed());
         if !request.finalize {
             let transcript = request.transcript.trim();
             if !transcript.is_empty() {
@@ -615,6 +670,7 @@ async fn handle_request(
                 plain_response(StatusCode::ACCEPTED, "buffered"),
             ));
         }
+        let merge_started = Instant::now();
         let buffered = {
             let mut chunks = pending_chunks.lock().await;
             chunks.remove(&request.session_id).unwrap_or_default()
@@ -624,6 +680,8 @@ async fn handle_request(
         } else if !buffered.trim().is_empty() {
             request.transcript = format!("{} {}", buffered.trim(), request.transcript.trim());
         }
+        record_backend_turn_stage_duration("merge_chunks", merge_started.elapsed());
+        let capability_started = Instant::now();
         let frontend_capabilities = lookup_frontend_capabilities(
             &frontend_sessions,
             request.device_id.as_deref(),
@@ -646,6 +704,7 @@ async fn handle_request(
             );
             request.context = Some(Value::Object(context_object));
         }
+        record_backend_turn_stage_duration("capability_resolution", capability_started.elapsed());
         info!(
             session_id = %request.session_id,
             device_id = request.device_id.as_deref().unwrap_or(""),
@@ -662,50 +721,61 @@ async fn handle_request(
             &method,
             "/v1/turns",
             request_started_at,
-            match result {
-                Ok(BackendEngineDecision::Chat(text)) => {
-                    info!("backend routed turn to chat");
-                    record_backend_turn_total("chat", "success");
-                    sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-                }
-                Ok(BackendEngineDecision::BackendSkill(text)) => {
-                    info!("backend routed turn to backend skill");
-                    record_backend_turn_total("backend_skill", "success");
-                    sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-                }
-                Ok(BackendEngineDecision::FrontendSkillIntent(intent)) => {
-                    if !frontend_intent_allowed(&intent.intent, frontend_capabilities.as_deref()) {
-                        record_backend_turn_total("frontend_skill_capability_gate", "fallback");
+            {
+                let response_serialize_started = Instant::now();
+                let response = match result {
+                    Ok(BackendEngineDecision::Chat(text)) => {
+                        info!("backend routed turn to chat");
+                        record_backend_turn_total("chat", "success");
+                        sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
+                    }
+                    Ok(BackendEngineDecision::BackendSkill(text)) => {
+                        info!("backend routed turn to backend skill");
+                        record_backend_turn_total("backend_skill", "success");
+                        sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
+                    }
+                    Ok(BackendEngineDecision::FrontendSkillIntent(intent)) => {
+                        if !frontend_intent_allowed(
+                            &intent.intent,
+                            frontend_capabilities.as_deref(),
+                        ) {
+                            record_backend_turn_total("frontend_skill_capability_gate", "fallback");
+                            sse_response_timed(&[
+                                RuntimeEvent::Token {
+                                    text: "That action is not available on this active frontend."
+                                        .to_string(),
+                                },
+                                RuntimeEvent::Done,
+                            ])
+                        } else {
+                            info!(
+                                intent = %intent.intent,
+                                turn_id = %intent.turn_id,
+                                "backend routed turn to frontend skill intent"
+                            );
+                            record_backend_turn_total("frontend_skill", "success");
+                            sse_response_timed(&[
+                                RuntimeEvent::FrontendSkillIntent(intent),
+                                RuntimeEvent::Done,
+                            ])
+                        }
+                    }
+                    Err(error) => {
+                        warn!(%error, "backend turn request failed");
+                        record_backend_turn_total("turn", "error");
                         sse_response_timed(&[
-                            RuntimeEvent::Token {
-                                text: "That action is not available on this active frontend."
-                                    .to_string(),
+                            RuntimeEvent::Error {
+                                message: format!("backend error: {error}"),
                             },
                             RuntimeEvent::Done,
                         ])
-                    } else {
-                        info!(
-                            intent = %intent.intent,
-                            turn_id = %intent.turn_id,
-                            "backend routed turn to frontend skill intent"
-                        );
-                        record_backend_turn_total("frontend_skill", "success");
-                        sse_response_timed(&[
-                            RuntimeEvent::FrontendSkillIntent(intent),
-                            RuntimeEvent::Done,
-                        ])
                     }
-                }
-                Err(error) => {
-                    warn!(%error, "backend turn request failed");
-                    record_backend_turn_total("turn", "error");
-                    sse_response_timed(&[
-                        RuntimeEvent::Error {
-                            message: format!("backend error: {error}"),
-                        },
-                        RuntimeEvent::Done,
-                    ])
-                }
+                };
+                record_backend_turn_stage_duration(
+                    "response_serialize",
+                    response_serialize_started.elapsed(),
+                );
+                response
             },
         ));
     }
@@ -786,6 +856,8 @@ pub struct AiceBackendEngine {
     turn_counter: Arc<std::sync::atomic::AtomicU64>,
     resolved_location: Option<ResolvedLocation>,
     skip_secondary_llm_for_skill_answers: bool,
+    classifier_prompt_cache: ClassifierPromptCache,
+    classifier_optimization: ClassifierOptimizationConfig,
 }
 
 /// LLM-backed intent classifier reused by backend and compatibility wrappers.
@@ -860,6 +932,14 @@ impl AiceBackendEngine {
             turn_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             resolved_location,
             skip_secondary_llm_for_skill_answers: config.llm.skip_secondary_llm_for_skill_answers,
+            classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
+            classifier_optimization: ClassifierOptimizationConfig {
+                nonstream_enabled: config.llm.classifier_nonstream_enabled,
+                prompt_cache_enabled: config.llm.classifier_prompt_cache_enabled,
+                compact_fewshots_enabled: config.llm.classifier_compact_fewshots_enabled,
+                retry_on_invalid_enabled: config.llm.classifier_retry_on_invalid_enabled,
+                max_output_tokens: config.llm.classifier_max_output_tokens,
+            },
         }
     }
 
@@ -872,7 +952,7 @@ impl AiceBackendEngine {
         call_options: Option<&LlmCallOptions>,
     ) -> Result<String, DynError> {
         let history_len = history.len();
-        info!(
+        debug!(
             operation,
             llm_input = %user_text.trim(),
             history_len,
@@ -887,10 +967,37 @@ impl AiceBackendEngine {
         while let Some(token) = stream.next().await {
             output.push_str(&token);
         }
-        info!(
+        debug!(
             operation,
             llm_output = %output.trim(),
             "llm_output"
+        );
+        Ok(output)
+    }
+
+    async fn collect_llm_once(
+        &self,
+        operation: &str,
+        user_text: &str,
+        history: &[(String, String)],
+        system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
+    ) -> Result<String, DynError> {
+        debug!(
+            operation,
+            llm_input = %user_text.trim(),
+            history_len = history.len(),
+            has_system_prompt_override = system_prompt_override.is_some(),
+            "llm_input_nonstream"
+        );
+        let output = self
+            .llm
+            .chat_once(user_text, history, system_prompt_override, call_options)
+            .await?;
+        debug!(
+            operation,
+            llm_output = %output.trim(),
+            "llm_output_nonstream"
         );
         Ok(output)
     }
@@ -901,20 +1008,115 @@ impl AiceBackendEngine {
         available_skills: &[&str],
     ) -> Result<IntentDecision, DynError> {
         let prompt = build_intent_classification_prompt(user_text);
-        let classifier_prompt = intent_classifier_system_prompt_for_skills(available_skills);
-        let few_shot_history = intent_classifier_few_shots();
-        let classification_options = LlmCallOptions::for_classification();
-        let raw = self
-            .collect_llm(
-                "intent_classification",
+        let prompt_build_started = Instant::now();
+        let artifacts = if self.classifier_optimization.prompt_cache_enabled {
+            let key = classifier_cache_key(available_skills);
+            if let Ok(cache) = self.classifier_prompt_cache.read() {
+                cache.get(&key).cloned()
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                let built = build_classifier_prompt_artifacts(available_skills);
+                if let Ok(mut cache) = self.classifier_prompt_cache.write() {
+                    cache.entry(key).or_insert_with(|| built.clone());
+                }
+                built
+            })
+        } else {
+            build_classifier_prompt_artifacts(available_skills)
+        };
+        let few_shot_history = if self.classifier_optimization.compact_fewshots_enabled {
+            artifacts.compact_few_shots.clone()
+        } else {
+            intent_classifier_few_shots()
+        };
+        record_backend_turn_stage_duration(
+            "classifier_prompt_build",
+            prompt_build_started.elapsed(),
+        );
+
+        let mut fast_options = LlmCallOptions::for_classification();
+        fast_options.max_output_tokens =
+            Some(self.classifier_optimization.max_output_tokens.max(1));
+
+        let llm_started = Instant::now();
+        let fast_raw = if self.classifier_optimization.nonstream_enabled {
+            self.collect_llm_once(
+                "intent_classification_fast",
                 &prompt,
                 few_shot_history.as_slice(),
-                Some(classifier_prompt.as_str()),
-                Some(&classification_options),
+                Some(artifacts.system_prompt.as_str()),
+                Some(&fast_options),
             )
-            .await?;
-        let decision = parse_intent(raw.trim())?;
-        Ok(validate_intent_decision(decision))
+            .await
+        } else {
+            self.collect_llm(
+                "intent_classification_fast",
+                &prompt,
+                few_shot_history.as_slice(),
+                Some(artifacts.system_prompt.as_str()),
+                Some(&fast_options),
+            )
+            .await
+        };
+        record_backend_turn_stage_duration("classifier_llm_roundtrip", llm_started.elapsed());
+
+        let parse_started = Instant::now();
+        let fast_decision = fast_raw
+            .as_ref()
+            .ok()
+            .and_then(|raw| parse_validated_intent(raw));
+        record_backend_turn_stage_duration("intent_parse_validate", parse_started.elapsed());
+
+        if fast_decision.is_some() {
+            return Ok(choose_classification_decision(
+                fast_decision,
+                None,
+                self.classifier_optimization.retry_on_invalid_enabled,
+            ));
+        }
+
+        if !self.classifier_optimization.retry_on_invalid_enabled {
+            fast_raw?;
+            return Ok(IntentDecision::Chat);
+        }
+
+        let retry_prompt_build_started = Instant::now();
+        let retry_prompt = intent_classifier_system_prompt_for_skills(available_skills);
+        let retry_history = intent_classifier_few_shots();
+        record_backend_turn_stage_duration(
+            "classifier_prompt_build",
+            retry_prompt_build_started.elapsed(),
+        );
+
+        let mut retry_options = LlmCallOptions::for_classification();
+        retry_options.max_output_tokens =
+            Some(self.classifier_optimization.max_output_tokens.max(48));
+
+        let retry_llm_started = Instant::now();
+        let retry_raw = self
+            .collect_llm(
+                "intent_classification_retry",
+                &prompt,
+                retry_history.as_slice(),
+                Some(retry_prompt.as_str()),
+                Some(&retry_options),
+            )
+            .await;
+        record_backend_turn_stage_duration("classifier_llm_roundtrip", retry_llm_started.elapsed());
+
+        let retry_parse_started = Instant::now();
+        let retry_decision = retry_raw
+            .as_ref()
+            .ok()
+            .and_then(|raw| parse_validated_intent(raw));
+        record_backend_turn_stage_duration("intent_parse_validate", retry_parse_started.elapsed());
+        Ok(choose_classification_decision(
+            None,
+            retry_decision,
+            self.classifier_optimization.retry_on_invalid_enabled,
+        ))
     }
 
     async fn compose_skill_answer(
@@ -1561,9 +1763,11 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_available_classifier_skills, build_intent_classification_prompt,
+        build_available_classifier_skills, build_classifier_prompt_artifacts,
+        build_intent_classification_prompt, choose_classification_decision, classifier_cache_key,
         compose_distance_answer, compose_frontend_skill_error_outcome,
         compose_frontend_skill_success_echo, compose_time_answer, compose_weather_answer,
+        parse_validated_intent,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -1749,6 +1953,46 @@ mod tests {
         assert!(!skills.contains(&"skill_timer".to_string()));
         assert!(!skills.contains(&"skill_smart_home".to_string()));
         assert!(!skills.contains(&"skill_memory".to_string()));
+    }
+
+    #[test]
+    fn classifier_cache_key_is_order_and_case_insensitive() {
+        let a = classifier_cache_key(&["skill_timer", "skill_time", "SKILL_TIMER"]);
+        let b = classifier_cache_key(&["skill_time", "skill_timer"]);
+        assert_eq!(a, b);
+        assert_eq!(a, "skill_time|skill_timer");
+    }
+
+    #[test]
+    fn classifier_prompt_artifacts_scope_compact_few_shots() {
+        let artifacts = build_classifier_prompt_artifacts(&["skill_time"]);
+        assert!(artifacts.system_prompt.contains("\"skill_time\""));
+        assert!(!artifacts.compact_few_shots.is_empty());
+        assert!(artifacts
+            .compact_few_shots
+            .iter()
+            .all(|(_, answer)| answer.contains("\"intent\":\"skill_time\"")));
+    }
+
+    #[test]
+    fn choose_classification_decision_retries_only_when_enabled() {
+        let fast = None;
+        let retry = Some(super::IntentDecision::SkillTimer {
+            duration: Some("5 minutes".to_string()),
+            name: None,
+        });
+        let without_retry = choose_classification_decision(fast.clone(), retry.clone(), false);
+        assert_eq!(without_retry, super::IntentDecision::Chat);
+        let with_retry = choose_classification_decision(fast, retry, true);
+        assert!(matches!(
+            with_retry,
+            super::IntentDecision::SkillTimer { .. }
+        ));
+    }
+
+    #[test]
+    fn parse_validated_intent_returns_none_for_invalid_json() {
+        assert!(parse_validated_intent("not-json").is_none());
     }
 
     #[test]

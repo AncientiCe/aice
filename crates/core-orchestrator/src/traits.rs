@@ -21,6 +21,8 @@ pub struct LlmCallOptions {
     pub temperature: Option<f32>,
     /// When `true`, request JSON-constrained output from the model (e.g. Ollama `format: "json"`).
     pub format_json: bool,
+    /// Optional output-token cap override for this call.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl LlmCallOptions {
@@ -34,6 +36,7 @@ impl LlmCallOptions {
         Self {
             temperature: Some(0.1),
             format_json: true,
+            max_output_tokens: Some(24),
         }
     }
 }

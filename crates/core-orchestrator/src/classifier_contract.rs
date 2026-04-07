@@ -398,11 +398,37 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
     ]
 }
 
+/// Canonical few-shot examples filtered to available skills.
+///
+/// Always returns chat-unrelated examples only for enabled skills. If filtering
+/// yields no entries, this falls back to the full canonical few-shot set.
+pub fn intent_classifier_few_shots_for_skills(available_skills: &[&str]) -> Vec<(String, String)> {
+    let all = intent_classifier_few_shots();
+    let mut filtered = all
+        .iter()
+        .filter(|(_, assistant)| {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(assistant.as_str()) else {
+                return false;
+            };
+            let Some(intent) = value.get("intent").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            has_skill(available_skills, intent)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if filtered.is_empty() {
+        return all;
+    }
+    filtered.shrink_to_fit();
+    filtered
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        intent_classifier_few_shots, intent_classifier_system_prompt,
-        intent_classifier_system_prompt_for_skills,
+        intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
+        intent_classifier_system_prompt, intent_classifier_system_prompt_for_skills,
     };
 
     #[test]
@@ -662,5 +688,22 @@ mod tests {
                 && a.contains("\"intent\":\"skill_news_headlines\"")
                 && a.contains("\"command\":\"get\"")
         }));
+    }
+
+    #[test]
+    fn few_shots_can_be_filtered_to_available_skills() {
+        let filtered = intent_classifier_few_shots_for_skills(&["skill_time", "skill_timer"]);
+        assert!(!filtered.is_empty());
+        assert!(filtered.iter().all(|(_, assistant)| {
+            assistant.contains("\"intent\":\"skill_time\"")
+                || assistant.contains("\"intent\":\"skill_timer\"")
+        }));
+    }
+
+    #[test]
+    fn few_shot_filter_falls_back_to_full_when_no_match() {
+        let filtered = intent_classifier_few_shots_for_skills(&["skill_not_real"]);
+        let full = intent_classifier_few_shots();
+        assert_eq!(filtered, full);
     }
 }

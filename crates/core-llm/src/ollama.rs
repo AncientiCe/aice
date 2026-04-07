@@ -46,6 +46,11 @@ struct StreamMessage {
     content: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct NonStreamResponse {
+    message: Option<StreamMessage>,
+}
+
 /// Stream that yields items from an mpsc receiver.
 struct ReceiverStream(mpsc::UnboundedReceiver<String>);
 
@@ -124,20 +129,13 @@ impl OllamaLlmStream {
         }
         format!("{}\n\n{}", user_text, Self::USER_OUTPUT_CONTRACT)
     }
-}
 
-#[async_trait]
-impl LlmStream for OllamaLlmStream {
-    async fn chat_stream(
+    fn build_messages(
         &self,
         user_text: &str,
         history: &[(String, String)],
         system_prompt_override: Option<&str>,
-        call_options: Option<&LlmCallOptions>,
-    ) -> Result<
-        Box<dyn Stream<Item = String> + Send + Unpin>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> Vec<ChatMessage> {
         let mut messages: Vec<ChatMessage> = history
             .iter()
             .flat_map(|(u, a)| {
@@ -168,6 +166,72 @@ impl LlmStream for OllamaLlmStream {
             role: "user".to_string(),
             content: user_message,
         });
+        messages
+    }
+
+    fn resolve_num_predict(&self, call_options: Option<&LlmCallOptions>) -> u32 {
+        call_options
+            .and_then(|o| o.max_output_tokens)
+            .unwrap_or(self.max_output_tokens)
+            .max(16)
+    }
+
+    pub async fn chat_once(
+        &self,
+        user_text: &str,
+        history: &[(String, String)],
+        system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let messages = self.build_messages(user_text, history, system_prompt_override);
+        let format = call_options
+            .filter(|o| o.format_json)
+            .map(|_| "json".to_string());
+        let temperature = call_options.and_then(|o| o.temperature);
+        let body = ChatRequest {
+            model: self.model.clone(),
+            messages,
+            stream: false,
+            format,
+            options: Some(ChatOptions {
+                num_predict: self.resolve_num_predict(call_options),
+                temperature,
+            }),
+        };
+        let url = format!("{}/api/chat", self.base_url);
+        let res = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(Box::new(LlmError::Request(format!("{}: {}", status, text))));
+        }
+        let payload = res
+            .json::<NonStreamResponse>()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+        Ok(payload.message.and_then(|m| m.content).unwrap_or_default())
+    }
+}
+
+#[async_trait]
+impl LlmStream for OllamaLlmStream {
+    async fn chat_stream(
+        &self,
+        user_text: &str,
+        history: &[(String, String)],
+        system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
+    ) -> Result<
+        Box<dyn Stream<Item = String> + Send + Unpin>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let messages = self.build_messages(user_text, history, system_prompt_override);
         let format = call_options
             .filter(|o| o.format_json)
             .map(|_| "json".to_string());
@@ -178,7 +242,7 @@ impl LlmStream for OllamaLlmStream {
             stream: true,
             format,
             options: Some(ChatOptions {
-                num_predict: self.max_output_tokens.max(16),
+                num_predict: self.resolve_num_predict(call_options),
                 temperature,
             }),
         };
@@ -225,6 +289,8 @@ impl LlmStream for OllamaLlmStream {
 
 #[cfg(test)]
 mod tests {
+    use core_orchestrator::LlmCallOptions;
+
     pub trait TestOptionExt<T> {
         fn must(self) -> T;
     }
@@ -309,5 +375,23 @@ mod tests {
         );
         let msg = llm.compose_user_message("classify this", Some("override"));
         assert_eq!(msg, "classify this");
+    }
+
+    #[test]
+    fn resolve_num_predict_prefers_call_override() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("You are helpful.".to_string()),
+        );
+        let options = LlmCallOptions {
+            temperature: Some(0.1),
+            format_json: true,
+            max_output_tokens: Some(24),
+        };
+        assert_eq!(llm.resolve_num_predict(Some(&options)), 24);
+        assert_eq!(llm.resolve_num_predict(None), 64);
     }
 }

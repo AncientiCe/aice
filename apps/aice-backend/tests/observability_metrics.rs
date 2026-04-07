@@ -1,5 +1,6 @@
 use core_observability::{
-    init_prometheus_exporter, record_backend_http_request, register_metrics, ExporterInitState,
+    init_prometheus_exporter, record_backend_http_request, record_backend_turn_stage_duration,
+    register_metrics, ExporterInitState,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -74,10 +75,12 @@ fn backend_http_metrics_cover_core_routes_and_errors() {
     let metrics_bind = shared_bind().unwrap_or_else(|error| panic!("reserve bind failed: {error}"));
     let state = init_prometheus_exporter(metrics_bind)
         .unwrap_or_else(|error| panic!("failed to initialize exporter: {error}"));
-    assert_eq!(
-        state,
-        ExporterInitState::Started,
-        "exporter should start in this isolated test process"
+    assert!(
+        matches!(
+            state,
+            ExporterInitState::Started | ExporterInitState::AlreadyRunning
+        ),
+        "exporter should be available for metrics assertions"
     );
     register_metrics();
 
@@ -108,6 +111,38 @@ fn backend_http_metrics_cover_core_routes_and_errors() {
     assert!(payload.contains("route=\"not_found\""));
     assert!(payload.contains("status_class=\"4xx\""));
     assert!(payload.contains("status_class=\"2xx\""));
+}
+
+#[test]
+fn backend_turn_stage_metrics_cover_latency_breakdown_stages() {
+    let metrics_bind = shared_bind().unwrap_or_else(|error| panic!("reserve bind failed: {error}"));
+    let state = init_prometheus_exporter(metrics_bind)
+        .unwrap_or_else(|error| panic!("failed to initialize exporter: {error}"));
+    assert!(
+        matches!(
+            state,
+            ExporterInitState::Started | ExporterInitState::AlreadyRunning
+        ),
+        "exporter should be available for metrics assertions"
+    );
+    register_metrics();
+
+    record_backend_turn_stage_duration("decode_request", Duration::from_millis(2));
+    record_backend_turn_stage_duration("merge_chunks", Duration::from_millis(1));
+    record_backend_turn_stage_duration("capability_resolution", Duration::from_millis(1));
+    record_backend_turn_stage_duration("classifier_prompt_build", Duration::from_millis(3));
+    record_backend_turn_stage_duration("classifier_llm_roundtrip", Duration::from_millis(15));
+    record_backend_turn_stage_duration("intent_parse_validate", Duration::from_millis(1));
+    record_backend_turn_stage_duration("response_serialize", Duration::from_millis(2));
+
+    let payload = wait_for_metrics(metrics_bind, "backend_turn_stage_duration_seconds");
+    assert!(payload.contains("stage=\"decode_request\""));
+    assert!(payload.contains("stage=\"merge_chunks\""));
+    assert!(payload.contains("stage=\"capability_resolution\""));
+    assert!(payload.contains("stage=\"classifier_prompt_build\""));
+    assert!(payload.contains("stage=\"classifier_llm_roundtrip\""));
+    assert!(payload.contains("stage=\"intent_parse_validate\""));
+    assert!(payload.contains("stage=\"response_serialize\""));
 }
 
 #[test]
