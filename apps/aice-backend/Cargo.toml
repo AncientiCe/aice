@@ -24,7 +24,8 @@ serde_json = "1"
 tracing = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = "0.4"
-base64 = "0.22"
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 core-config = { path = "../../crates/core-config" }
 core-llm = { path = "../../crates/core-llm" }
 core-observability = { path = "../../crates/core-observability" }
@@ -37,3 +38,6 @@ mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", rev = "1
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+reqwest = { version = "0.12", features = ["json"] }

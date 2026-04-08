@@ -13,7 +13,7 @@ flowchart LR
     Mic[Microphone] --> VAD[VAD]
     VAD --> STT[StreamingSTT]
     STT --> Engine[ConversationEngine]
-    Engine --> LLM[OllamaStreamingLLM]
+    Engine --> LLM[CradleLLM]
     LLM --> TTS[StreamingTTS]
     TTS --> Speaker[Speaker]
     Engine --> Metrics[JsonLogAndMetrics]
@@ -250,78 +250,56 @@ flowchart TD
 
 ## 8. Split Runtime Services (`aice-backend` + `aice-macos`)
 
-**Purpose:** Run desktop voice behavior as two services. `aice-macos` owns mic capture, VAD endpointing, audio uplink, and TTS playback, while `aice-backend` owns STT, wake-word gating, LLM orchestration, intent classification, and non-OS skills.
+**Purpose:** Run desktop voice behavior as two services. `aice-macos` owns mic capture, VAD endpointing, audio uplink, and TTS playback, while `aice-backend` owns STT, wake-word gating, LLM orchestration (Cradle provider), intent classification, and non-OS skills. The entire voice journey runs over a single WebSocket connection at `/turns/stream`; HTTP is retained only for operational endpoints (`/healthz`, `/metrics`).
 
 ```mermaid
 sequenceDiagram
     participant User
     participant Mac as aice-macos
     participant Core as aice-backend
-    participant LLM as Ollama
+    participant LLM as Cradle LLM
     participant SkillB as BackendSkills(weather/time/distance/smart_home)
     participant SkillM as MacOsSkills(computer/app_switcher/reminder/message/timer/shopping/volume/media/screenshot)
 
+    Mac->>Core: WS /turns/stream (upgrade)
     User->>Mac: speech
     Mac->>Mac: local VAD detects speech/end
+    Mac->>Core: text: turn_start {session_id, device_id?, turn_id, supported_frontend_intents}
     loop while speaking
-        Mac->>Core: POST /v1/turns/audio-chunks {session_id, turn_id, seq, pcm_s16le_base64}
+        Mac->>Core: binary: raw PCM i16 LE samples
     end
-    Mac->>Core: POST /v1/turns/audio-finalize {session_id, turn_id, done_reason:vad_end}
+    Mac->>Core: text: turn_done
     Core->>Core: backend STT flush + wake gate
     Core->>LLM: classify + route
     alt backend-owned skill
         Core->>SkillB: execute(...)
         SkillB-->>Core: structured result
         Core->>LLM: compose spoken answer
-        Core-->>Mac: SSE token stream
+        Core-->>Mac: text: token {turn_id, text}
         Mac->>Mac: TTS playback
     else frontend-owned skill
-        Core-->>Mac: SSE frontend_skill_intent {turn_id, intent, slots}
+        Core-->>Mac: text: frontend_skill_intent {turn_id, intent, slots}
         Mac->>SkillM: execute(...)
         SkillM-->>Mac: structured result context
-        Mac->>Core: POST /v1/turns/{turn_id}/frontend-skill-result
+        Mac->>Core: text: frontend_skill_result {turn_id, intent_id, result}
         Core->>LLM: compose spoken answer
-        Core-->>Mac: SSE token stream
+        Core-->>Mac: text: token {turn_id, text}
         Mac->>Mac: TTS playback
     else chat
         Core->>LLM: chat stream
-        Core-->>Mac: SSE token stream
+        Core-->>Mac: text: token {turn_id, text}
         Mac->>Mac: TTS playback
     end
+    Core-->>Mac: text: done {turn_id}
 ```
 
 **Notes:**
-- **Inputs:** `AudioChunkRequest { session_id, device_id?, turn_id, seq, pcm_s16le_base64, sample_rate_hz, channels }` and `AudioFinalizeRequest { session_id, device_id?, turn_id, done_reason }`.
-- **Outputs:** SSE `RuntimeEvent` stream (`token`, `frontend_skill_intent`, `done`, `error`).
-- **Failure paths:** invalid chunk format/sequence returns `400`; stale turns are dropped by backend idle timeout; frontend skill execution failures are reported via `frontend-skill-result` with `status=error`.
-
-### 8.1 Frontend activation and capability-scoped routing
-
-**Purpose:** Allow multiple frontends with different local skill capabilities. Frontends register active capabilities by `(device_id, session_id)`, and backend routes frontend intents only when that intent is supported by the active frontend session.
-
-```mermaid
-sequenceDiagram
-    participant Frontend
-    participant Backend
-    Frontend->>Backend: POST /v1/frontends/activate {device_id, session_id, supported_frontend_intents, protocol_version}
-    Backend->>Backend: store session capabilities with TTL
-    loop active session
-        Frontend->>Backend: POST /v1/turns/audio-finalize {device_id, session_id, turn_id}
-        Backend->>Backend: classify intent
-        alt intent supported by session capability list
-            Backend-->>Frontend: SSE frontend_skill_intent
-        else unsupported frontend intent
-            Backend-->>Frontend: SSE token fallback ("not available on this active frontend")
-        end
-        Frontend->>Backend: POST /v1/frontends/heartbeat {device_id, session_id}
-    end
-    Frontend->>Backend: POST /v1/frontends/deactivate {device_id, session_id}
-```
-
-**Notes:**
-- **Inputs:** Activation API (`/v1/frontends/activate`, `/heartbeat`, `/deactivate`) plus audio chunk/finalize turn flow.
-- **Outputs:** Per-session capability-aware routing; deterministic fallback for unsupported frontend intents.
-- **Failure paths:** Unknown/expired frontend session state falls back to no capability scope; protocol version mismatch is rejected at activation.
+- **Dual-frame model:** Binary WebSocket frames carry raw PCM audio (i16 LE, 16 kHz mono). Text WebSocket frames carry JSON control messages (`TurnStreamClientMessage`) and server events (`TurnStreamServerEvent`).
+- **Session lifecycle:** Backend tracks sessions on WebSocket connect/disconnect; `turn_start` carries `supported_frontend_intents` for per-turn capability-scoped routing.
+- **Inputs:** `TurnStreamClientMessage::TurnStart { session_id, device_id?, turn_id, supported_frontend_intents, schema_version? }`, binary PCM frames, `TurnDone`, `TurnCancel`, `FrontendSkillResult { turn_id, intent_id, result }`.
+- **Outputs:** `TurnStreamServerEvent` events: `partial_transcript`, `intent_update`, `token`, `frontend_skill_intent`, `done`, `error`.
+- **Failure paths:** Odd-byte binary frames are rejected with an error event; unsupported frontend intents emit a fallback token; frontend skill execution failures are reported via `FrontendSkillResult` with `status=error`; WebSocket disconnect removes the session.
+- **Capability gating:** Each `TurnStart` carries `supported_frontend_intents`. The backend checks this list before routing `FrontendSkillIntent`; if the intent is unsupported, a fallback text token is emitted instead.
 
 ---
 
@@ -502,9 +480,9 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** Per-turn flow in `/v1/turns`, `/v1/turns/chunks`, and `/v1/turns/:turn_id/frontend-skill-result`; backend skill and dependency timings.
-- **Outputs:** Route-level, stage-level, skill-level, and dependency-level latency views for backend optimization passes. The `/v1/turns` stage breakdown includes `decode_request`, `merge_chunks`, `capability_resolution`, `classifier_prompt_build`, `classifier_llm_roundtrip`, `intent_parse_validate`, and `response_serialize`.
-- **SLO Gates:** For optimization passes, enforce p95 `< 300ms` on `/v1/turns` and continuously track p50/p95 for `classifier_llm_roundtrip` from `backend_turn_stage_duration_seconds{stage="classifier_llm_roundtrip"}`.
+- **Inputs:** Per-turn flow on `/turns/stream` WebSocket; backend skill and dependency timings.
+- **Outputs:** Route-level, stage-level, skill-level, and dependency-level latency views for backend optimization passes. The turn stage breakdown includes `stt_incremental`, `speculative_classify`, `speculative_generate`, `classifier_prompt_build`, `classifier_llm_roundtrip`, `intent_parse_validate`, and `frontend_skill_finalize`.
+- **SLO Gates:** For optimization passes, continuously track p50/p95 for `classifier_llm_roundtrip` from `backend_turn_stage_duration_seconds{stage="classifier_llm_roundtrip"}` and `backend_turn_first_token_duration_seconds`.
 - **Failure paths:** If a pass increases p95 latency or errors, disable its flag and continue with the next pass.
 
 ---
@@ -535,3 +513,38 @@ flowchart LR
 - **Scope:** Broadcast reaches the **local subnet only** (same as typical LAN discovery). Routers do not forward `255.255.255.255`.
 - **Outputs:** Frontend collects one or more candidate URLs, then selects a healthy backend via existing `/healthz` probing.
 - **Failure paths:** If the UDP bind fails, backend exits at startup; metrics record `backend_udp_discovery_listen_total{result="error"}`. Each `FIND` increments `backend_udp_discovery_requests_total`; each reply increments `backend_udp_discovery_responses_total`.
+
+---
+
+## 21. Duplex turn streaming (`/turns/stream`) with speculative backend execution
+
+**Purpose:** Minimize backend latency by turning audio ingest into a duplex WebSocket turn session that emits partial transcript and early routing/output before `turn_done`. This is the **sole** transport for the voice journey; no HTTP routes are used for audio or turn management.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Backend as aice-backend
+    participant STT as Incremental STT
+    participant LLM as Cradle provider
+
+    Client->>Backend: WS /turns/stream (upgrade)
+    Client->>Backend: text: turn_start {session_id,device_id?,turn_id,supported_frontend_intents}
+    loop speaking
+        Client->>Backend: binary: raw PCM i16 LE samples
+        Backend->>STT: transcribe rolling buffer (incremental window)
+        STT-->>Backend: partial transcript
+        Backend-->>Client: text: partial_transcript {turn_id,text,stable}
+        Backend->>LLM: speculative process_turn(transcript)
+        Backend-->>Client: text: intent_update {turn_id,intent="speculative_pending"}
+        Backend-->>Client: text: token or frontend_skill_intent (as soon as ready)
+    end
+    Client->>Backend: text: turn_done
+    Backend-->>Client: text: done {turn_id}
+```
+
+**Notes:**
+- **Dual-frame model:** Binary WebSocket frames carry raw PCM audio (i16 little-endian, 16 kHz mono). Text WebSocket frames carry JSON control messages (`TurnStreamClientMessage`) and server events (`TurnStreamServerEvent`). Odd-byte binary frames are rejected with an error event.
+- **Inputs:** WebSocket client messages `turn_start`, binary PCM frames, `turn_done`, `turn_cancel`, `frontend_skill_result`.
+- **Outputs:** WebSocket server events `partial_transcript`, `intent_update`, `token`, `frontend_skill_intent`, `done`, `error`.
+- **Latency instrumentation:** `backend_turn_partial_transcript_duration_seconds`, `backend_turn_first_token_duration_seconds`, `backend_turn_speculative_restarts_total`, `backend_turn_cancellations_total{reason}`, `backend_llm_provider_duration_seconds{provider}` plus stage labels `stt_incremental`, `speculative_classify`, `speculative_generate`.
+- **Failure paths:** Invalid message format/sequence or unsupported audio format emits `error`; transcript divergence aborts prior speculative run and increments cancellation/restart metrics; `turn_cancel` aborts active work and emits `done`; WebSocket disconnect cleans up the session.

@@ -1,17 +1,17 @@
 pub mod discovery_broadcast;
 
 use async_trait::async_trait;
-use base64::Engine;
 use bytes::Bytes;
 use chrono::{Datelike, NaiveDate, Utc};
 use core_config::{Config, WakeWordConfig};
-use core_llm::OllamaLlmStream;
+use core_llm::CradleLlmStream;
 use core_observability::{
-    record_backend_audio_chunk, record_backend_audio_finalize,
-    record_backend_audio_session_timeout, record_backend_dependency_request,
+    record_backend_audio_chunk, record_backend_dependency_request,
     record_backend_dependency_request_duration, record_backend_http_request,
-    record_backend_skill_execute, record_backend_skill_execute_duration,
-    record_backend_stt_flush_duration, record_backend_turn_duration,
+    record_backend_llm_provider_duration, record_backend_skill_execute,
+    record_backend_skill_execute_duration, record_backend_turn_cancellation,
+    record_backend_turn_duration, record_backend_turn_first_token_duration,
+    record_backend_turn_partial_transcript_duration, record_backend_turn_speculative_restart,
     record_backend_turn_stage_duration, record_backend_turn_total, record_palace_add_memory,
     record_palace_error, record_palace_ingest, record_palace_open, record_palace_search,
     record_palace_wake_up,
@@ -22,9 +22,8 @@ use core_orchestrator::{
     IntentClassifier, IntentDecision, LlmCallOptions, LlmStream, SttStream,
 };
 use core_runtime_protocol::{
-    sse_data_line, AudioChunkRequest, AudioFinalizeRequest, DoneReason, FrontendActivateRequest,
-    FrontendDeactivateRequest, FrontendHeartbeatRequest, FrontendSkillIntent,
-    FrontendSkillResultRequest, RuntimeEvent, TurnRequest, CURRENT_PROTOCOL_VERSION,
+    FrontendSkillIntent, FrontendSkillResultRequest, TurnRequest, TurnStreamClientMessage,
+    TurnStreamServerEvent,
 };
 use core_skills::{
     DistanceResult, DistanceSkill, FuelPriceLookupError, FuelPriceLookupQuery,
@@ -38,7 +37,7 @@ use core_skills::{
     ENABLED_SKILL_IDS,
 };
 use core_stt::WhisperSttStream;
-use futures::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -55,20 +54,19 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, warn};
 
 pub type DynError = Box<dyn Error + Send + Sync>;
 type RespBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
 type PalaceHandle = Arc<std::sync::Mutex<Palace>>;
-type PendingAudioTurns = Arc<Mutex<HashMap<AudioTurnKey, PendingAudioTurn>>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 type ClassifierPromptCache = Arc<RwLock<HashMap<String, ClassifierPromptArtifacts>>>;
 
-const DEFAULT_FRONTEND_SESSION_TTL_SECONDS: u64 = 120;
-const DEFAULT_AUDIO_IDLE_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_AUDIO_MAX_DURATION_MS: u64 = 20_000;
-const DEFAULT_AUDIO_MAX_BYTES: usize = 1_280_000;
+const MAX_BINARY_FRAME_BYTES: usize = 65_536;
 const FRONTEND_CLASSIFIER_SKILLS: [&str; 11] = [
     "skill_smart_home",
     "skill_assistant",
@@ -106,63 +104,23 @@ struct FrontendSessionKey {
 
 #[derive(Clone, Debug)]
 struct FrontendSessionState {
-    supported_frontend_intents: Vec<String>,
-    expires_at: Instant,
+    _supported_frontend_intents: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct AudioTurnKey {
-    device_id: String,
-    session_id: String,
-    turn_id: String,
-}
-
-#[derive(Clone, Debug)]
-struct PendingAudioTurn {
-    next_seq: u64,
-    sample_rate_hz: u32,
-    channels: u16,
-    samples: Vec<i16>,
-    bytes_received: usize,
-    first_chunk_at: Instant,
-    last_chunk_at: Instant,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AudioIngressConfig {
-    pub idle_timeout: Duration,
-    pub max_duration: Duration,
-    pub max_bytes: usize,
     pub wake_word: WakeWordConfig,
-}
-
-impl Default for AudioIngressConfig {
-    fn default() -> Self {
-        Self {
-            idle_timeout: Duration::from_millis(DEFAULT_AUDIO_IDLE_TIMEOUT_MS),
-            max_duration: Duration::from_millis(DEFAULT_AUDIO_MAX_DURATION_MS),
-            max_bytes: DEFAULT_AUDIO_MAX_BYTES,
-            wake_word: WakeWordConfig::default(),
-        }
-    }
 }
 
 impl AudioIngressConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            idle_timeout: Duration::from_millis(
-                config.service.audio_session_idle_timeout_ms.max(1),
-            ),
-            max_duration: Duration::from_millis(
-                config.service.audio_session_max_duration_ms.max(1),
-            ),
-            max_bytes: DEFAULT_AUDIO_MAX_BYTES,
             wake_word: config.wake_word.clone(),
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum BackendEngineDecision {
     Chat(String),
     BackendSkill(String),
@@ -273,8 +231,8 @@ pub async fn spawn_server_with_audio(
     let listener = TcpListener::bind(bind).await?;
     let local = listener.local_addr()?;
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-    let pending_audio_turns: PendingAudioTurns = Arc::new(Mutex::new(HashMap::new()));
     let frontend_sessions: FrontendSessions = Arc::new(Mutex::new(HashMap::new()));
+    let audio_config = Arc::new(audio_config);
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -287,14 +245,12 @@ pub async fn spawn_server_with_audio(
                     };
                     let io = TokioIo::new(stream);
                     let engine = engine.clone();
-                    let pending_audio_turns = pending_audio_turns.clone();
                     let frontend_sessions = frontend_sessions.clone();
                     let transcriber = transcriber.clone();
                     let audio_config = audio_config.clone();
                     tokio::spawn(async move {
                         let service = service_fn(move |req| {
                             let engine = engine.clone();
-                            let pending_audio_turns = pending_audio_turns.clone();
                             let frontend_sessions = frontend_sessions.clone();
                             let transcriber = transcriber.clone();
                             let audio_config = audio_config.clone();
@@ -302,7 +258,6 @@ pub async fn spawn_server_with_audio(
                                 handle_request(
                                     req,
                                     engine,
-                                    pending_audio_turns,
                                     frontend_sessions,
                                     transcriber,
                                     audio_config,
@@ -310,7 +265,11 @@ pub async fn spawn_server_with_audio(
                                 .await
                             }
                         });
-                        if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
+                        if let Err(error) = http1::Builder::new()
+                            .serve_connection(io, service)
+                            .with_upgrades()
+                            .await
+                        {
                             warn!(%error, "backend connection failed");
                         }
                     });
@@ -349,31 +308,6 @@ fn plain_response(status: StatusCode, body: &str) -> Response<RespBody> {
     response
 }
 
-fn sse_response(events: &[RuntimeEvent]) -> Response<RespBody> {
-    let body = events
-        .iter()
-        .filter_map(|event| sse_data_line(event).ok())
-        .collect::<Vec<_>>()
-        .join("");
-    let mut response = Response::new(full_body(body));
-    response.headers_mut().insert(
-        hyper::header::CONTENT_TYPE,
-        hyper::header::HeaderValue::from_static("text/event-stream"),
-    );
-    response.headers_mut().insert(
-        hyper::header::CACHE_CONTROL,
-        hyper::header::HeaderValue::from_static("no-cache"),
-    );
-    response
-}
-
-fn sse_response_timed(events: &[RuntimeEvent]) -> Response<RespBody> {
-    let started_at = Instant::now();
-    let response = sse_response(events);
-    record_backend_turn_stage_duration("sse_write", started_at.elapsed());
-    response
-}
-
 fn with_backend_http_metrics(
     method: &Method,
     route: &str,
@@ -387,13 +321,6 @@ fn with_backend_http_metrics(
         started_at.elapsed(),
     );
     response
-}
-
-async fn decode_json<T: for<'de> serde::Deserialize<'de>>(
-    req: Request<Incoming>,
-) -> Result<T, DynError> {
-    let bytes = req.collect().await?.to_bytes();
-    Ok(serde_json::from_slice::<T>(&bytes)?)
 }
 
 fn normalize_frontend_intent(intent: &str) -> Option<String> {
@@ -427,64 +354,29 @@ fn build_frontend_session_key(device_id: &str, session_id: &str) -> Option<Front
     })
 }
 
-async fn register_frontend_session(
+async fn register_ws_session(
     sessions: &FrontendSessions,
-    request: &FrontendActivateRequest,
-) -> Result<(), String> {
-    let key = build_frontend_session_key(&request.device_id, &request.session_id)
-        .ok_or_else(|| "device_id and session_id are required".to_string())?;
-    let supported_frontend_intents =
-        normalize_supported_frontend_intents(&request.supported_frontend_intents);
-    let ttl_secs = request
-        .expires_in_seconds
-        .unwrap_or(DEFAULT_FRONTEND_SESSION_TTL_SECONDS);
-    let expires_at = Instant::now() + Duration::from_secs(ttl_secs);
-    let mut guard = sessions.lock().await;
-    guard.insert(
-        key,
-        FrontendSessionState {
-            supported_frontend_intents,
-            expires_at,
-        },
-    );
-    Ok(())
-}
-
-async fn refresh_frontend_session(
-    sessions: &FrontendSessions,
-    request: &FrontendHeartbeatRequest,
-) -> Result<bool, String> {
-    let key = build_frontend_session_key(&request.device_id, &request.session_id)
-        .ok_or_else(|| "device_id and session_id are required".to_string())?;
-    let mut guard = sessions.lock().await;
-    let Some(state) = guard.get_mut(&key) else {
-        return Ok(false);
-    };
-    state.expires_at = Instant::now() + Duration::from_secs(DEFAULT_FRONTEND_SESSION_TTL_SECONDS);
-    Ok(true)
-}
-
-async fn remove_frontend_session(
-    sessions: &FrontendSessions,
-    request: &FrontendDeactivateRequest,
-) -> Result<bool, String> {
-    let key = build_frontend_session_key(&request.device_id, &request.session_id)
-        .ok_or_else(|| "device_id and session_id are required".to_string())?;
-    let mut guard = sessions.lock().await;
-    Ok(guard.remove(&key).is_some())
-}
-
-async fn lookup_frontend_capabilities(
-    sessions: &FrontendSessions,
-    device_id: Option<&str>,
+    device_id: &str,
     session_id: &str,
-) -> Option<Vec<String>> {
-    let key = build_frontend_session_key(device_id?, session_id)?;
-    let now = Instant::now();
-    let mut guard = sessions.lock().await;
-    guard.retain(|_, state| state.expires_at > now);
-    let state = guard.get(&key)?;
-    Some(state.supported_frontend_intents.clone())
+    supported_frontend_intents: &[String],
+) {
+    if let Some(key) = build_frontend_session_key(device_id, session_id) {
+        let intents = normalize_supported_frontend_intents(supported_frontend_intents);
+        let mut guard = sessions.lock().await;
+        guard.insert(
+            key,
+            FrontendSessionState {
+                _supported_frontend_intents: intents,
+            },
+        );
+    }
+}
+
+async fn remove_ws_session(sessions: &FrontendSessions, device_id: &str, session_id: &str) {
+    if let Some(key) = build_frontend_session_key(device_id, session_id) {
+        let mut guard = sessions.lock().await;
+        guard.remove(&key);
+    }
 }
 
 fn frontend_intent_allowed(intent: &str, supported_frontend_intents: Option<&[String]>) -> bool {
@@ -574,27 +466,6 @@ fn choose_classification_decision(
     IntentDecision::Chat
 }
 
-fn audio_turn_key(device_id: Option<&str>, session_id: &str, turn_id: &str) -> AudioTurnKey {
-    AudioTurnKey {
-        device_id: device_id.unwrap_or("unknown-device").to_string(),
-        session_id: session_id.to_string(),
-        turn_id: turn_id.to_string(),
-    }
-}
-
-fn prune_expired_audio_turns(
-    turns: &mut HashMap<AudioTurnKey, PendingAudioTurn>,
-    now: Instant,
-    idle_timeout: Duration,
-) {
-    let before = turns.len();
-    turns.retain(|_, state| now.duration_since(state.last_chunk_at) <= idle_timeout);
-    let removed = before.saturating_sub(turns.len());
-    for _ in 0..removed {
-        record_backend_audio_session_timeout();
-    }
-}
-
 fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> String {
     let trimmed = transcript.trim();
     if !config.enabled {
@@ -619,13 +490,545 @@ fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> Strin
     String::new()
 }
 
+#[derive(Debug)]
+struct WsTurnState {
+    session_id: String,
+    device_id: Option<String>,
+    turn_id: String,
+    supported_frontend_intents: Vec<String>,
+    samples: Vec<i16>,
+    started_at: Instant,
+    done_requested: bool,
+    first_partial_recorded: bool,
+    first_token_recorded: bool,
+    active_generation: u64,
+    active_transcript: Option<String>,
+    completed_generation: Option<u64>,
+    active_task: Option<tokio::task::JoinHandle<()>>,
+    awaiting_skill_result: bool,
+}
+
+impl WsTurnState {
+    fn new(
+        session_id: String,
+        device_id: Option<String>,
+        turn_id: String,
+        supported_frontend_intents: Vec<String>,
+    ) -> Self {
+        Self {
+            session_id,
+            device_id,
+            turn_id,
+            supported_frontend_intents,
+            samples: Vec::new(),
+            started_at: Instant::now(),
+            done_requested: false,
+            first_partial_recorded: false,
+            first_token_recorded: false,
+            active_generation: 0,
+            active_transcript: None,
+            completed_generation: None,
+            active_task: None,
+            awaiting_skill_result: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TurnStreamInternalEvent {
+    SpeculativeFinished {
+        turn_id: String,
+        generation: u64,
+        result: Result<BackendEngineDecision, String>,
+        duration: Duration,
+    },
+}
+
+fn websocket_upgrade_requested(req: &Request<Incoming>) -> bool {
+    let Some(upgrade) = req.headers().get(hyper::header::UPGRADE) else {
+        return false;
+    };
+    let Some(connection) = req.headers().get(hyper::header::CONNECTION) else {
+        return false;
+    };
+    let upgrade_value = upgrade.to_str().unwrap_or_default().to_ascii_lowercase();
+    let connection_value = connection.to_str().unwrap_or_default().to_ascii_lowercase();
+    upgrade_value.contains("websocket") && connection_value.contains("upgrade")
+}
+
+fn websocket_switching_response(accept_key: String) -> Response<RespBody> {
+    let mut response = Response::new(full_body(String::new()));
+    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+    response.headers_mut().insert(
+        hyper::header::UPGRADE,
+        hyper::header::HeaderValue::from_static("websocket"),
+    );
+    response.headers_mut().insert(
+        hyper::header::CONNECTION,
+        hyper::header::HeaderValue::from_static("Upgrade"),
+    );
+    if let Ok(value) = hyper::header::HeaderValue::from_str(&accept_key) {
+        response.headers_mut().insert("Sec-WebSocket-Accept", value);
+    }
+    response
+}
+
+async fn emit_turn_stream_event(
+    ws: &mut WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+    event: &TurnStreamServerEvent,
+) -> Result<(), DynError> {
+    ws.send(Message::Text(serde_json::to_string(event)?))
+        .await
+        .map_err(|error| format!("ws send failed: {error}"))?;
+    Ok(())
+}
+
+async fn emit_decision_events(
+    ws: &mut WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+    turn_id: &str,
+    decision: BackendEngineDecision,
+) -> Result<bool, DynError> {
+    match decision {
+        BackendEngineDecision::Chat(text) | BackendEngineDecision::BackendSkill(text) => {
+            emit_turn_stream_event(
+                ws,
+                &TurnStreamServerEvent::Token {
+                    turn_id: turn_id.to_string(),
+                    text,
+                },
+            )
+            .await?;
+            Ok(true)
+        }
+        BackendEngineDecision::FrontendSkillIntent(intent) => {
+            emit_turn_stream_event(ws, &TurnStreamServerEvent::FrontendSkillIntent(intent)).await?;
+            Ok(false)
+        }
+    }
+}
+
+fn spawn_speculative_turn(
+    state: &mut WsTurnState,
+    engine: Arc<dyn BackendEngine>,
+    transcript: String,
+    tx: mpsc::UnboundedSender<TurnStreamInternalEvent>,
+) {
+    state.active_generation = state.active_generation.saturating_add(1);
+    let generation = state.active_generation;
+    let turn_id = state.turn_id.clone();
+    let context = if state.supported_frontend_intents.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "frontend_supported_intents": state.supported_frontend_intents,
+        }))
+    };
+    let request = TurnRequest {
+        session_id: state.session_id.clone(),
+        device_id: state.device_id.clone(),
+        turn_id: Some(turn_id.clone()),
+        transcript,
+        finalize: false,
+        context,
+    };
+    let started = Instant::now();
+    let task = tokio::spawn(async move {
+        let result = engine
+            .process_turn(request)
+            .await
+            .map_err(|error| error.to_string());
+        record_backend_llm_provider_duration("cradle", started.elapsed());
+        let _ = tx.send(TurnStreamInternalEvent::SpeculativeFinished {
+            turn_id,
+            generation,
+            result,
+            duration: started.elapsed(),
+        });
+    });
+    state.active_task = Some(task);
+}
+
+async fn process_binary_audio_frame(
+    ws: &mut WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+    state: &mut WsTurnState,
+    engine: Arc<dyn BackendEngine>,
+    transcriber: &Arc<dyn AudioTranscriber>,
+    audio_config: &AudioIngressConfig,
+    internal_tx: &mpsc::UnboundedSender<TurnStreamInternalEvent>,
+    raw: &[u8],
+) -> Result<(), DynError> {
+    if !raw.len().is_multiple_of(2) {
+        emit_turn_stream_event(
+            ws,
+            &TurnStreamServerEvent::Error {
+                turn_id: Some(state.turn_id.clone()),
+                message: "binary frame byte length must be even (i16 LE)".to_string(),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    if raw.len() > MAX_BINARY_FRAME_BYTES {
+        emit_turn_stream_event(
+            ws,
+            &TurnStreamServerEvent::Error {
+                turn_id: Some(state.turn_id.clone()),
+                message: format!(
+                    "binary frame too large: {} bytes (max {})",
+                    raw.len(),
+                    MAX_BINARY_FRAME_BYTES
+                ),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    let chunk_started = Instant::now();
+    for frame in raw.chunks_exact(2) {
+        state.samples.push(i16::from_le_bytes([frame[0], frame[1]]));
+    }
+    record_backend_audio_chunk(raw.len(), chunk_started.elapsed());
+
+    let stt_started = Instant::now();
+    let transcript = transcriber
+        .transcribe(state.samples.clone(), 16_000, 1)
+        .await
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    record_backend_turn_stage_duration("stt_incremental", stt_started.elapsed());
+
+    let transcript = apply_backend_wake_word(&audio_config.wake_word, transcript);
+    if transcript.is_empty() {
+        return Ok(());
+    }
+
+    emit_turn_stream_event(
+        ws,
+        &TurnStreamServerEvent::PartialTranscript {
+            turn_id: state.turn_id.clone(),
+            text: transcript.clone(),
+            stable: true,
+        },
+    )
+    .await?;
+    if !state.first_partial_recorded {
+        state.first_partial_recorded = true;
+        record_backend_turn_partial_transcript_duration(state.started_at.elapsed());
+    }
+
+    if state.active_transcript.as_deref() == Some(transcript.as_str()) {
+        return Ok(());
+    }
+    if let Some(task) = state.active_task.take() {
+        task.abort();
+        record_backend_turn_speculative_restart();
+        record_backend_turn_cancellation("transcript_divergence");
+    }
+    state.active_transcript = Some(transcript.clone());
+    spawn_speculative_turn(state, engine, transcript, internal_tx.clone());
+    Ok(())
+}
+
+async fn handle_turn_stream_socket(
+    mut ws: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
+    engine: Arc<dyn BackendEngine>,
+    transcriber: Arc<dyn AudioTranscriber>,
+    frontend_sessions: FrontendSessions,
+    audio_config: Arc<AudioIngressConfig>,
+) -> Result<(), DynError> {
+    let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TurnStreamInternalEvent>();
+    let mut turn: Option<WsTurnState> = None;
+    let mut ws_session_id: Option<String> = None;
+    let mut ws_device_id: Option<String> = None;
+
+    let result = async {
+        loop {
+            tokio::select! {
+                maybe_msg = ws.next() => {
+                    let Some(msg) = maybe_msg else {
+                        break;
+                    };
+                    let msg = msg.map_err(|error| format!("ws read failed: {error}"))?;
+                    match msg {
+                        Message::Binary(raw) => {
+                            let Some(state) = turn.as_mut() else {
+                                emit_turn_stream_event(
+                                    &mut ws,
+                                    &TurnStreamServerEvent::Error {
+                                        turn_id: None,
+                                        message: "binary audio before turn_start".to_string(),
+                                    },
+                                )
+                                .await?;
+                                continue;
+                            };
+                            process_binary_audio_frame(
+                                &mut ws,
+                                state,
+                                engine.clone(),
+                                &transcriber,
+                                &audio_config,
+                                &internal_tx,
+                                &raw,
+                            )
+                            .await?;
+                        }
+                        Message::Text(payload) => {
+                            let incoming: TurnStreamClientMessage = match serde_json::from_str(payload.as_ref()) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    emit_turn_stream_event(
+                                        &mut ws,
+                                        &TurnStreamServerEvent::Error {
+                                            turn_id: turn.as_ref().map(|state| state.turn_id.clone()),
+                                            message: format!("invalid message: {error}"),
+                                        },
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                            };
+
+                            match incoming {
+                                TurnStreamClientMessage::TurnStart {
+                                    session_id,
+                                    device_id,
+                                    turn_id,
+                                    supported_frontend_intents,
+                                    ..
+                                } => {
+                                    if let Some(mut previous) = turn.take() {
+                                        if let Some(task) = previous.active_task.take() {
+                                            task.abort();
+                                        }
+                                    }
+                                    let dev = device_id.clone().unwrap_or_else(|| "unknown".to_string());
+                                    register_ws_session(
+                                        &frontend_sessions,
+                                        &dev,
+                                        &session_id,
+                                        &supported_frontend_intents,
+                                    )
+                                    .await;
+                                    ws_session_id = Some(session_id.clone());
+                                    ws_device_id = Some(dev);
+                                    let intents = normalize_supported_frontend_intents(&supported_frontend_intents);
+                                    turn = Some(WsTurnState::new(session_id, device_id, turn_id, intents));
+                                }
+                                TurnStreamClientMessage::TurnDone => {
+                                    let Some(state) = turn.as_mut() else {
+                                        emit_turn_stream_event(
+                                            &mut ws,
+                                            &TurnStreamServerEvent::Error {
+                                                turn_id: None,
+                                                message: "turn_done before turn_start".to_string(),
+                                            },
+                                        )
+                                        .await?;
+                                        continue;
+                                    };
+                                    state.done_requested = true;
+                                    if state.active_task.is_none() && state.completed_generation.is_none() {
+                                        let transcript = transcriber
+                                            .transcribe(state.samples.clone(), 16_000, 1)
+                                            .await
+                                            .map(|value| value.trim().to_string())
+                                            .unwrap_or_default();
+                                        let transcript = apply_backend_wake_word(&audio_config.wake_word, transcript);
+                                        if !transcript.is_empty() {
+                                            spawn_speculative_turn(
+                                                state,
+                                                engine.clone(),
+                                                transcript,
+                                                internal_tx.clone(),
+                                            );
+                                        } else {
+                                            emit_turn_stream_event(
+                                                &mut ws,
+                                                &TurnStreamServerEvent::Done {
+                                                    turn_id: state.turn_id.clone(),
+                                                },
+                                            )
+                                            .await?;
+                                            turn = None;
+                                        }
+                                    } else if state.active_task.is_none() && !state.awaiting_skill_result {
+                                        emit_turn_stream_event(
+                                            &mut ws,
+                                            &TurnStreamServerEvent::Done {
+                                                turn_id: state.turn_id.clone(),
+                                            },
+                                        )
+                                        .await?;
+                                        turn = None;
+                                    }
+                                }
+                                TurnStreamClientMessage::TurnCancel => {
+                                    if let Some(mut state) = turn.take() {
+                                        if let Some(task) = state.active_task.take() {
+                                            task.abort();
+                                        }
+                                        record_backend_turn_cancellation("client_cancel");
+                                        emit_turn_stream_event(
+                                            &mut ws,
+                                            &TurnStreamServerEvent::Done {
+                                                turn_id: state.turn_id,
+                                            },
+                                        )
+                                        .await?;
+                                    } else {
+                                        emit_turn_stream_event(
+                                            &mut ws,
+                                            &TurnStreamServerEvent::Error {
+                                                turn_id: None,
+                                                message: "turn_cancel before turn_start".to_string(),
+                                            },
+                                        )
+                                        .await?;
+                                    }
+                                }
+                                TurnStreamClientMessage::FrontendSkillResult {
+                                    turn_id,
+                                    intent_id: _,
+                                    result,
+                                } => {
+                                    let skill_started = Instant::now();
+                                    let finalize_result = engine
+                                        .finalize_frontend_skill(&turn_id, result)
+                                        .await;
+                                    record_backend_turn_duration("frontend_skill_finalize", skill_started.elapsed());
+                                    match finalize_result {
+                                        Ok(text) => {
+                                            record_backend_turn_total("frontend_skill_finalize", "success");
+                                            emit_turn_stream_event(
+                                                &mut ws,
+                                                &TurnStreamServerEvent::Token {
+                                                    turn_id: turn_id.clone(),
+                                                    text,
+                                                },
+                                            )
+                                            .await?;
+                                        }
+                                        Err(error) => {
+                                            record_backend_turn_total("frontend_skill_finalize", "error");
+                                            emit_turn_stream_event(
+                                                &mut ws,
+                                                &TurnStreamServerEvent::Error {
+                                                    turn_id: Some(turn_id.clone()),
+                                                    message: format!("finalize error: {error}"),
+                                                },
+                                            )
+                                            .await?;
+                                        }
+                                    }
+                                    emit_turn_stream_event(
+                                        &mut ws,
+                                        &TurnStreamServerEvent::Done { turn_id },
+                                    )
+                                    .await?;
+                                    turn = None;
+                                }
+                            }
+                        }
+                        Message::Ping(payload) => {
+                            let _ = ws.send(Message::Pong(payload)).await;
+                        }
+                        Message::Close(_) => break,
+                        _ => continue,
+                    }
+                }
+                maybe_internal = internal_rx.recv() => {
+                    let Some(internal) = maybe_internal else {
+                        continue;
+                    };
+                    let Some(state) = turn.as_mut() else {
+                        continue;
+                    };
+                    match internal {
+                        TurnStreamInternalEvent::SpeculativeFinished { turn_id, generation, result, duration } => {
+                            if state.turn_id != turn_id || generation != state.active_generation {
+                                continue;
+                            }
+                            record_backend_turn_stage_duration("speculative_generate", duration);
+                            state.active_task = None;
+                            state.completed_generation = Some(generation);
+                            match result {
+                                Ok(decision) => {
+                                    let frontend_caps: Option<Vec<String>> = if state.supported_frontend_intents.is_empty() {
+                                        None
+                                    } else {
+                                        Some(state.supported_frontend_intents.clone())
+                                    };
+                                    if let BackendEngineDecision::FrontendSkillIntent(ref intent) = decision {
+                                        if !frontend_intent_allowed(&intent.intent, frontend_caps.as_deref()) {
+                                            record_backend_turn_total("frontend_skill_capability_gate", "fallback");
+                                            emit_turn_stream_event(
+                                                &mut ws,
+                                                &TurnStreamServerEvent::Token {
+                                                    turn_id: state.turn_id.clone(),
+                                                    text: "That action is not available on this active frontend.".to_string(),
+                                                },
+                                            )
+                                            .await?;
+                                            if !state.first_token_recorded {
+                                                state.first_token_recorded = true;
+                                                record_backend_turn_first_token_duration(state.started_at.elapsed());
+                                            }
+                                        } else {
+                                            emit_decision_events(&mut ws, state.turn_id.as_str(), decision).await?;
+                                            state.awaiting_skill_result = true;
+                                        }
+                                    } else {
+                                        let emitted_token = emit_decision_events(&mut ws, state.turn_id.as_str(), decision).await?;
+                                        if emitted_token && !state.first_token_recorded {
+                                            state.first_token_recorded = true;
+                                            record_backend_turn_first_token_duration(state.started_at.elapsed());
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    emit_turn_stream_event(
+                                        &mut ws,
+                                        &TurnStreamServerEvent::Error {
+                                            turn_id: Some(state.turn_id.clone()),
+                                            message: format!("backend error: {error}"),
+                                        },
+                                    )
+                                    .await?;
+                                }
+                            }
+                            if state.done_requested && !state.awaiting_skill_result {
+                                emit_turn_stream_event(
+                                    &mut ws,
+                                    &TurnStreamServerEvent::Done {
+                                        turn_id: state.turn_id.clone(),
+                                    },
+                                )
+                                .await?;
+                                turn = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok::<(), DynError>(())
+    }
+    .await;
+
+    if let (Some(sid), Some(did)) = (ws_session_id, ws_device_id) {
+        remove_ws_session(&frontend_sessions, &did, &sid).await;
+    }
+
+    result
+}
+
 async fn handle_request(
     req: Request<Incoming>,
     engine: Arc<dyn BackendEngine>,
-    pending_audio_turns: PendingAudioTurns,
     frontend_sessions: FrontendSessions,
     transcriber: Arc<dyn AudioTranscriber>,
-    audio_config: AudioIngressConfig,
+    audio_config: Arc<AudioIngressConfig>,
 ) -> Result<Response<RespBody>, Infallible> {
     let request_started_at = Instant::now();
     let method = req.method().clone();
@@ -652,544 +1055,72 @@ async fn handle_request(
         ));
     }
 
-    if method == Method::POST && path == "/v1/frontends/activate" {
-        let started_at = Instant::now();
-        let request = match decode_json::<FrontendActivateRequest>(req).await {
-            Ok(value) => value,
-            Err(error) => {
-                record_backend_turn_total("frontend_activate", "error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/frontends/activate",
-                    request_started_at,
-                    json_response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error": format!("invalid request body: {error}")}),
-                    ),
-                ));
-            }
-        };
-        info!(
-            device_id = %request.device_id,
-            session_id = %request.session_id,
-            platform = %request.platform,
-            frontend_version = %request.frontend_version,
-            supported_frontend_intents = ?request.supported_frontend_intents,
-            expires_in_seconds = ?request.expires_in_seconds,
-            protocol_version = ?request.protocol_version,
-            "frontend activate request received"
-        );
-        if request.protocol_version != Some(CURRENT_PROTOCOL_VERSION) {
-            let version = request
-                .protocol_version
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "missing".to_string());
-            record_backend_turn_total("frontend_activate", "error");
+    if method == Method::GET && path == "/turns/stream" {
+        if !websocket_upgrade_requested(&req) {
             return Ok(with_backend_http_metrics(
                 &method,
-                "/v1/frontends/activate",
+                "/turns/stream",
                 request_started_at,
                 json_response(
                     StatusCode::BAD_REQUEST,
-                    json!({"error": format!("unsupported protocol_version {version}; expected {CURRENT_PROTOCOL_VERSION}")}),
+                    json!({"error":"expected websocket upgrade request"}),
                 ),
             ));
         }
-        let status = match register_frontend_session(&frontend_sessions, &request).await {
-            Ok(()) => {
-                record_backend_turn_total("frontend_activate", "success");
-                StatusCode::ACCEPTED
-            }
-            Err(error) => {
-                record_backend_turn_total("frontend_activate", "error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/frontends/activate",
-                    request_started_at,
-                    json_response(StatusCode::BAD_REQUEST, json!({ "error": error })),
-                ));
-            }
-        };
-        record_backend_turn_duration("frontend_activate", started_at.elapsed());
-        return Ok(with_backend_http_metrics(
-            &method,
-            "/v1/frontends/activate",
-            request_started_at,
-            plain_response(status, "accepted"),
-        ));
-    }
-
-    if method == Method::POST && path == "/v1/frontends/heartbeat" {
-        let started_at = Instant::now();
-        let request = match decode_json::<FrontendHeartbeatRequest>(req).await {
-            Ok(value) => value,
-            Err(error) => {
-                record_backend_turn_total("frontend_heartbeat", "error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/frontends/heartbeat",
-                    request_started_at,
-                    json_response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error": format!("invalid request body: {error}")}),
-                    ),
-                ));
-            }
-        };
-        let refreshed = match refresh_frontend_session(&frontend_sessions, &request).await {
-            Ok(found) => found,
-            Err(error) => {
-                record_backend_turn_total("frontend_heartbeat", "error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/frontends/heartbeat",
-                    request_started_at,
-                    json_response(StatusCode::BAD_REQUEST, json!({ "error": error })),
-                ));
-            }
-        };
-        record_backend_turn_total(
-            "frontend_heartbeat",
-            if refreshed { "success" } else { "missing" },
-        );
-        record_backend_turn_duration("frontend_heartbeat", started_at.elapsed());
-        return Ok(with_backend_http_metrics(
-            &method,
-            "/v1/frontends/heartbeat",
-            request_started_at,
-            plain_response(StatusCode::ACCEPTED, "accepted"),
-        ));
-    }
-
-    if method == Method::POST && path == "/v1/frontends/deactivate" {
-        let started_at = Instant::now();
-        let request = match decode_json::<FrontendDeactivateRequest>(req).await {
-            Ok(value) => value,
-            Err(error) => {
-                record_backend_turn_total("frontend_deactivate", "error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/frontends/deactivate",
-                    request_started_at,
-                    json_response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error": format!("invalid request body: {error}")}),
-                    ),
-                ));
-            }
-        };
-        let removed = match remove_frontend_session(&frontend_sessions, &request).await {
-            Ok(found) => found,
-            Err(error) => {
-                record_backend_turn_total("frontend_deactivate", "error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/frontends/deactivate",
-                    request_started_at,
-                    json_response(StatusCode::BAD_REQUEST, json!({ "error": error })),
-                ));
-            }
-        };
-        record_backend_turn_total(
-            "frontend_deactivate",
-            if removed { "success" } else { "missing" },
-        );
-        record_backend_turn_duration("frontend_deactivate", started_at.elapsed());
-        return Ok(with_backend_http_metrics(
-            &method,
-            "/v1/frontends/deactivate",
-            request_started_at,
-            plain_response(StatusCode::ACCEPTED, "accepted"),
-        ));
-    }
-
-    if method == Method::POST && path == "/v1/turns/audio-chunks" {
-        let chunk_started = Instant::now();
-        let request = match decode_json::<AudioChunkRequest>(req).await {
-            Ok(value) => value,
-            Err(error) => {
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/turns/audio-chunks",
-                    request_started_at,
-                    json_response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error": format!("invalid request body: {error}")}),
-                    ),
-                ));
-            }
-        };
-        if request.sample_rate_hz != 16_000 || request.channels != 1 {
+        let ws_key = req
+            .headers()
+            .get("Sec-WebSocket-Key")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_string());
+        let Some(ws_key) = ws_key else {
             return Ok(with_backend_http_metrics(
                 &method,
-                "/v1/turns/audio-chunks",
+                "/turns/stream",
                 request_started_at,
                 json_response(
                     StatusCode::BAD_REQUEST,
-                    json!({"error":"unsupported audio format; expected 16kHz mono PCM s16le"}),
+                    json!({"error":"missing Sec-WebSocket-Key"}),
                 ),
             ));
-        }
-        let decoded =
-            match base64::engine::general_purpose::STANDARD.decode(&request.pcm_s16le_base64) {
+        };
+        let accept_key = derive_accept_key(ws_key.as_bytes());
+        let on_upgrade = hyper::upgrade::on(req);
+        let ws_engine = engine.clone();
+        let ws_transcriber = transcriber.clone();
+        let ws_sessions = frontend_sessions.clone();
+        let ws_audio_config = audio_config.clone();
+        tokio::spawn(async move {
+            let upgraded = match on_upgrade.await {
                 Ok(value) => value,
                 Err(error) => {
-                    return Ok(with_backend_http_metrics(
-                        &method,
-                        "/v1/turns/audio-chunks",
-                        request_started_at,
-                        json_response(
-                            StatusCode::BAD_REQUEST,
-                            json!({"error": format!("invalid base64 payload: {error}")}),
-                        ),
-                    ));
+                    warn!(%error, "websocket upgrade failed");
+                    return;
                 }
             };
-        if decoded.len() % 2 != 0 {
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-chunks",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"pcm payload byte length must be even"}),
-                ),
-            ));
-        }
-        let key = audio_turn_key(
-            request.device_id.as_deref(),
-            &request.session_id,
-            &request.turn_id,
-        );
-        let now = Instant::now();
-        let mut turns = pending_audio_turns.lock().await;
-        prune_expired_audio_turns(&mut turns, now, audio_config.idle_timeout);
-        let entry = turns.entry(key).or_insert_with(|| PendingAudioTurn {
-            next_seq: 0,
-            sample_rate_hz: request.sample_rate_hz,
-            channels: request.channels,
-            samples: Vec::new(),
-            bytes_received: 0,
-            first_chunk_at: now,
-            last_chunk_at: now,
-        });
-        if request.seq != entry.next_seq {
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-chunks",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": format!("out-of-order chunk sequence: expected {}, got {}", entry.next_seq, request.seq)}),
-                ),
-            ));
-        }
-        if request.sample_rate_hz != entry.sample_rate_hz || request.channels != entry.channels {
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-chunks",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"audio format changed within turn"}),
-                ),
-            ));
-        }
-        let projected_bytes = entry.bytes_received.saturating_add(decoded.len());
-        if projected_bytes > audio_config.max_bytes {
-            turns.remove(&audio_turn_key(
-                request.device_id.as_deref(),
-                &request.session_id,
-                &request.turn_id,
-            ));
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-chunks",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"audio turn exceeded max bytes"}),
-                ),
-            ));
-        }
-        if now.duration_since(entry.first_chunk_at) > audio_config.max_duration {
-            turns.remove(&audio_turn_key(
-                request.device_id.as_deref(),
-                &request.session_id,
-                &request.turn_id,
-            ));
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-chunks",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"audio turn exceeded max duration"}),
-                ),
-            ));
-        }
-        for frame in decoded.chunks_exact(2) {
-            entry.samples.push(i16::from_le_bytes([frame[0], frame[1]]));
-        }
-        entry.bytes_received = projected_bytes;
-        entry.next_seq = entry.next_seq.saturating_add(1);
-        entry.last_chunk_at = now;
-        record_backend_audio_chunk(decoded.len(), chunk_started.elapsed());
-        return Ok(with_backend_http_metrics(
-            &method,
-            "/v1/turns/audio-chunks",
-            request_started_at,
-            plain_response(StatusCode::ACCEPTED, "accepted"),
-        ));
-    }
-
-    if method == Method::POST && path == "/v1/turns/audio-finalize" {
-        let decode_started = Instant::now();
-        let request = match decode_json::<AudioFinalizeRequest>(req).await {
-            Ok(value) => value,
-            Err(error) => {
-                record_backend_audio_finalize("error");
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/turns/audio-finalize",
-                    request_started_at,
-                    json_response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error": format!("invalid request body: {error}")}),
-                    ),
-                ));
-            }
-        };
-        record_backend_turn_stage_duration("decode_request", decode_started.elapsed());
-        if request.done_reason != DoneReason::VadEnd {
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-finalize",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"unsupported done_reason"}),
-                ),
-            ));
-        }
-        let merge_started = Instant::now();
-        let maybe_turn = {
-            let mut turns = pending_audio_turns.lock().await;
-            let now = Instant::now();
-            prune_expired_audio_turns(&mut turns, now, audio_config.idle_timeout);
-            turns.remove(&audio_turn_key(
-                request.device_id.as_deref(),
-                &request.session_id,
-                &request.turn_id,
-            ))
-        };
-        let Some(pending_turn) = maybe_turn else {
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-finalize",
-                request_started_at,
-                json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error":"no pending audio turn for finalize"}),
-                ),
-            ));
-        };
-        record_backend_turn_stage_duration("merge_audio", merge_started.elapsed());
-        let stt_started = Instant::now();
-        let mut transcript = match transcriber
-            .transcribe(
-                pending_turn.samples,
-                pending_turn.sample_rate_hz,
-                pending_turn.channels,
+            let io = TokioIo::new(upgraded);
+            let ws = WebSocketStream::from_raw_socket(
+                io,
+                tokio_tungstenite::tungstenite::protocol::Role::Server,
+                None,
+            )
+            .await;
+            if let Err(error) = handle_turn_stream_socket(
+                ws,
+                ws_engine,
+                ws_transcriber,
+                ws_sessions,
+                ws_audio_config,
             )
             .await
-        {
-            Ok(value) => value.trim().to_string(),
-            Err(error) => {
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/turns/audio-finalize",
-                    request_started_at,
-                    sse_response_timed(&[
-                        RuntimeEvent::Error {
-                            message: format!("backend stt error: {error}"),
-                        },
-                        RuntimeEvent::Done,
-                    ]),
-                ));
-            }
-        };
-        record_backend_stt_flush_duration(stt_started.elapsed());
-        record_backend_turn_stage_duration("stt_flush", stt_started.elapsed());
-        transcript = apply_backend_wake_word(&audio_config.wake_word, transcript);
-        if transcript.is_empty() {
-            record_backend_audio_finalize("empty");
-            return Ok(with_backend_http_metrics(
-                &method,
-                "/v1/turns/audio-finalize",
-                request_started_at,
-                sse_response_timed(&[RuntimeEvent::Done]),
-            ));
-        }
-        let mut turn_request = TurnRequest {
-            session_id: request.session_id.clone(),
-            device_id: request.device_id.clone(),
-            turn_id: Some(request.turn_id.clone()),
-            transcript,
-            finalize: true,
-            context: None,
-        };
-        let capability_started = Instant::now();
-        let frontend_capabilities = lookup_frontend_capabilities(
-            &frontend_sessions,
-            turn_request.device_id.as_deref(),
-            &turn_request.session_id,
-        )
-        .await;
-        if let Some(capabilities) = frontend_capabilities.as_ref() {
-            let context_value = turn_request.context.take().unwrap_or_else(|| json!({}));
-            let mut context_object = match context_value {
-                Value::Object(obj) => obj,
-                other => {
-                    let mut obj = serde_json::Map::new();
-                    obj.insert("upstream_context".to_string(), other);
-                    obj
-                }
-            };
-            context_object.insert(
-                "frontend_supported_intents".to_string(),
-                json!(capabilities),
-            );
-            turn_request.context = Some(Value::Object(context_object));
-        }
-        record_backend_turn_stage_duration("capability_resolution", capability_started.elapsed());
-        info!(
-            session_id = %turn_request.session_id,
-            device_id = turn_request.device_id.as_deref().unwrap_or(""),
-            turn_id = turn_request.turn_id.as_deref().unwrap_or(""),
-            transcript = %turn_request.transcript,
-            "backend audio finalize request received"
-        );
-
-        let started_at = Instant::now();
-        let result = engine.process_turn(turn_request).await;
-        record_backend_turn_duration("turn", started_at.elapsed());
-        record_backend_audio_finalize(if result.is_ok() { "success" } else { "error" });
-
-        return Ok(with_backend_http_metrics(
-            &method,
-            "/v1/turns/audio-finalize",
-            request_started_at,
             {
-                let response_serialize_started = Instant::now();
-                let response = match result {
-                    Ok(BackendEngineDecision::Chat(text)) => {
-                        info!("backend routed turn to chat");
-                        record_backend_turn_total("chat", "success");
-                        sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-                    }
-                    Ok(BackendEngineDecision::BackendSkill(text)) => {
-                        info!("backend routed turn to backend skill");
-                        record_backend_turn_total("backend_skill", "success");
-                        sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-                    }
-                    Ok(BackendEngineDecision::FrontendSkillIntent(intent)) => {
-                        if !frontend_intent_allowed(
-                            &intent.intent,
-                            frontend_capabilities.as_deref(),
-                        ) {
-                            record_backend_turn_total("frontend_skill_capability_gate", "fallback");
-                            sse_response_timed(&[
-                                RuntimeEvent::Token {
-                                    text: "That action is not available on this active frontend."
-                                        .to_string(),
-                                },
-                                RuntimeEvent::Done,
-                            ])
-                        } else {
-                            info!(
-                                intent = %intent.intent,
-                                turn_id = %intent.turn_id,
-                                "backend routed turn to frontend skill intent"
-                            );
-                            record_backend_turn_total("frontend_skill", "success");
-                            sse_response_timed(&[
-                                RuntimeEvent::FrontendSkillIntent(intent),
-                                RuntimeEvent::Done,
-                            ])
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "backend turn request failed");
-                        record_backend_turn_total("turn", "error");
-                        sse_response_timed(&[
-                            RuntimeEvent::Error {
-                                message: format!("backend error: {error}"),
-                            },
-                            RuntimeEvent::Done,
-                        ])
-                    }
-                };
-                record_backend_turn_stage_duration(
-                    "response_serialize",
-                    response_serialize_started.elapsed(),
-                );
-                response
-            },
-        ));
-    }
-
-    if method == Method::POST
-        && path.starts_with("/v1/turns/")
-        && path.ends_with("/frontend-skill-result")
-    {
-        let turn_id = path
-            .trim_start_matches("/v1/turns/")
-            .trim_end_matches("/frontend-skill-result")
-            .trim_end_matches('/');
-        let request = match decode_json::<FrontendSkillResultRequest>(req).await {
-            Ok(value) => value,
-            Err(error) => {
-                return Ok(with_backend_http_metrics(
-                    &method,
-                    "/v1/turns/:turn_id/frontend-skill-result",
-                    request_started_at,
-                    json_response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error": format!("invalid request body: {error}")}),
-                    ),
-                ));
+                warn!(%error, "turn stream websocket session failed");
             }
-        };
-        info!(
-            turn_id = %turn_id,
-            status = %request.status,
-            "backend frontend-skill-result received"
-        );
-
-        let started_at = Instant::now();
-        let result = engine.finalize_frontend_skill(turn_id, request).await;
-        record_backend_turn_duration("frontend_skill_finalize", started_at.elapsed());
-
+        });
         return Ok(with_backend_http_metrics(
             &method,
-            "/v1/turns/:turn_id/frontend-skill-result",
+            "/turns/stream",
             request_started_at,
-            match result {
-                Ok(text) => {
-                    record_backend_turn_total("frontend_skill_finalize", "success");
-                    sse_response_timed(&[RuntimeEvent::Token { text }, RuntimeEvent::Done])
-                }
-                Err(error) => {
-                    record_backend_turn_total("frontend_skill_finalize", "error");
-                    sse_response_timed(&[
-                        RuntimeEvent::Error {
-                            message: format!("finalize error: {error}"),
-                        },
-                        RuntimeEvent::Done,
-                    ])
-                }
-            },
+            websocket_switching_response(accept_key),
         ));
     }
 
@@ -1202,7 +1133,7 @@ async fn handle_request(
 }
 
 pub struct AiceBackendEngine {
-    llm: Arc<OllamaLlmStream>,
+    llm: Arc<CradleLlmStream>,
     weather_skill: OpenMeteoWeatherSkill,
     time_skill: OpenMeteoTimeSkill,
     distance_skill: OpenMeteoDistanceSkill,
@@ -1268,7 +1199,7 @@ where
 
 impl AiceBackendEngine {
     pub async fn from_config(config: &Config) -> Result<Self, DynError> {
-        let llm = OllamaLlmStream::new(
+        let llm = CradleLlmStream::new(
             config.ollama_url.clone(),
             config.model.clone(),
             config.llm.short_replies,
@@ -1361,10 +1292,12 @@ impl AiceBackendEngine {
             .llm
             .chat_stream(user_text, history, system_prompt_override, call_options)
             .await?;
+        let llm_started = Instant::now();
         let mut output = String::new();
         while let Some(token) = stream.next().await {
             output.push_str(&token);
         }
+        record_backend_llm_provider_duration("cradle", llm_started.elapsed());
         debug!(
             operation,
             llm_output = %output.trim(),
@@ -1388,10 +1321,12 @@ impl AiceBackendEngine {
             has_system_prompt_override = system_prompt_override.is_some(),
             "llm_input_nonstream"
         );
+        let llm_started = Instant::now();
         let output = self
             .llm
             .chat_once(user_text, history, system_prompt_override, call_options)
             .await?;
+        record_backend_llm_provider_duration("cradle", llm_started.elapsed());
         debug!(
             operation,
             llm_output = %output.trim(),
