@@ -31,7 +31,7 @@ core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
 core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "a76c6b4ba0b41a3bd22a8e3cb9d1e9d19a9b10f7", default-features = false, features = ["core-common"] }
 skill-chain = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "a76c6b4ba0b41a3bd22a8e3cb9d1e9d19a9b10f7" }
-mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", rev = "59370cf05a82ea690759b6d4c757a81328e8478b", default-features = false }
+mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", rev = "12ed9841494915e7c8902e8bdc5a891ef27dc2f3", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
