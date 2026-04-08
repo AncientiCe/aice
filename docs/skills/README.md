@@ -15,7 +15,6 @@ All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aic
 | Horoscope Daily | `skill-horoscope-daily` | Backend-owned (`aice-backend`), `HttpHoroscopeDailySkill` | [horoscope-daily.md](horoscope-daily.md) |
 | Media | `skill-media` | Frontend-owned (`aice-macos`), `MacOsMusicSkill` | [media.md](media.md) |
 | Message | `skill-message` | Frontend-owned (`aice-macos`), `MacOsMessagesSkill` | [message.md](message.md) |
-| Memory | `skill-memory` | Backend-owned (`aice-backend`), `SqliteMemorySkill` | [memory.md](memory.md) |
 | News Headlines | `skill-news-headlines` | Backend-owned (`aice-backend`), `HttpNewsHeadlinesSkill` | [news-headlines.md](news-headlines.md) |
 | Reminder | `skill-reminder` | Frontend-owned (`aice-macos`), `MacOsReminderSkill` | [reminder.md](reminder.md) |
 | Screenshot | `skill-screenshot` | Frontend-owned (`aice-macos`), `MacOsScreenshotSkill` | [screenshot.md](screenshot.md) |
@@ -27,7 +26,9 @@ All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aic
 | Volume | `skill-volume` | Frontend-owned (`aice-macos`), `MacOsVolumeSkill` | [volume.md](volume.md) |
 | Weather | `skill-weather` | Backend-owned (`aice-backend`), `OpenMeteoWeatherSkill` | [weather.md](weather.md) |
 
-Backend-owned skills (`weather`, `time`, `distance`, `smart-home`, `memory`) emit shared backend metrics:
+Memory is no longer a skill; it is core infrastructure embedded in `aice-backend` via the Memory Palace (`mempalace-rs`). See [§7 in architecture docs](../architecture/README.md#7-memory-palace-core-persistent-memory).
+
+Backend-owned skills (`weather`, `time`, `distance`, `smart-home`) emit shared backend metrics:
 `backend_skill_execute_total`, `backend_skill_execute_duration_seconds`, and where applicable dependency metrics (`backend_dependency_requests_total`, `backend_dependency_request_duration_seconds`).
 
 ## Document Structure

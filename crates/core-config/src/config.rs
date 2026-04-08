@@ -408,6 +408,12 @@ pub struct MemoryConfig {
     /// SQLite database file path for long-term memory.
     #[serde(default = "default_memory_sqlite_path")]
     pub sqlite_path: String,
+    /// Path to the memory palace SQLite database file.
+    #[serde(default = "default_palace_db_path")]
+    pub palace_db_path: String,
+    /// Path to the memory palace identity file (L0 context).
+    #[serde(default = "default_palace_identity_path")]
+    pub palace_identity_path: String,
 }
 
 fn default_memory_enabled() -> bool {
@@ -434,6 +440,16 @@ fn default_memory_sqlite_path() -> String {
     "memory.sqlite".to_string()
 }
 
+fn default_palace_db_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    format!("{home}/.mempalace/palace/palace.db")
+}
+
+fn default_palace_identity_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    format!("{home}/.mempalace/identity.txt")
+}
+
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
@@ -443,6 +459,8 @@ impl Default for MemoryConfig {
             max_facts: default_max_facts(),
             autosave: default_memory_autosave(),
             sqlite_path: default_memory_sqlite_path(),
+            palace_db_path: default_palace_db_path(),
+            palace_identity_path: default_palace_identity_path(),
         }
     }
 }
@@ -614,6 +632,14 @@ mod tests {
         assert_eq!(config.memory.path, "memory.json");
         assert_eq!(config.memory.max_recent_turns, 10);
         assert_eq!(config.memory.sqlite_path, "memory.sqlite");
+        assert!(config
+            .memory
+            .palace_db_path
+            .ends_with(".mempalace/palace/palace.db"));
+        assert!(config
+            .memory
+            .palace_identity_path
+            .ends_with(".mempalace/identity.txt"));
     }
 
     #[test]

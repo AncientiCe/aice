@@ -9,7 +9,9 @@ use core_observability::{
     record_backend_dependency_request, record_backend_dependency_request_duration,
     record_backend_http_request, record_backend_skill_execute,
     record_backend_skill_execute_duration, record_backend_turn_duration,
-    record_backend_turn_stage_duration, record_backend_turn_total,
+    record_backend_turn_stage_duration, record_backend_turn_total, record_palace_add_memory,
+    record_palace_error, record_palace_ingest, record_palace_open, record_palace_search,
+    record_palace_wake_up,
 };
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
@@ -39,28 +41,29 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use mempalace::palace::Palace;
 use serde_json::{json, Value};
 use skill_chain::EffectiveCapabilities;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::error::Error;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub type DynError = Box<dyn Error + Send + Sync>;
 type RespBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
-type SessionHistory = Arc<Mutex<HashMap<String, Vec<(String, String)>>>>;
+type PalaceHandle = Arc<std::sync::Mutex<Palace>>;
 type TurnChunks = Arc<Mutex<HashMap<String, String>>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 type ClassifierPromptCache = Arc<RwLock<HashMap<String, ClassifierPromptArtifacts>>>;
 
 const DEFAULT_FRONTEND_SESSION_TTL_SECONDS: u64 = 120;
-const FRONTEND_CLASSIFIER_SKILLS: [&str; 12] = [
+const FRONTEND_CLASSIFIER_SKILLS: [&str; 11] = [
     "skill_smart_home",
-    "skill_memory",
     "skill_assistant",
     "skill_media",
     "skill_computer",
@@ -852,7 +855,7 @@ pub struct AiceBackendEngine {
     fuel_price_lookup_skill: HttpFuelPriceLookupSkill,
     horoscope_daily_skill: HttpHoroscopeDailySkill,
     news_headlines_skill: HttpNewsHeadlinesSkill,
-    session_history: SessionHistory,
+    palace: PalaceHandle,
     turn_counter: Arc<std::sync::atomic::AtomicU64>,
     resolved_location: Option<ResolvedLocation>,
     skip_secondary_llm_for_skill_answers: bool,
@@ -908,7 +911,7 @@ where
 }
 
 impl AiceBackendEngine {
-    pub async fn from_config(config: &Config) -> Self {
+    pub async fn from_config(config: &Config) -> Result<Self, DynError> {
         let llm = OllamaLlmStream::new(
             config.ollama_url.clone(),
             config.model.clone(),
@@ -918,7 +921,46 @@ impl AiceBackendEngine {
         );
         let weather_skill = OpenMeteoWeatherSkill::new();
         let resolved_location = resolve_startup_location(config, &weather_skill).await;
-        Self {
+
+        let palace = if config.memory.enabled {
+            let db_path = config.memory.palace_db_path.clone();
+            let identity_path = config.memory.palace_identity_path.clone();
+            let open_start = Instant::now();
+            match Palace::open_paths(Path::new(&db_path), Path::new(&identity_path)) {
+                Ok(p) => {
+                    record_palace_open("success", open_start.elapsed());
+                    info!(
+                        palace_db = %db_path,
+                        palace_identity = %identity_path,
+                        "memory palace opened"
+                    );
+                    Arc::new(std::sync::Mutex::new(p))
+                }
+                Err(error) => {
+                    record_palace_open("error", open_start.elapsed());
+                    record_palace_error("open");
+                    warn!(%error, "failed to open memory palace; falling back to in-memory");
+                    match Palace::open_in_memory() {
+                        Ok(p) => Arc::new(std::sync::Mutex::new(p)),
+                        Err(fatal) => {
+                            error!(%fatal, "in-memory palace also failed");
+                            return Err(format!("palace init failed: {fatal}").into());
+                        }
+                    }
+                }
+            }
+        } else {
+            info!("memory palace disabled; using in-memory instance");
+            match Palace::open_in_memory() {
+                Ok(p) => Arc::new(std::sync::Mutex::new(p)),
+                Err(fatal) => {
+                    error!(%fatal, "in-memory palace failed");
+                    return Err(format!("palace init failed: {fatal}").into());
+                }
+            }
+        };
+
+        Ok(Self {
             llm: Arc::new(llm),
             weather_skill,
             time_skill: OpenMeteoTimeSkill::new(),
@@ -928,7 +970,7 @@ impl AiceBackendEngine {
             fuel_price_lookup_skill: HttpFuelPriceLookupSkill::new(),
             horoscope_daily_skill: HttpHoroscopeDailySkill::new(),
             news_headlines_skill: HttpNewsHeadlinesSkill::new(),
-            session_history: Arc::new(Mutex::new(HashMap::new())),
+            palace,
             turn_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             resolved_location,
             skip_secondary_llm_for_skill_answers: config.llm.skip_secondary_llm_for_skill_answers,
@@ -940,7 +982,7 @@ impl AiceBackendEngine {
                 retry_on_invalid_enabled: config.llm.classifier_retry_on_invalid_enabled,
                 max_output_tokens: config.llm.classifier_max_output_tokens,
             },
-        }
+        })
     }
 
     async fn collect_llm(
@@ -1303,7 +1345,6 @@ impl BackendEngine for AiceBackendEngine {
             .clone()
             .unwrap_or_else(|| next_backend_turn_id(&self.turn_counter));
         let request_text = request.transcript.clone();
-        let request_session_id = request.session_id.clone();
         let available_skills = build_available_classifier_skills(request.context.as_ref());
         let available_skill_refs: Vec<&str> = available_skills.iter().map(String::as_str).collect();
 
@@ -1556,10 +1597,94 @@ impl BackendEngine for AiceBackendEngine {
                 "skill_smart_home",
                 json!({"smart_home_target": target, "smart_home_action": action}),
             )),
-            IntentDecision::SkillMemory { query, store } => Ok(build_frontend_intent(
-                "skill_memory",
-                json!({"memory_query": query, "memory_store": store}),
-            )),
+            IntentDecision::SkillMemory { query, store } => {
+                let skill_started = Instant::now();
+                let palace = self.palace.clone();
+                let user_text_for_memory = request_text.clone();
+                let store_flag = store.unwrap_or(false);
+
+                let answer = tokio::task::spawn_blocking(move || -> Result<String, DynError> {
+                    let palace = palace
+                        .lock()
+                        .map_err(|e| -> DynError { format!("palace lock: {e}").into() })?;
+
+                    if store_flag {
+                        let content = query
+                            .as_deref()
+                            .unwrap_or(&user_text_for_memory)
+                            .trim()
+                            .to_string();
+                        if !content.is_empty() {
+                            let add_start = Instant::now();
+                            match palace.add_memory("user_notes", "stored", &content, "voice", 4.0)
+                            {
+                                Ok(_) => {
+                                    record_palace_add_memory("success", add_start.elapsed());
+                                }
+                                Err(e) => {
+                                    record_palace_add_memory("error", add_start.elapsed());
+                                    record_palace_error("add_memory");
+                                    return Err(format!("palace store: {e}").into());
+                                }
+                            }
+                            return Ok(format!("I have stored that in my memory: {content}"));
+                        }
+                    }
+
+                    if let Some(q) = query {
+                        let q = q.trim().to_string();
+                        if !q.is_empty() {
+                            let search_start = Instant::now();
+                            let results = match palace.search(&q, 5) {
+                                Ok(r) => {
+                                    record_palace_search("success", search_start.elapsed());
+                                    r
+                                }
+                                Err(e) => {
+                                    record_palace_search("error", search_start.elapsed());
+                                    record_palace_error("search");
+                                    return Err(format!("palace search: {e}").into());
+                                }
+                            };
+                            if results.is_empty() {
+                                return Ok(
+                                    "I could not find anything related in my memory.".to_string()
+                                );
+                            }
+                            let context: Vec<String> = results
+                                .iter()
+                                .map(|r| {
+                                    format!(
+                                        "[{}/{}] (sim={:.2}) {}",
+                                        r.wing, r.room, r.similarity, r.text
+                                    )
+                                })
+                                .collect();
+                            return Ok(context.join("\n"));
+                        }
+                    }
+
+                    Ok(format!(
+                        "I am not sure what to remember about: {user_text_for_memory}"
+                    ))
+                })
+                .await
+                .map_err(|e| -> DynError { format!("palace task: {e}").into() })??;
+
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+
+                if self.skip_secondary_llm_for_skill_answers {
+                    return Ok(BackendEngineDecision::BackendSkill(answer));
+                }
+
+                let compose_started = Instant::now();
+                let composed = self.compose_skill_answer(&request_text, &answer).await?;
+                record_backend_turn_stage_duration(
+                    "skill_answer_compose",
+                    compose_started.elapsed(),
+                );
+                Ok(BackendEngineDecision::BackendSkill(composed))
+            }
             IntentDecision::SkillComputer { action, target } => Ok(build_frontend_intent(
                 "skill_computer",
                 json!({"computer_action": action, "computer_target": target}),
@@ -1609,27 +1734,63 @@ impl BackendEngine for AiceBackendEngine {
                 json!({"assistant_kind": kind}),
             )),
             IntentDecision::Chat => {
-                let history = {
-                    let sessions = self.session_history.lock().await;
-                    sessions
-                        .get(&request_session_id)
-                        .cloned()
-                        .unwrap_or_default()
+                let wake_up_started = Instant::now();
+                let palace_for_wakeup = self.palace.clone();
+                let memory_context =
+                    tokio::task::spawn_blocking(move || -> Result<String, DynError> {
+                        let mut palace = palace_for_wakeup
+                            .lock()
+                            .map_err(|e| -> DynError { format!("palace lock: {e}").into() })?;
+                        Ok(palace.wake_up(None))
+                    })
+                    .await
+                    .map_err(|e| -> DynError {
+                        record_palace_wake_up("error", wake_up_started.elapsed());
+                        record_palace_error("wake_up");
+                        format!("palace wake_up task: {e}").into()
+                    })??;
+                record_palace_wake_up("success", wake_up_started.elapsed());
+                record_backend_turn_stage_duration("palace_wake_up", wake_up_started.elapsed());
+
+                let system_prompt_override = if memory_context.trim().is_empty() {
+                    None
+                } else {
+                    Some(memory_context)
                 };
+
                 let chat_started = Instant::now();
                 let text = self
-                    .collect_llm("chat", &request.transcript, &history, None, None)
+                    .collect_llm(
+                        "chat",
+                        &request.transcript,
+                        &[],
+                        system_prompt_override.as_deref(),
+                        None,
+                    )
                     .await?;
                 record_backend_turn_stage_duration("chat_generate", chat_started.elapsed());
-                {
-                    let mut sessions = self.session_history.lock().await;
-                    let entry = sessions.entry(request_session_id).or_default();
-                    entry.push((request_text, text.clone()));
-                    if entry.len() > 12 {
-                        let keep_from = entry.len().saturating_sub(12);
-                        entry.drain(0..keep_from);
+
+                let palace_for_ingest = self.palace.clone();
+                let ingest_user = request_text.clone();
+                let ingest_assistant = text.clone();
+                tokio::task::spawn_blocking(move || {
+                    let ingest_started = Instant::now();
+                    if let Ok(palace) = palace_for_ingest.lock() {
+                        match palace.ingest_turn(&ingest_user, &ingest_assistant) {
+                            Ok(()) => {
+                                record_palace_ingest("success", ingest_started.elapsed());
+                            }
+                            Err(error) => {
+                                record_palace_ingest("error", ingest_started.elapsed());
+                                record_palace_error("ingest");
+                                tracing::warn!(%error, "palace ingest_turn failed");
+                            }
+                        }
+                    } else {
+                        record_palace_error("ingest_lock");
                     }
-                }
+                });
+
                 Ok(BackendEngineDecision::Chat(text))
             }
         }
