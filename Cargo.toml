@@ -26,6 +26,6 @@ members = [
 
 # Local development: clone mempalace-rs as a sibling directory and uncomment
 # the patch below to use local sources instead of the git dependency.
-[patch."ssh://git@github.com/AncientiCe/mempalace-rs.git"]
-mempalace = { path = "../mempalace-rs" }
+# [patch."ssh://git@github.com/AncientiCe/mempalace-rs.git"]
+# mempalace = { path = "../mempalace-rs" }
 
