@@ -1,6 +1,33 @@
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
+pub const CURRENT_PROTOCOL_VERSION: u32 = 2;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioChunkRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    pub turn_id: String,
+    pub seq: u64,
+    pub pcm_s16le_base64: String,
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioFinalizeRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    pub turn_id: String,
+    pub done_reason: DoneReason,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DoneReason {
+    VadEnd,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TurnRequest {
@@ -18,12 +45,6 @@ pub struct TurnRequest {
 
 fn default_true() -> bool {
     true
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct TurnChunkRequest {
-    pub session_id: String,
-    pub chunk: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
