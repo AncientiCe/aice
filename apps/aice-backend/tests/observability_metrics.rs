@@ -1,6 +1,8 @@
 use core_observability::{
-    init_prometheus_exporter, record_backend_http_request, record_backend_turn_stage_duration,
-    register_metrics, ExporterInitState,
+    init_prometheus_exporter, record_backend_http_request, record_backend_llm_provider_duration,
+    record_backend_turn_cancellation, record_backend_turn_first_token_duration,
+    record_backend_turn_partial_transcript_duration, record_backend_turn_speculative_restart,
+    record_backend_turn_stage_duration, register_metrics, ExporterInitState,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -85,29 +87,13 @@ fn backend_http_metrics_cover_core_routes_and_errors() {
     register_metrics();
 
     record_backend_http_request("/healthz", "GET", 200, Duration::from_millis(3));
-    record_backend_http_request("/v1/turns/chunks", "POST", 202, Duration::from_millis(5));
-    record_backend_http_request(
-        "/v1/frontends/activate",
-        "POST",
-        400,
-        Duration::from_millis(4),
-    );
-    record_backend_http_request("/v1/turns", "POST", 200, Duration::from_millis(7));
-    record_backend_http_request(
-        "/v1/turns/:turn_id/frontend-skill-result",
-        "POST",
-        200,
-        Duration::from_millis(6),
-    );
+    record_backend_http_request("/turns/stream", "GET", 101, Duration::from_millis(1));
     record_backend_http_request("not_found", "GET", 404, Duration::from_millis(2));
 
     let payload = wait_for_metrics(metrics_bind, "backend_http_request_duration_seconds");
     assert!(payload.contains("backend_http_request_duration_seconds"));
     assert!(payload.contains("route=\"/healthz\""));
-    assert!(payload.contains("route=\"/v1/turns\""));
-    assert!(payload.contains("route=\"/v1/turns/chunks\""));
-    assert!(payload.contains("route=\"/v1/frontends/activate\""));
-    assert!(payload.contains("route=\"/v1/turns/:turn_id/frontend-skill-result\""));
+    assert!(payload.contains("route=\"/turns/stream\""));
     assert!(payload.contains("route=\"not_found\""));
     assert!(payload.contains("status_class=\"4xx\""));
     assert!(payload.contains("status_class=\"2xx\""));
@@ -143,6 +129,35 @@ fn backend_turn_stage_metrics_cover_latency_breakdown_stages() {
     assert!(payload.contains("stage=\"classifier_llm_roundtrip\""));
     assert!(payload.contains("stage=\"intent_parse_validate\""));
     assert!(payload.contains("stage=\"response_serialize\""));
+}
+
+#[test]
+fn backend_streaming_latency_metrics_are_emitted() {
+    let metrics_bind = shared_bind().unwrap_or_else(|error| panic!("reserve bind failed: {error}"));
+    let state = init_prometheus_exporter(metrics_bind)
+        .unwrap_or_else(|error| panic!("failed to initialize exporter: {error}"));
+    assert!(
+        matches!(
+            state,
+            ExporterInitState::Started | ExporterInitState::AlreadyRunning
+        ),
+        "exporter should be available for metrics assertions"
+    );
+    register_metrics();
+
+    record_backend_turn_partial_transcript_duration(Duration::from_millis(40));
+    record_backend_turn_first_token_duration(Duration::from_millis(95));
+    record_backend_turn_speculative_restart();
+    record_backend_turn_cancellation("transcript_divergence");
+    record_backend_llm_provider_duration("cradle", Duration::from_millis(12));
+
+    let payload = wait_for_metrics(metrics_bind, "backend_turn_first_token_duration_seconds");
+    assert!(payload.contains("backend_turn_first_token_duration_seconds"));
+    assert!(payload.contains("backend_turn_partial_transcript_duration_seconds"));
+    assert!(payload.contains("backend_turn_speculative_restarts_total"));
+    assert!(payload.contains("backend_turn_cancellations_total"));
+    assert!(payload.contains("backend_llm_provider_duration_seconds"));
+    assert!(payload.contains("provider=\"cradle\""));
 }
 
 #[test]

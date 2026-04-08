@@ -113,6 +113,12 @@ const BACKEND_AUDIO_CHUNK_DURATION_SECONDS: &str = "backend_audio_chunk_duration
 const BACKEND_STT_FLUSH_DURATION_SECONDS: &str = "backend_stt_flush_duration_seconds";
 const BACKEND_AUDIO_FINALIZE_TOTAL: &str = "backend_audio_finalize_total";
 const BACKEND_AUDIO_SESSION_TIMEOUT_TOTAL: &str = "backend_audio_session_timeout_total";
+const BACKEND_TURN_FIRST_TOKEN_DURATION_SECONDS: &str = "backend_turn_first_token_duration_seconds";
+const BACKEND_TURN_PARTIAL_TRANSCRIPT_DURATION_SECONDS: &str =
+    "backend_turn_partial_transcript_duration_seconds";
+const BACKEND_TURN_SPECULATIVE_RESTARTS_TOTAL: &str = "backend_turn_speculative_restarts_total";
+const BACKEND_TURN_CANCELLATIONS_TOTAL: &str = "backend_turn_cancellations_total";
+const BACKEND_LLM_PROVIDER_DURATION_SECONDS: &str = "backend_llm_provider_duration_seconds";
 const FRONTEND_RPC_DURATION_SECONDS: &str = "frontend_rpc_duration_seconds";
 const FRONTEND_SKILL_DURATION_SECONDS: &str = "frontend_skill_duration_seconds";
 const FRONTEND_TTS_PLAYBACK_DURATION_SECONDS: &str = "frontend_tts_playback_duration_seconds";
@@ -260,6 +266,15 @@ pub fn register_metrics() {
     histogram!(BACKEND_STT_FLUSH_DURATION_SECONDS, 0.0_f64);
     counter!(BACKEND_AUDIO_FINALIZE_TOTAL, 0, "status" => "unknown");
     counter!(BACKEND_AUDIO_SESSION_TIMEOUT_TOTAL, 0);
+    histogram!(BACKEND_TURN_FIRST_TOKEN_DURATION_SECONDS, 0.0_f64);
+    histogram!(BACKEND_TURN_PARTIAL_TRANSCRIPT_DURATION_SECONDS, 0.0_f64);
+    counter!(BACKEND_TURN_SPECULATIVE_RESTARTS_TOTAL, 0);
+    counter!(BACKEND_TURN_CANCELLATIONS_TOTAL, 0, "reason" => "unknown");
+    histogram!(
+        BACKEND_LLM_PROVIDER_DURATION_SECONDS,
+        0.0_f64,
+        "provider" => "unknown"
+    );
     histogram!(FRONTEND_RPC_DURATION_SECONDS, 0.0_f64, "endpoint" => "unknown");
     histogram!(FRONTEND_SKILL_DURATION_SECONDS, 0.0_f64, "skill" => "unknown");
     histogram!(FRONTEND_TTS_PLAYBACK_DURATION_SECONDS, 0.0_f64);
@@ -572,6 +587,40 @@ pub fn record_backend_audio_finalize(status: &str) {
 
 pub fn record_backend_audio_session_timeout() {
     counter!(BACKEND_AUDIO_SESSION_TIMEOUT_TOTAL, 1);
+}
+
+pub fn record_backend_turn_first_token_duration(duration: Duration) {
+    histogram!(
+        BACKEND_TURN_FIRST_TOKEN_DURATION_SECONDS,
+        duration.as_secs_f64()
+    );
+}
+
+pub fn record_backend_turn_partial_transcript_duration(duration: Duration) {
+    histogram!(
+        BACKEND_TURN_PARTIAL_TRANSCRIPT_DURATION_SECONDS,
+        duration.as_secs_f64()
+    );
+}
+
+pub fn record_backend_turn_speculative_restart() {
+    counter!(BACKEND_TURN_SPECULATIVE_RESTARTS_TOTAL, 1);
+}
+
+pub fn record_backend_turn_cancellation(reason: &str) {
+    counter!(
+        BACKEND_TURN_CANCELLATIONS_TOTAL,
+        1,
+        "reason" => reason.to_string()
+    );
+}
+
+pub fn record_backend_llm_provider_duration(provider: &str, duration: Duration) {
+    histogram!(
+        BACKEND_LLM_PROVIDER_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "provider" => provider.to_string()
+    );
 }
 
 pub fn record_frontend_rpc_duration(endpoint: &str, duration: Duration) {

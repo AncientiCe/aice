@@ -2,7 +2,7 @@
 name = "core-llm"
 version = "0.1.0"
 edition = "2021"
-description = "Ollama streaming LLM client and tool hooks"
+description = "LLM streaming providers and tool hooks"
 
 [dependencies]
 async-trait = "0.1"
