@@ -1,7 +1,10 @@
 use aice_backend::discovery_broadcast::{
     resolve_discovery_udp_port, spawn_udp_discovery_responder, DEFAULT_DISCOVERY_UDP_PORT,
 };
-use aice_backend::{spawn_server, AiceBackendEngine, BackendEngine};
+use aice_backend::{
+    spawn_server_with_audio, AiceBackendEngine, AudioIngressConfig, BackendEngine,
+    WhisperAudioTranscriber,
+};
 use core_config::Config;
 use core_observability::{
     init_json_logging, init_prometheus_exporter, record_backend_udp_discovery_listen_duration,
@@ -61,7 +64,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map_err(|error| format!("failed to resolve discovery UDP port: {error}"))?;
 
     let engine: Arc<dyn BackendEngine> = Arc::new(AiceBackendEngine::from_config(&config).await?);
-    let handle = spawn_server(&bind, engine).await?;
+    let transcriber = Arc::new(WhisperAudioTranscriber::new(
+        config.stt.whisper_model_path.clone(),
+    ));
+    let handle = spawn_server_with_audio(
+        &bind,
+        engine,
+        transcriber,
+        AudioIngressConfig::from_config(&config),
+    )
+    .await?;
     info!(bind = %handle.bind, "aice-backend started");
 
     let disc_started = Instant::now();

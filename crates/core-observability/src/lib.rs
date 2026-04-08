@@ -10,9 +10,11 @@ mod metrics;
 pub use exporter::{init_prometheus_exporter, ExporterInitError, ExporterInitState};
 pub use log::init_json_logging;
 pub use metrics::{
-    record_app_switcher_skill, record_assistant_skill, record_backend_dependency_request,
-    record_backend_dependency_request_duration, record_backend_http_request,
-    record_backend_skill_execute, record_backend_skill_execute_duration,
+    record_app_switcher_skill, record_assistant_skill, record_backend_audio_chunk,
+    record_backend_audio_finalize, record_backend_audio_session_timeout,
+    record_backend_dependency_request, record_backend_dependency_request_duration,
+    record_backend_http_request, record_backend_skill_execute,
+    record_backend_skill_execute_duration, record_backend_stt_flush_duration,
     record_backend_turn_duration, record_backend_turn_stage_duration, record_backend_turn_total,
     record_backend_udp_discovery_listen_duration, record_backend_udp_discovery_listen_total,
     record_backend_udp_discovery_request_total, record_backend_udp_discovery_response_total,

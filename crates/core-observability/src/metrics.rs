@@ -107,6 +107,12 @@ const BACKEND_UDP_DISCOVERY_LISTEN_DURATION_SECONDS: &str =
     "backend_udp_discovery_listen_duration_seconds";
 const BACKEND_UDP_DISCOVERY_REQUESTS_TOTAL: &str = "backend_udp_discovery_requests_total";
 const BACKEND_UDP_DISCOVERY_RESPONSES_TOTAL: &str = "backend_udp_discovery_responses_total";
+const BACKEND_AUDIO_CHUNKS_TOTAL: &str = "backend_audio_chunks_total";
+const BACKEND_AUDIO_CHUNK_BYTES_TOTAL: &str = "backend_audio_chunk_bytes_total";
+const BACKEND_AUDIO_CHUNK_DURATION_SECONDS: &str = "backend_audio_chunk_duration_seconds";
+const BACKEND_STT_FLUSH_DURATION_SECONDS: &str = "backend_stt_flush_duration_seconds";
+const BACKEND_AUDIO_FINALIZE_TOTAL: &str = "backend_audio_finalize_total";
+const BACKEND_AUDIO_SESSION_TIMEOUT_TOTAL: &str = "backend_audio_session_timeout_total";
 const FRONTEND_RPC_DURATION_SECONDS: &str = "frontend_rpc_duration_seconds";
 const FRONTEND_SKILL_DURATION_SECONDS: &str = "frontend_skill_duration_seconds";
 const FRONTEND_TTS_PLAYBACK_DURATION_SECONDS: &str = "frontend_tts_playback_duration_seconds";
@@ -248,6 +254,12 @@ pub fn register_metrics() {
     histogram!(BACKEND_UDP_DISCOVERY_LISTEN_DURATION_SECONDS, 0.0_f64);
     counter!(BACKEND_UDP_DISCOVERY_REQUESTS_TOTAL, 0);
     counter!(BACKEND_UDP_DISCOVERY_RESPONSES_TOTAL, 0, "result" => "unknown");
+    counter!(BACKEND_AUDIO_CHUNKS_TOTAL, 0);
+    counter!(BACKEND_AUDIO_CHUNK_BYTES_TOTAL, 0);
+    histogram!(BACKEND_AUDIO_CHUNK_DURATION_SECONDS, 0.0_f64);
+    histogram!(BACKEND_STT_FLUSH_DURATION_SECONDS, 0.0_f64);
+    counter!(BACKEND_AUDIO_FINALIZE_TOTAL, 0, "status" => "unknown");
+    counter!(BACKEND_AUDIO_SESSION_TIMEOUT_TOTAL, 0);
     histogram!(FRONTEND_RPC_DURATION_SECONDS, 0.0_f64, "endpoint" => "unknown");
     histogram!(FRONTEND_SKILL_DURATION_SECONDS, 0.0_f64, "skill" => "unknown");
     histogram!(FRONTEND_TTS_PLAYBACK_DURATION_SECONDS, 0.0_f64);
@@ -538,6 +550,28 @@ pub fn record_backend_udp_discovery_response_total(result: &str) {
         1,
         "result" => result.to_string()
     );
+}
+
+pub fn record_backend_audio_chunk(bytes: usize, duration: Duration) {
+    counter!(BACKEND_AUDIO_CHUNKS_TOTAL, 1);
+    counter!(BACKEND_AUDIO_CHUNK_BYTES_TOTAL, bytes as u64);
+    histogram!(BACKEND_AUDIO_CHUNK_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_backend_stt_flush_duration(duration: Duration) {
+    histogram!(BACKEND_STT_FLUSH_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_backend_audio_finalize(status: &str) {
+    counter!(
+        BACKEND_AUDIO_FINALIZE_TOTAL,
+        1,
+        "status" => status.to_string()
+    );
+}
+
+pub fn record_backend_audio_session_timeout() {
+    counter!(BACKEND_AUDIO_SESSION_TIMEOUT_TOTAL, 1);
 }
 
 pub fn record_frontend_rpc_duration(endpoint: &str, duration: Duration) {

@@ -24,15 +24,16 @@ serde_json = "1"
 tracing = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = "0.4"
+base64 = "0.22"
 core-config = { path = "../../crates/core-config" }
 core-llm = { path = "../../crates/core-llm" }
 core-observability = { path = "../../crates/core-observability" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
+core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "a76c6b4ba0b41a3bd22a8e3cb9d1e9d19a9b10f7", default-features = false, features = ["core-common"] }
 skill-chain = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "a76c6b4ba0b41a3bd22a8e3cb9d1e9d19a9b10f7" }
 mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", rev = "12ed9841494915e7c8902e8bdc5a891ef27dc2f3", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-

@@ -258,6 +258,12 @@ pub struct ServiceConfig {
     /// Crash restart backoff for wrapper scripts.
     #[serde(default = "default_restart_backoff_secs")]
     pub restart_backoff_secs: u64,
+    /// Backend audio turn idle timeout in milliseconds.
+    #[serde(default = "default_audio_session_idle_timeout_ms")]
+    pub audio_session_idle_timeout_ms: u64,
+    /// Backend audio turn maximum duration in milliseconds.
+    #[serde(default = "default_audio_session_max_duration_ms")]
+    pub audio_session_max_duration_ms: u64,
 }
 
 impl Default for ServiceConfig {
@@ -267,6 +273,8 @@ impl Default for ServiceConfig {
             metrics_enabled: default_metrics_enabled(),
             metrics_bind: default_metrics_bind(),
             restart_backoff_secs: default_restart_backoff_secs(),
+            audio_session_idle_timeout_ms: default_audio_session_idle_timeout_ms(),
+            audio_session_max_duration_ms: default_audio_session_max_duration_ms(),
         }
     }
 }
@@ -285,6 +293,14 @@ fn default_metrics_enabled() -> bool {
 
 fn default_metrics_bind() -> String {
     "127.0.0.1:9000".to_string()
+}
+
+fn default_audio_session_idle_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_audio_session_max_duration_ms() -> u64 {
+    20_000
 }
 
 /// LLM behavior settings.
@@ -626,6 +642,8 @@ mod tests {
         assert_eq!(config.service.health_bind, "127.0.0.1:8780");
         assert!(config.service.metrics_enabled);
         assert_eq!(config.service.metrics_bind, "127.0.0.1:9000");
+        assert_eq!(config.service.audio_session_idle_timeout_ms, 5_000);
+        assert_eq!(config.service.audio_session_max_duration_ms, 20_000);
         assert_eq!(config.assistant_profile.unit_system, "metric");
         assert_eq!(config.assistant_profile.time_format, "24h");
         assert!(config.memory.enabled);
@@ -660,7 +678,9 @@ mod tests {
                     "health_bind":"127.0.0.1:9898",
                     "restart_backoff_secs":5,
                     "metrics_enabled":false,
-                    "metrics_bind":"127.0.0.1:9100"
+                    "metrics_bind":"127.0.0.1:9100",
+                    "audio_session_idle_timeout_ms":2500,
+                    "audio_session_max_duration_ms":12000
                 }
             }"#,
         )
@@ -697,6 +717,8 @@ mod tests {
         assert_eq!(config.service.restart_backoff_secs, 5);
         assert!(!config.service.metrics_enabled);
         assert_eq!(config.service.metrics_bind, "127.0.0.1:9100");
+        assert_eq!(config.service.audio_session_idle_timeout_ms, 2500);
+        assert_eq!(config.service.audio_session_max_duration_ms, 12000);
 
         let _ = std::fs::remove_file(&path);
     }

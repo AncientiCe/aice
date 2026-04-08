@@ -250,7 +250,7 @@ flowchart TD
 
 ## 8. Split Runtime Services (`aice-backend` + `aice-macos`)
 
-**Purpose:** Run desktop voice behavior as two services. `aice-macos` owns mic/STT/TTS and macOS skill execution, while `aice-backend` owns LLM orchestration, intent classification, and non-OS skills.
+**Purpose:** Run desktop voice behavior as two services. `aice-macos` owns mic capture, VAD endpointing, audio uplink, and TTS playback, while `aice-backend` owns STT, wake-word gating, LLM orchestration, intent classification, and non-OS skills.
 
 ```mermaid
 sequenceDiagram
@@ -262,8 +262,12 @@ sequenceDiagram
     participant SkillM as MacOsSkills(computer/app_switcher/reminder/message/timer/shopping/volume/media/screenshot)
 
     User->>Mac: speech
-    Mac->>Mac: wake gate + STT flush
-    Mac->>Core: POST /v1/turns {session_id, transcript}
+    Mac->>Mac: local VAD detects speech/end
+    loop while speaking
+        Mac->>Core: POST /v1/turns/audio-chunks {session_id, turn_id, seq, pcm_s16le_base64}
+    end
+    Mac->>Core: POST /v1/turns/audio-finalize {session_id, turn_id, done_reason:vad_end}
+    Core->>Core: backend STT flush + wake gate
     Core->>LLM: classify + route
     alt backend-owned skill
         Core->>SkillB: execute(...)
@@ -287,9 +291,9 @@ sequenceDiagram
 ```
 
 **Notes:**
-- **Inputs:** `TurnRequest { session_id, device_id?, turn_id?, transcript, context? }` from frontend.
+- **Inputs:** `AudioChunkRequest { session_id, device_id?, turn_id, seq, pcm_s16le_base64, sample_rate_hz, channels }` and `AudioFinalizeRequest { session_id, device_id?, turn_id, done_reason }`.
 - **Outputs:** SSE `RuntimeEvent` stream (`token`, `frontend_skill_intent`, `done`, `error`).
-- **Failure paths:** Frontend skill execution failures are reported via `frontend-skill-result` with `status=error`; backend returns a deterministic spoken fallback.
+- **Failure paths:** invalid chunk format/sequence returns `400`; stale turns are dropped by backend idle timeout; frontend skill execution failures are reported via `frontend-skill-result` with `status=error`.
 
 ### 8.1 Frontend activation and capability-scoped routing
 
@@ -302,7 +306,7 @@ sequenceDiagram
     Frontend->>Backend: POST /v1/frontends/activate {device_id, session_id, supported_frontend_intents, protocol_version}
     Backend->>Backend: store session capabilities with TTL
     loop active session
-        Frontend->>Backend: POST /v1/turns {device_id, session_id, transcript}
+        Frontend->>Backend: POST /v1/turns/audio-finalize {device_id, session_id, turn_id}
         Backend->>Backend: classify intent
         alt intent supported by session capability list
             Backend-->>Frontend: SSE frontend_skill_intent
@@ -315,9 +319,9 @@ sequenceDiagram
 ```
 
 **Notes:**
-- **Inputs:** Activation API (`/v1/frontends/activate`, `/heartbeat`, `/deactivate`) plus normal turn flow.
+- **Inputs:** Activation API (`/v1/frontends/activate`, `/heartbeat`, `/deactivate`) plus audio chunk/finalize turn flow.
 - **Outputs:** Per-session capability-aware routing; deterministic fallback for unsupported frontend intents.
-- **Failure paths:** Unknown/expired frontend session state falls back to legacy routing; protocol version mismatch is rejected at activation.
+- **Failure paths:** Unknown/expired frontend session state falls back to no capability scope; protocol version mismatch is rejected at activation.
 
 ---
 
