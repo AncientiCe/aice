@@ -110,6 +110,17 @@ const BACKEND_UDP_DISCOVERY_RESPONSES_TOTAL: &str = "backend_udp_discovery_respo
 const FRONTEND_RPC_DURATION_SECONDS: &str = "frontend_rpc_duration_seconds";
 const FRONTEND_SKILL_DURATION_SECONDS: &str = "frontend_skill_duration_seconds";
 const FRONTEND_TTS_PLAYBACK_DURATION_SECONDS: &str = "frontend_tts_playback_duration_seconds";
+const PALACE_OPEN_TOTAL: &str = "palace_open_total";
+const PALACE_OPEN_DURATION_SECONDS: &str = "palace_open_duration_seconds";
+const PALACE_WAKE_UP_TOTAL: &str = "palace_wake_up_total";
+const PALACE_WAKE_UP_DURATION_SECONDS: &str = "palace_wake_up_duration_seconds";
+const PALACE_SEARCH_TOTAL: &str = "palace_search_total";
+const PALACE_SEARCH_DURATION_SECONDS: &str = "palace_search_duration_seconds";
+const PALACE_INGEST_TOTAL: &str = "palace_ingest_total";
+const PALACE_INGEST_DURATION_SECONDS: &str = "palace_ingest_duration_seconds";
+const PALACE_ADD_MEMORY_TOTAL: &str = "palace_add_memory_total";
+const PALACE_ADD_MEMORY_DURATION_SECONDS: &str = "palace_add_memory_duration_seconds";
+const PALACE_ERRORS_TOTAL: &str = "palace_errors_total";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -240,6 +251,17 @@ pub fn register_metrics() {
     histogram!(FRONTEND_RPC_DURATION_SECONDS, 0.0_f64, "endpoint" => "unknown");
     histogram!(FRONTEND_SKILL_DURATION_SECONDS, 0.0_f64, "skill" => "unknown");
     histogram!(FRONTEND_TTS_PLAYBACK_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_OPEN_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_OPEN_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_WAKE_UP_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_WAKE_UP_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_SEARCH_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_SEARCH_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_INGEST_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_INGEST_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_ADD_MEMORY_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_ADD_MEMORY_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_ERRORS_TOTAL, 0, "operation" => "unknown");
 }
 
 /// Record a new voice session start.
@@ -761,4 +783,33 @@ pub fn record_memory_fact_recall(result: &str) {
 
 pub fn record_memory_fact_recall_duration(duration: Duration) {
     histogram!(MEMORY_FACT_RECALL_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_open(result: &str, duration: Duration) {
+    counter!(PALACE_OPEN_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_OPEN_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_wake_up(result: &str, duration: Duration) {
+    counter!(PALACE_WAKE_UP_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_WAKE_UP_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_search(result: &str, duration: Duration) {
+    counter!(PALACE_SEARCH_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_SEARCH_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_ingest(result: &str, duration: Duration) {
+    counter!(PALACE_INGEST_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_INGEST_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_add_memory(result: &str, duration: Duration) {
+    counter!(PALACE_ADD_MEMORY_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_ADD_MEMORY_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_error(operation: &str) {
+    counter!(PALACE_ERRORS_TOTAL, 1, "operation" => operation.to_string());
 }

@@ -1,101 +1,31 @@
-# Skill: Memory
+# Memory (superseded — now core infrastructure)
 
-**Crate:** `skill-memory` · **Impl:** `SqliteMemorySkill`
+> **Note:** Memory is no longer a skill. The `skill-memory` / `SqliteMemorySkill` crate has been
+> replaced by the **Memory Palace** (`mempalace-rs`), which is embedded directly in `aice-backend`
+> as core infrastructure. See [§7 Memory Palace in the architecture docs](../architecture/README.md#7-memory-palace-core-persistent-memory)
+> for the current design, flow diagrams, inputs, outputs, failure paths, and metrics.
 
-**Purpose:** Persistent key-value fact store backed by SQLite with FTS5 full-text search. Supports explicit recall/store via `execute` and proactive fact extraction from every conversation turn via `ingest_turn`.
+The Memory Palace provides:
 
-**Execution Owner (Split Runtime):** `aice-backend`
-
----
-
-## Full Journey
-
-### Explicit Recall / Store (`execute`)
-
-```mermaid
-sequenceDiagram
-    participant LLM as Intent / LLM
-    participant Skill as MemorySkill
-    participant DB as SQLite (memory_facts + FTS5)
-    participant Composer as AnswerComposerLLM
-
-    LLM->>Skill: execute(query, store)
-
-    alt store = true OR query starts with "remember" / "note"
-        Skill->>Skill: parse "X is Y" or "X: Y" pattern
-        Skill->>DB: UPSERT memory_facts (fact_key, fact_value)
-        DB->>DB: FTS5 trigger syncs memory_facts_fts
-        DB-->>Skill: rows affected
-        Skill-->>Composer: MemoryResult { summary, facts, stored=true }
-    else recall
-        Skill->>DB: FTS5 search (BM25 ranked, LIMIT 5)
-        alt FTS5 returns results
-            DB-->>Skill: matched MemoryFact rows
-        else no FTS5 results
-            Skill->>DB: LIKE scan on 100 most-recent facts
-            DB-->>Skill: matched rows or empty
-        end
-        alt no matches found
-            Skill-->>LLM: Err(NoMatch)
-        end
-        Skill-->>Composer: MemoryResult { summary, facts, stored=false }
-    end
-
-    Composer-->>LLM: to_prompt_context() injected into answer prompt
-```
-
-### Proactive Fact Extraction (`ingest_turn`)
-
-```mermaid
-sequenceDiagram
-    participant Engine as ConversationEngine
-    participant Skill as MemorySkill
-    participant DB as SQLite
-
-    Engine->>Skill: ingest_turn(user_text)
-    Skill->>DB: INSERT memory_turns (raw text, timestamp)
-    Skill->>Skill: scan for patterns ("I prefer …", "my X is Y", etc.)
-    loop each matched pattern
-        Skill->>DB: UPSERT memory_facts (fact_key, fact_value)
-        DB->>DB: FTS5 trigger syncs memory_facts_fts
-    end
-```
-
----
-
-## Inputs
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `query` | `Option<&str>` | Recall search term, or a `"remember X is Y"` store command. |
-| `store` | `Option<bool>` | Explicitly request a store operation when `true`. |
-| *(ingest)* `user_text` | `&str` | Raw user turn text for proactive extraction. |
-
-## Outputs
-
-`MemoryResult { summary, facts: Vec<MemoryFact>, stored }`
-
-`MemoryFact { key, value, when: Option<String> }`
-
-## Schema
-
-| Table | Purpose |
-|-------|---------|
-| `memory_facts` | Unique `(fact_key, fact_value)` pairs with timestamp. |
-| `memory_turns` | Raw conversation turns for audit and future extraction. |
-| `memory_facts_fts` | FTS5 virtual table; kept in sync with `memory_facts` via insert/delete/update triggers. |
-
-## Failure Paths
-
-| Error | Cause |
-|-------|-------|
-| `Storage` | SQLite write failure. |
-| `Retrieval` | SQLite read failure. |
-| `NoMatch` | Recall query finds no matching facts. |
+- **4-layer semantic memory** (L0 working, L1 episodic, L2 semantic, L3 archival) with 384-dim local embeddings via `fastembed`.
+- **Automatic context enrichment** — every chat turn calls `palace.wake_up()` to inject L0/L1 context into the LLM system prompt.
+- **Automatic turn ingestion** — every completed chat turn is persisted via `palace.ingest_turn()`.
+- **Explicit store/search** — handled directly by the backend when the classifier emits `IntentDecision::SkillMemory`, without routing through the external skill system.
+- **Knowledge graph** — entity/relation triples stored alongside memory entries for structured recall.
+- **Persistent SQLite storage** — configurable via `memory.palace_db_path` and `memory.palace_identity_path`.
 
 ## Metrics
 
 | Metric | Kind | Labels |
 |--------|------|--------|
-| `backend_skill_execute_total` | Counter | `skill="memory"`, `result`, `error_kind` |
-| `backend_skill_execute_duration_seconds` | Histogram | `skill="memory"` |
+| `palace_open_total` | Counter | `result` |
+| `palace_open_duration_seconds` | Histogram | — |
+| `palace_wake_up_total` | Counter | `result` |
+| `palace_wake_up_duration_seconds` | Histogram | — |
+| `palace_search_total` | Counter | `result` |
+| `palace_search_duration_seconds` | Histogram | — |
+| `palace_ingest_total` | Counter | `result` |
+| `palace_ingest_duration_seconds` | Histogram | — |
+| `palace_add_memory_total` | Counter | `result` |
+| `palace_add_memory_duration_seconds` | Histogram | — |
+| `palace_errors_total` | Counter | `operation` |

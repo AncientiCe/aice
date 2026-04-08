@@ -136,11 +136,11 @@ flowchart LR
 
 ---
 
-## 6. Intent classification and skills (weather, time, distance, sports, holidays, fuel, horoscope, news, smart home, assistant, media, memory, computer, screenshot, app switcher, volume)
+## 6. Intent classification and skills (weather, time, distance, sports, holidays, fuel, horoscope, news, smart home, assistant, media, computer, screenshot, app switcher, volume)
 
 **Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
 
-All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills it is configured for (weather, time, distance, sports-live, holiday-lookup, fuel-price-lookup, horoscope-daily, news-headlines, smart home, memory); platform-specific skills (media, computer, screenshot, app switcher, etc.) are forwarded as `FrontendSkillIntent` to the connected frontend. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
+All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills it is configured for (weather, time, distance, sports-live, holiday-lookup, fuel-price-lookup, horoscope-daily, news-headlines, smart home); platform-specific skills (media, computer, screenshot, app switcher, etc.) are forwarded as `FrontendSkillIntent` to the connected frontend. Memory is handled as core infrastructure (see §7), not as a skill. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
 
 ```mermaid
 flowchart LR
@@ -156,7 +156,6 @@ flowchart LR
     PolicyCheck -->|allow| SmartHomeSkill[SmartHomeSkill]
     PolicyCheck -->|allow| AssistantSkill[AssistantSkill]
     PolicyCheck -->|allow| MediaSkill[MediaSkill]
-    PolicyCheck -->|allow| MemorySkill[MemorySkill]
     PolicyCheck -->|allow| ComputerSkill[ComputerSkill]
     PolicyCheck -->|allow| ScreenshotSkill[ScreenshotSkill]
     PolicyCheck -->|allow| AppSwitcherSkill[AppSwitcherSkill]
@@ -170,7 +169,6 @@ flowchart LR
     SmartHomeSkill --> SkillPayload
     AssistantSkill --> SkillPayload
     MediaSkill --> SkillPayload
-    MemorySkill --> SkillPayload
     ComputerSkill --> SkillPayload
     ScreenshotSkill --> SkillPayload
     AppSwitcherSkill --> SkillPayload
@@ -183,7 +181,7 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, sports_live, holiday_lookup, fuel_price_lookup, horoscope_daily, news_headlines, smart_home, assistant, media, memory, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
+- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, sports_live, holiday_lookup, fuel_price_lookup, horoscope_daily, news_headlines, smart_home, assistant, media, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
 - **Outputs:** Streamed TTS to desktop or pod; metrics `voice_intent_classifier_total`, `voice_intent_routed_total{intent}`, `voice_*_skill_total` per skill, `voice_policy_denied_total`, `voice_location_contract_total{intent,result}`, `voice_location_contract_duration_seconds{intent}`; audit log events `skill_executed` and policy denial warnings.
 - **Failure paths:** Classification parse failure or skill error fall back to chat path; policy denial (emergency stop or budget exhausted) falls back to chat; weather location contract ambiguity returns a short clarification and does not execute the weather skill.
 
@@ -216,27 +214,37 @@ flowchart TD
 
 ---
 
-## 7. Assistant profile and persistent memory
+## 7. Memory Palace (core persistent memory)
 
-**Purpose:** At startup the runner loads an optional memory store from disk (JSON), builds an effective system prompt from config (`assistant_profile`: name, persona, unit_system, time_format, user_name) plus location and memory profile/facts, and passes recent conversation turns as history into the chat LLM. After each completed chat turn the runtime appends the turn to memory and optionally saves to disk (atomic write). This gives a Jarvis-style experience: the assistant starts with your identity, units, and remembered preferences and maintains short-term conversation context.
+**Purpose:** The Memory Palace (`mempalace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides a 4-layer structured, persistent, semantic memory system inspired by the memory palace concept. Every chat turn automatically enriches the LLM system prompt with contextual memory (wake-up) and ingests the conversation for long-term recall. An explicit store/search path handles user requests like "remember this" or "what do you know about X" via the `SkillMemory` intent — handled directly by the backend, not as an external skill.
 
 ```mermaid
 flowchart TD
-    Startup[Startup] --> LoadConfig[LoadConfig]
-    LoadConfig --> LoadMemory[LoadMemoryStore]
-    LoadMemory --> BuildPrompt[BuildEffectiveSystemPrompt]
-    BuildPrompt --> RunTurn[RuntimeTurn]
-    RunTurn --> CallLlm[ChatWithHistory]
-    CallLlm --> AssistantReply[AssistantReply]
-    AssistantReply --> UpdateMemory[UpdateRecentTurns]
-    UpdateMemory --> PersistMemory[PersistMemoryIfEnabled]
-    PersistMemory --> NextTurn[NextTurn]
+    Startup[Startup] --> OpenPalace["Palace::open_paths(db, identity)"]
+    OpenPalace -->|success| Ready[PalaceHandle ready]
+    OpenPalace -->|error| Fallback["Palace::open_in_memory()"]
+    Fallback --> Ready
+
+    Ready --> ChatTurn[Chat Turn]
+    ChatTurn --> WakeUp["palace.wake_up() → L0/L1 context"]
+    WakeUp --> EnrichPrompt["Prepend memory context to system prompt"]
+    EnrichPrompt --> LLM[OllamaStreamingLLM]
+    LLM --> Reply[AssistantReply]
+    Reply --> Ingest["palace.ingest_turn(user, assistant)"]
+    Ingest --> NextTurn[NextTurn]
+
+    Ready --> MemoryIntent["IntentDecision::SkillMemory"]
+    MemoryIntent -->|store=true| AddMemory["palace.add_memory(wing, room, content, source, importance)"]
+    MemoryIntent -->|query| Search["palace.search(query, n) → Vec<SearchResult>"]
+    AddMemory --> Compose[AnswerComposerLLM]
+    Search --> Compose
 ```
 
 **Notes:**
-- **Inputs:** Config `assistant_profile`, `memory` (enabled, path, max_recent_turns, max_facts, autosave); memory file at `memory.path` (missing or invalid → empty store, no hard-fail).
-- **Outputs:** Effective system prompt fed into Ollama; chat path uses `memory.history()` for `chat_stream(..., history, ...)`; after turn, `push_turn` and optional `save`; metrics `memory_load_total`, `memory_save_total`, `memory_load_errors_total`, `memory_save_errors_total`, `memory_load_duration_seconds`, `memory_save_duration_seconds`.
-- **Failure paths:** Load/save errors are logged and metered; save failure does not fail the turn.
+- **Inputs:** Config `memory.palace_db_path` and `memory.palace_identity_path`; `mempalace` crate embedded via git dependency (`default-features = false`, no CLI). Palace facade wraps `rusqlite` + `fastembed` for 384-dim local embeddings.
+- **Outputs:** Per-turn wake-up context (L0 working + L1 episodic layers) injected into LLM system prompt; semantic search results; persistent SQLite-backed memory across sessions. Metrics: `palace_open_total`, `palace_wake_up_total/duration`, `palace_search_total/duration`, `palace_ingest_total/duration`, `palace_add_memory_total/duration`, `palace_errors_total{operation}`.
+- **Failure paths:** Palace open failure falls back to in-memory instance (logged + metered). Wake-up or ingest errors are logged and metered but do not fail the turn. Search/store errors propagate to the answer composer as error text.
+- **Threading:** All Palace calls are synchronous (`rusqlite`); wrapped in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 
 ---
 
@@ -250,7 +258,7 @@ sequenceDiagram
     participant Mac as aice-macos
     participant Core as aice-backend
     participant LLM as Ollama
-    participant SkillB as BackendSkills(weather/time/distance/smart_home/memory)
+    participant SkillB as BackendSkills(weather/time/distance/smart_home)
     participant SkillM as MacOsSkills(computer/app_switcher/reminder/message/timer/shopping/volume/media/screenshot)
 
     User->>Mac: speech
@@ -338,31 +346,28 @@ Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, 
 
 ---
 
-## 10. Real skill integrations (Hue, macOS Music.app, SQLite memory)
+## 10. Real skill integrations (Hue, macOS Music.app)
 
-**Purpose:** Production integrations for smart-home, media, and memory are wired as concrete skills in runtime (desktop + pod-voice), not `None`.
+**Purpose:** Production integrations for smart-home and media are wired as concrete skills in runtime (desktop + pod-voice), not `None`. Memory is handled as core infrastructure (see §7 Memory Palace), not as a skill.
 
 ```mermaid
 flowchart LR
     Transcript[Transcript] --> Intent[IntentClassifier]
     Intent -->|skill_smart_home| Hue[HueSmartHomeSkill]
     Intent -->|skill_media| Music[MacOsMusicSkill]
-    Intent -->|skill_memory| MemSkill[SqliteMemorySkill]
-    Transcript --> MemIngest[SqliteMemorySkill ingest_turn]
     Hue --> Prompt[SkillPromptContext]
     Music --> Prompt
-    MemSkill --> Prompt
     Prompt --> LLM[AnswerComposerLLM]
     LLM --> TTS[TTS]
 ```
 
 **Notes:**
-- **Inputs:** `smart_home.hue.*`, `media.macos_music.*`, `memory.sqlite_path` from config.
-- **Outputs:** Skill payload context for voice answer generation; SQLite-backed memory facts and turn ingestion.
+- **Inputs:** `smart_home.hue.*`, `media.macos_music.*` from config.
+- **Outputs:** Skill payload context for voice answer generation.
 - **Failure paths:** Missing provider config keeps a skill disabled; skill execution errors fall back to chat path with existing metrics/error logs.
 
 Full per-skill journeys, inputs, outputs, failure paths, and metrics are in [`docs/skills/`](../skills/README.md):
-[smart-home](../skills/smart-home.md) · [media](../skills/media.md) · [memory](../skills/memory.md)
+[smart-home](../skills/smart-home.md) · [media](../skills/media.md)
 
 ---
 

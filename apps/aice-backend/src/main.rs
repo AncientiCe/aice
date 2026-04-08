@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         resolve_discovery_udp_port(std::env::var("AICE_BACKEND_DISCOVERY_UDP_PORT").ok())
             .map_err(|error| format!("failed to resolve discovery UDP port: {error}"))?;
 
-    let engine: Arc<dyn BackendEngine> = Arc::new(AiceBackendEngine::from_config(&config).await);
+    let engine: Arc<dyn BackendEngine> = Arc::new(AiceBackendEngine::from_config(&config).await?);
     let handle = spawn_server(&bind, engine).await?;
     info!(bind = %handle.bind, "aice-backend started");
 
