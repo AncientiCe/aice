@@ -202,6 +202,30 @@ impl WhisperSttStream {
     }
 }
 
+impl WhisperSttStream {
+    /// Synchronous transcription of a complete sample buffer.  Designed to
+    /// be called from `spawn_blocking` so the CPU-heavy Whisper inference
+    /// does not block the async runtime.
+    pub fn transcribe_blocking(&mut self, samples: &[i16]) -> Result<String, SttError> {
+        self.buffer.clear();
+        self.buffer.extend_from_slice(samples);
+        let t0 = Instant::now();
+        let out = {
+            #[cfg(feature = "whisper")]
+            {
+                self.flush_native()?
+            }
+            #[cfg(not(feature = "whisper"))]
+            {
+                self.flush_cli()?
+            }
+        };
+        self.buffer.clear();
+        record_stage_duration(Stage::Stt, t0.elapsed());
+        Ok(out)
+    }
+}
+
 #[async_trait]
 impl SttStream for WhisperSttStream {
     async fn push_audio(
