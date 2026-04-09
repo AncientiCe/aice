@@ -4,7 +4,7 @@
 
 **Purpose:** Control macOS Music.app playback via AppleScript. Supports play (with library search and iTunes catalog fallback), pause, stop, resume, next/previous track, shuffle, and status queries.
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -99,3 +99,4 @@ The canonical routing rules live in [`crates/core-orchestrator/src/classifier_co
 | `media_skill_execute_total` | Counter | `action` |
 | `media_skill_errors_total` | Counter | `action` |
 | `media_skill_execute_duration_seconds` | Histogram | `action` |
+

@@ -4,7 +4,7 @@
 
 **Purpose:** Resolve a natural-language contact phrase (for example, `"my wife"`) via native macOS Contacts APIs and send an iMessage through Messages.app.
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -92,3 +92,4 @@ sequenceDiagram
 | `message_skill_execute_total` | Counter | `result=success|error` |
 | `message_skill_errors_total` | Counter | `error_kind=<error string>` |
 | `message_skill_execute_duration_seconds` | Histogram | *(none)* |
+

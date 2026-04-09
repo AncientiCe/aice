@@ -248,14 +248,14 @@ flowchart TD
 
 ---
 
-## 8. Split Runtime Services (`aice-backend` + `aice-macos`)
+## 8. Split Runtime Services (`aice-backend` + external macOS frontend)
 
-**Purpose:** Run desktop voice behavior as two services. `aice-macos` owns mic capture, VAD endpointing, audio uplink, and TTS playback, while `aice-backend` owns STT, wake-word gating, LLM orchestration (Cradle provider), intent classification, and non-OS skills. The entire voice journey runs over a single WebSocket connection at `/turns/stream`; HTTP is retained only for operational endpoints (`/healthz`, `/metrics`).
+**Purpose:** Run desktop voice behavior as two services. An external macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos)) owns mic capture, VAD endpointing, audio uplink, and TTS playback, while `aice-backend` owns STT, wake-word gating, LLM orchestration (Cradle provider), intent classification, and non-OS skills. The entire voice journey runs over a single WebSocket connection at `/turns/stream`; HTTP is retained only for operational endpoints (`/healthz`, `/metrics`).
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Mac as aice-macos
+    participant Mac as External macOS frontend
     participant Core as aice-backend
     participant LLM as Cradle LLM
     participant SkillB as BackendSkills(weather/time/distance/smart_home)

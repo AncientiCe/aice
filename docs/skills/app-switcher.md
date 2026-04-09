@@ -4,7 +4,7 @@
 
 **Purpose:** Control foreground app flow on macOS via local actions: switch focus, cycle app switcher, hide apps, quit, and force-quit (with runtime confirmation).
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -101,3 +101,4 @@ The canonical routing rules live in [`crates/core-orchestrator/src/classifier_co
 | `app_switcher_skill_errors_total` | Counter | `kind` (`AppSwitcherSkillError` display string) |
 | `app_switcher_skill_execute_duration_seconds` | Histogram | none |
 | `voice_app_switcher_skill_total` | Counter | `result` (`success` or `error`) |
+

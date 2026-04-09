@@ -4,7 +4,7 @@
 
 **Purpose:** Open apps, files, and URLs on macOS from LLM-classified voice commands such as "open GoLand", "open Apple TV", and "open github.com".
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -80,3 +80,4 @@ sequenceDiagram
 | `computer_skill_errors_total` | Counter | `kind` (`ComputerSkillError` display string) |
 | `computer_skill_execute_duration_seconds` | Histogram | none |
 | `voice_computer_skill_total` | Counter | `result` (`success` or `error`) |
+

@@ -25,7 +25,7 @@ Before considering a task done, ensure all of the following pass:
 - **Tests** — full test suite passes (e.g. `cargo test`).
 - **Pipelines pass** - check pipeline steps that can be run locally and make sure they pass
 
-The deprecated `aice-macos` and `desktop-runner` crates are excluded from CI clippy and tests (crate-level `deprecated` would fail under `-D warnings`). Match CI locally with `cargo clippy --workspace --exclude aice-macos --exclude desktop-runner --all-targets -- …` and `cargo test --workspace --exclude aice-macos --exclude desktop-runner`.
+The deprecated `desktop-runner` crate is excluded from CI clippy and tests (crate-level `deprecated` would fail under `-D warnings`). Match CI locally with `cargo clippy --workspace --exclude desktop-runner --all-targets -- …` and `cargo test --workspace --exclude desktop-runner`.
 
 Fix any failure before marking the task complete.
 

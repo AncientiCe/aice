@@ -4,7 +4,7 @@
 
 **Purpose:** Control macOS system output volume from LLM-classified voice commands such as "set volume to 40", "volume up", "mute volume", and "what is the volume".
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -83,3 +83,4 @@ sequenceDiagram
 | `volume_skill_errors_total` | Counter | `kind` (`VolumeSkillError` display string) |
 | `volume_skill_execute_duration_seconds` | Histogram | none |
 | `voice_volume_skill_total` | Counter | `result` (`success` or `error`) |
+

@@ -4,7 +4,7 @@
 
 **Purpose:** Start a countdown timer in macOS Clock.app via the `clock-timer://` URL scheme. Accepts natural language durations and auto-names timers ordinally when no name is given.
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -99,3 +99,4 @@ sequenceDiagram
 | `timer_skill_execute_total` | Counter | *(none)* |
 | `timer_skill_errors_total` | Counter | *(none)* |
 | `timer_skill_execute_duration_seconds` | Histogram | *(none)* |
+
