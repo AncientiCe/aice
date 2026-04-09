@@ -19,7 +19,7 @@ use core_observability::{
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
     intent_classifier_system_prompt_for_skills, parse_intent, validate_intent_decision,
-    IntentClassifier, IntentDecision, LlmCallOptions, LlmStream, SttStream,
+    IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
 };
 use core_runtime_protocol::{
     FrontendSkillIntent, FrontendSkillResultRequest, TurnRequest, TurnStreamClientMessage,
@@ -66,7 +66,12 @@ type PalaceHandle = Arc<std::sync::Mutex<Palace>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 type ClassifierPromptCache = Arc<RwLock<HashMap<String, ClassifierPromptArtifacts>>>;
 
-const MAX_BINARY_FRAME_BYTES: usize = 65_536;
+const MAX_BINARY_FRAME_BYTES: usize = 32_768;
+
+/// Minimum new samples before running incremental STT on a streaming binary
+/// frame.  At 16 kHz this is 100 ms — fast partial transcripts without
+/// hammering the transcriber on every 20 ms chunk.
+const STT_DEBOUNCE_SAMPLES: usize = 1_600;
 const FRONTEND_CLASSIFIER_SKILLS: [&str; 11] = [
     "skill_smart_home",
     "skill_assistant",
@@ -149,14 +154,17 @@ pub trait AudioTranscriber: Send + Sync {
 }
 
 pub struct WhisperAudioTranscriber {
-    model_path: String,
+    stt: Arc<std::sync::Mutex<WhisperSttStream>>,
 }
 
 impl WhisperAudioTranscriber {
-    pub fn new(model_path: impl Into<String>) -> Self {
-        Self {
-            model_path: model_path.into(),
-        }
+    pub fn new(model_path: impl Into<String>) -> Result<Self, DynError> {
+        let path: String = model_path.into();
+        let stt = WhisperSttStream::new(Path::new(&path))
+            .map_err(|error| format!("failed to load whisper model: {error}"))?;
+        Ok(Self {
+            stt: Arc::new(std::sync::Mutex::new(stt)),
+        })
     }
 }
 
@@ -174,11 +182,18 @@ impl AudioTranscriber for WhisperAudioTranscriber {
             )
             .into());
         }
-        let mut stt = WhisperSttStream::new(Path::new(&self.model_path))
-            .map_err(|error| format!("failed to initialize whisper STT: {error}"))?;
-        stt.push_audio(&samples).await?;
-        let transcript = stt.flush().await?;
-        Ok(transcript.trim().to_string())
+        let stt = self.stt.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = stt
+                .lock()
+                .map_err(|error| format!("stt mutex poisoned: {error}"))?;
+            guard
+                .transcribe_blocking(&samples)
+                .map(|t| t.trim().to_string())
+                .map_err(|error| -> DynError { error.into() })
+        })
+        .await
+        .map_err(|error| -> DynError { format!("stt task join: {error}").into() })?
     }
 }
 
@@ -497,6 +512,7 @@ struct WsTurnState {
     turn_id: String,
     supported_frontend_intents: Vec<String>,
     samples: Vec<i16>,
+    samples_at_last_stt: usize,
     started_at: Instant,
     done_requested: bool,
     first_partial_recorded: bool,
@@ -521,6 +537,7 @@ impl WsTurnState {
             turn_id,
             supported_frontend_intents,
             samples: Vec::new(),
+            samples_at_last_stt: 0,
             started_at: Instant::now(),
             done_requested: false,
             first_partial_recorded: false,
@@ -689,12 +706,21 @@ async fn process_binary_audio_frame(
     }
     record_backend_audio_chunk(raw.len(), chunk_started.elapsed());
 
+    let new_samples_since_stt = state
+        .samples
+        .len()
+        .saturating_sub(state.samples_at_last_stt);
+    if state.samples_at_last_stt > 0 && new_samples_since_stt < STT_DEBOUNCE_SAMPLES {
+        return Ok(());
+    }
+
     let stt_started = Instant::now();
     let transcript = transcriber
         .transcribe(state.samples.clone(), 16_000, 1)
         .await
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
+    state.samples_at_last_stt = state.samples.len();
     record_backend_turn_stage_duration("stt_incremental", stt_started.elapsed());
 
     let transcript = apply_backend_wake_word(&audio_config.wake_word, transcript);
@@ -828,13 +854,50 @@ async fn handle_turn_stream_socket(
                                         continue;
                                     };
                                     state.done_requested = true;
-                                    if state.active_task.is_none() && state.completed_generation.is_none() {
+                                    if state.samples.len() > state.samples_at_last_stt {
+                                        let final_transcript = transcriber
+                                            .transcribe(state.samples.clone(), 16_000, 1)
+                                            .await
+                                            .map(|value| value.trim().to_string())
+                                            .unwrap_or_default();
+                                        let final_transcript = apply_backend_wake_word(
+                                            &audio_config.wake_word,
+                                            final_transcript,
+                                        );
+                                        if !final_transcript.is_empty()
+                                            && state.active_transcript.as_deref()
+                                                != Some(final_transcript.as_str())
+                                        {
+                                            if let Some(task) = state.active_task.take() {
+                                                task.abort();
+                                                record_backend_turn_cancellation(
+                                                    "done_transcript_divergence",
+                                                );
+                                            }
+                                            state.completed_generation = None;
+                                            state.active_transcript =
+                                                Some(final_transcript.clone());
+                                            spawn_speculative_turn(
+                                                state,
+                                                engine.clone(),
+                                                final_transcript,
+                                                internal_tx.clone(),
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    if state.active_task.is_none()
+                                        && state.completed_generation.is_none()
+                                    {
                                         let transcript = transcriber
                                             .transcribe(state.samples.clone(), 16_000, 1)
                                             .await
                                             .map(|value| value.trim().to_string())
                                             .unwrap_or_default();
-                                        let transcript = apply_backend_wake_word(&audio_config.wake_word, transcript);
+                                        let transcript = apply_backend_wake_word(
+                                            &audio_config.wake_word,
+                                            transcript,
+                                        );
                                         if !transcript.is_empty() {
                                             spawn_speculative_turn(
                                                 state,
@@ -852,7 +915,9 @@ async fn handle_turn_stream_socket(
                                             .await?;
                                             turn = None;
                                         }
-                                    } else if state.active_task.is_none() && !state.awaiting_skill_result {
+                                    } else if state.active_task.is_none()
+                                        && !state.awaiting_skill_result
+                                    {
                                         emit_turn_stream_event(
                                             &mut ws,
                                             &TurnStreamServerEvent::Done {

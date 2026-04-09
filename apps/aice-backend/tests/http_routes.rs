@@ -239,7 +239,6 @@ async fn turn_stream_transcript_divergence_emits_latest_token() {
     let transcriber: Arc<dyn AudioTranscriber> = Arc::new(SequencedTranscriber {
         transcripts: Mutex::new(vec![
             "old hypothesis".to_string(),
-            "old hypothesis changed".to_string(),
             "final coherent".to_string(),
         ]),
     });
