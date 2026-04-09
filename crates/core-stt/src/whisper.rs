@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use core_observability::record_error;
 use core_observability::{record_stage_duration, Stage};
 use core_orchestrator::SttStream;
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "whisper")))]
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 #[cfg(not(feature = "whisper"))]
@@ -17,7 +17,7 @@ use std::time::Instant;
 #[cfg(not(feature = "whisper"))]
 use tempfile::Builder;
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "whisper")))]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 #[cfg(not(feature = "whisper"))]
