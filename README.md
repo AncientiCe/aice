@@ -43,7 +43,7 @@ License: Apache-2.0 (see [LICENSE](LICENSE)).
 ## Stability and support matrix
 
 - Stable runtime path: `apps/desktop-runner` via `pod-voice` on macOS arm64.
-- `desktop-runner` binary is deprecated; prefer `pod-voice` or split runtime (`aice-backend` + `aice-macos`).
+- `desktop-runner` binary is deprecated; prefer `pod-voice` or split runtime with `aice-backend` plus the external macOS frontend repo ([AncientiCe/aice-macos](https://github.com/AncientiCe/aice-macos)).
 - Advanced path: `apps/pod-gateway` is available for transport-focused deployments and experimentation.
 - Experimental hardware path: `pod-firmware` and M5Stack ATOM Echo integration are not covered by binary release guarantees.
 - Compatibility policy: `0.1.x` preserves current `config.example.json` defaults unless release notes state otherwise.
@@ -106,7 +106,7 @@ Split runtime (two services):
 
 ```bash
 cargo aice-backend
-cargo aice-macos
+# start macOS frontend from external repo: https://github.com/AncientiCe/aice-macos
 ```
 
 ## Canonical cargo commands
@@ -115,12 +115,11 @@ Defined in `.cargo/config.toml`:
 
 - `cargo aice-pod-voice` -> run local Jarvis runtime (primary path)
 - `cargo aice-backend` -> backend LLM/orchestration service
-- `cargo aice-macos` -> macOS frontend service (STT/TTS + macOS skills)
 - `cargo aice-gateway` -> standalone pod transport service
 - `cargo aice-fmt` -> `cargo fmt --all -- --check`
-- `cargo aice-clippy` -> `cargo clippy --workspace --exclude aice-macos --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
+- `cargo aice-clippy` -> `cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
 - `cargo aice-audit` -> dependency audit
-- `cargo aice-test` -> workspace tests excluding deprecated apps (`aice-macos`, `desktop-runner`)
+- `cargo aice-test` -> workspace tests excluding deprecated app (`desktop-runner`)
 
 ## Releases (v0.1.0)
 

@@ -4,7 +4,7 @@
 
 **Purpose:** Capture a local macOS screenshot and save it under `~/Pictures/aice/` from LLM-classified voice commands such as "take a screenshot" or "take a screenshot called desk.png".
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -66,3 +66,4 @@ sequenceDiagram
 | `screenshot_skill_errors_total` | Counter | `kind` (`ScreenshotSkillError` display string) |
 | `screenshot_skill_execute_duration_seconds` | Histogram | none |
 | `voice_screenshot_skill_total` | Counter | `result` (`success` or `error`) |
+

@@ -4,7 +4,7 @@
 
 **Purpose:** Add or remove items from a dated shopping list note in macOS Notes.app via AppleScript. Each shopping list is a separate note named `"Shopping List DD Mon YYYY"`.
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -100,3 +100,4 @@ sequenceDiagram
 | `shopping_list_skill_execute_total` | Counter | `action` |
 | `shopping_list_skill_errors_total` | Counter | `action` |
 | `shopping_list_skill_execute_duration_seconds` | Histogram | `action` |
+

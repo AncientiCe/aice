@@ -4,7 +4,7 @@
 
 **Purpose:** Create reminders in macOS Reminders.app via AppleScript. Supports optional due date/time in ISO 8601 format.
 
-**Execution Owner (Split Runtime):** `aice-macos`
+**Execution Owner (Split Runtime):** External macOS frontend service ([`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos))
 
 ---
 
@@ -83,3 +83,4 @@ sequenceDiagram
 | `reminder_skill_execute_total` | Counter | *(none)* |
 | `reminder_skill_errors_total` | Counter | *(none)* |
 | `reminder_skill_execute_duration_seconds` | Histogram | *(none)* |
+

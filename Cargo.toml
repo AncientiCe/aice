@@ -15,7 +15,6 @@ members = [
     "crates/pod-protocol",
     "apps/desktop-runner",
     "apps/aice-backend",
-    "apps/aice-macos",
     "apps/pod-gateway",
 ]
 
