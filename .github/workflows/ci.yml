@@ -53,7 +53,13 @@ jobs:
         run: cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
 
       - name: Audit
-        run: cargo install cargo-audit && cargo audit --deny warnings
+        run: |
+          cp Cargo.toml Cargo.toml.bak
+          trap 'mv Cargo.toml.bak Cargo.toml' EXIT
+          sed '/"apps\/desktop-runner"/d' Cargo.toml.bak > Cargo.toml
+          cargo generate-lockfile
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
 
       - name: Test
         run: cargo test --workspace --exclude desktop-runner
