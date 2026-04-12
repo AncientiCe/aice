@@ -68,10 +68,12 @@ type ClassifierPromptCache = Arc<RwLock<HashMap<String, ClassifierPromptArtifact
 
 const MAX_BINARY_FRAME_BYTES: usize = 32_768;
 
-/// Minimum new samples before running incremental STT on a streaming binary
-/// frame.  At 16 kHz this is 100 ms — fast partial transcripts without
-/// hammering the transcriber on every 20 ms chunk.
+/// Minimum pending samples before running incremental STT on append-only
+/// buffered audio. At 16 kHz this is 100 ms.
 const STT_DEBOUNCE_SAMPLES: usize = 1_600;
+/// Minimum wall-clock gap between incremental STT runs to avoid repeatedly
+/// re-transcribing the full turn buffer under sustained audio chunk ingress.
+const STT_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(1_200);
 const FRONTEND_CLASSIFIER_SKILLS: [&str; 11] = [
     "skill_smart_home",
     "skill_assistant",
@@ -512,7 +514,8 @@ struct WsTurnState {
     turn_id: String,
     supported_frontend_intents: Vec<String>,
     samples: Vec<i16>,
-    samples_at_last_stt: usize,
+    last_incremental_stt_at: Option<Instant>,
+    transcript_accum: String,
     started_at: Instant,
     done_requested: bool,
     first_partial_recorded: bool,
@@ -537,7 +540,8 @@ impl WsTurnState {
             turn_id,
             supported_frontend_intents,
             samples: Vec::new(),
-            samples_at_last_stt: 0,
+            last_incremental_stt_at: None,
+            transcript_accum: String::new(),
             started_at: Instant::now(),
             done_requested: false,
             first_partial_recorded: false,
@@ -607,6 +611,11 @@ async fn emit_decision_events(
 ) -> Result<bool, DynError> {
     match decision {
         BackendEngineDecision::Chat(text) | BackendEngineDecision::BackendSkill(text) => {
+            info!(
+                turn_id,
+                token_chars = text.chars().count(),
+                "streaming_response_to_frontend"
+            );
             emit_turn_stream_event(
                 ws,
                 &TurnStreamServerEvent::Token {
@@ -618,6 +627,11 @@ async fn emit_decision_events(
             Ok(true)
         }
         BackendEngineDecision::FrontendSkillIntent(intent) => {
+            info!(
+                turn_id,
+                intent = %intent.intent,
+                "streaming_response_to_frontend"
+            );
             emit_turn_stream_event(ws, &TurnStreamServerEvent::FrontendSkillIntent(intent)).await?;
             Ok(false)
         }
@@ -633,6 +647,12 @@ fn spawn_speculative_turn(
     state.active_generation = state.active_generation.saturating_add(1);
     let generation = state.active_generation;
     let turn_id = state.turn_id.clone();
+    info!(
+        turn_id = %turn_id,
+        generation,
+        since_turn_start_ms = state.started_at.elapsed().as_millis(),
+        "calling_llm_for_classification"
+    );
     let context = if state.supported_frontend_intents.is_empty() {
         None
     } else {
@@ -674,6 +694,11 @@ async fn process_binary_audio_frame(
     internal_tx: &mpsc::UnboundedSender<TurnStreamInternalEvent>,
     raw: &[u8],
 ) -> Result<(), DynError> {
+    if state.done_requested {
+        // Frontend already declared turn completion; ignore trailing audio frames
+        // so we can finalize quickly.
+        return Ok(());
+    }
     if !raw.len().is_multiple_of(2) {
         emit_turn_stream_event(
             ws,
@@ -706,24 +731,43 @@ async fn process_binary_audio_frame(
     }
     record_backend_audio_chunk(raw.len(), chunk_started.elapsed());
 
-    let new_samples_since_stt = state
-        .samples
-        .len()
-        .saturating_sub(state.samples_at_last_stt);
-    if state.samples_at_last_stt > 0 && new_samples_since_stt < STT_DEBOUNCE_SAMPLES {
+    let first_incremental_decode = state.last_incremental_stt_at.is_none();
+    if !first_incremental_decode && state.samples.len() < STT_DEBOUNCE_SAMPLES {
         return Ok(());
+    }
+    if !first_incremental_decode {
+        if let Some(last) = state.last_incremental_stt_at {
+            if last.elapsed() < STT_DEBOUNCE_INTERVAL {
+                return Ok(());
+            }
+        }
     }
 
     let stt_started = Instant::now();
+    state.last_incremental_stt_at = Some(stt_started);
+    let pending_samples = std::mem::take(&mut state.samples);
     let transcript = transcriber
-        .transcribe(state.samples.clone(), 16_000, 1)
+        .transcribe(pending_samples, 16_000, 1)
         .await
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    state.samples_at_last_stt = state.samples.len();
-    record_backend_turn_stage_duration("stt_incremental", stt_started.elapsed());
+    let stt_elapsed = stt_started.elapsed();
+    record_backend_turn_stage_duration("stt_incremental", stt_elapsed);
+    info!(
+        turn_id = %state.turn_id,
+        stt_elapsed_ms = stt_elapsed.as_millis(),
+        since_turn_start_ms = state.started_at.elapsed().as_millis(),
+        "turn_stt_ready"
+    );
 
-    let transcript = apply_backend_wake_word(&audio_config.wake_word, transcript);
+    if !transcript.is_empty() {
+        if !state.transcript_accum.is_empty() {
+            state.transcript_accum.push(' ');
+        }
+        state.transcript_accum.push_str(&transcript);
+    }
+    let transcript =
+        apply_backend_wake_word(&audio_config.wake_word, state.transcript_accum.clone());
     if transcript.is_empty() {
         return Ok(());
     }
@@ -839,9 +883,27 @@ async fn handle_turn_stream_socket(
                                     ws_session_id = Some(session_id.clone());
                                     ws_device_id = Some(dev);
                                     let intents = normalize_supported_frontend_intents(&supported_frontend_intents);
+                                    info!(
+                                        turn_id = %turn_id,
+                                        session_id = %session_id,
+                                        supported_frontend_intents = intents.len(),
+                                        "turn_start"
+                                    );
                                     turn = Some(WsTurnState::new(session_id, device_id, turn_id, intents));
                                 }
                                 TurnStreamClientMessage::TurnDone => {
+                                    let raw_since_turn_start_ms = turn
+                                        .as_ref()
+                                        .map(|state| state.started_at.elapsed().as_millis());
+                                    if let Some(ms) = raw_since_turn_start_ms {
+                                        info!(
+                                            since_turn_start_ms = ms,
+                                            has_active_turn = true,
+                                            "turn_done_received_raw"
+                                        );
+                                    } else {
+                                        info!(has_active_turn = false, "turn_done_received_raw");
+                                    }
                                     let Some(state) = turn.as_mut() else {
                                         emit_turn_stream_event(
                                             &mut ws,
@@ -853,16 +915,27 @@ async fn handle_turn_stream_socket(
                                         .await?;
                                         continue;
                                     };
+                                    info!(
+                                        turn_id = %state.turn_id,
+                                        since_turn_start_ms = state.started_at.elapsed().as_millis(),
+                                        "turn_done_received"
+                                    );
                                     state.done_requested = true;
-                                    if state.samples.len() > state.samples_at_last_stt {
-                                        let final_transcript = transcriber
-                                            .transcribe(state.samples.clone(), 16_000, 1)
+                                    if !state.samples.is_empty() {
+                                        let final_transcript_chunk = transcriber
+                                            .transcribe(std::mem::take(&mut state.samples), 16_000, 1)
                                             .await
                                             .map(|value| value.trim().to_string())
                                             .unwrap_or_default();
+                                        if !final_transcript_chunk.is_empty() {
+                                            if !state.transcript_accum.is_empty() {
+                                                state.transcript_accum.push(' ');
+                                            }
+                                            state.transcript_accum.push_str(&final_transcript_chunk);
+                                        }
                                         let final_transcript = apply_backend_wake_word(
                                             &audio_config.wake_word,
-                                            final_transcript,
+                                            state.transcript_accum.clone(),
                                         );
                                         if !final_transcript.is_empty()
                                             && state.active_transcript.as_deref()
@@ -889,14 +962,9 @@ async fn handle_turn_stream_socket(
                                     if state.active_task.is_none()
                                         && state.completed_generation.is_none()
                                     {
-                                        let transcript = transcriber
-                                            .transcribe(state.samples.clone(), 16_000, 1)
-                                            .await
-                                            .map(|value| value.trim().to_string())
-                                            .unwrap_or_default();
                                         let transcript = apply_backend_wake_word(
                                             &audio_config.wake_word,
-                                            transcript,
+                                            state.transcript_accum.clone(),
                                         );
                                         if !transcript.is_empty() {
                                             spawn_speculative_turn(
@@ -906,6 +974,11 @@ async fn handle_turn_stream_socket(
                                                 internal_tx.clone(),
                                             );
                                         } else {
+                                            info!(
+                                                turn_id = %state.turn_id,
+                                                since_turn_start_ms = state.started_at.elapsed().as_millis(),
+                                                "turn_done"
+                                            );
                                             emit_turn_stream_event(
                                                 &mut ws,
                                                 &TurnStreamServerEvent::Done {
@@ -957,13 +1030,41 @@ async fn handle_turn_stream_socket(
                                     intent_id: _,
                                     result,
                                 } => {
+                                    let since_turn_start_ms = turn
+                                        .as_ref()
+                                        .filter(|state| state.turn_id == turn_id)
+                                        .map(|state| state.started_at.elapsed().as_millis());
+                                    if let Some(ms) = since_turn_start_ms {
+                                        info!(
+                                            turn_id = %turn_id,
+                                            since_turn_start_ms = ms,
+                                            "frontend_skill_interpret_request"
+                                        );
+                                    } else {
+                                        info!(turn_id = %turn_id, "frontend_skill_interpret_request");
+                                    }
                                     let skill_started = Instant::now();
                                     let finalize_result = engine
                                         .finalize_frontend_skill(&turn_id, result)
                                         .await;
-                                    record_backend_turn_duration("frontend_skill_finalize", skill_started.elapsed());
+                                    let finalize_elapsed = skill_started.elapsed();
+                                    record_backend_turn_duration("frontend_skill_finalize", finalize_elapsed);
                                     match finalize_result {
                                         Ok(text) => {
+                                            if let Some(ms) = since_turn_start_ms {
+                                                info!(
+                                                    turn_id = %turn_id,
+                                                    since_turn_start_ms = ms,
+                                                    llm_reasoning_elapsed_ms = finalize_elapsed.as_millis(),
+                                                    "frontend_skill_interpret_response"
+                                                );
+                                            } else {
+                                                info!(
+                                                    turn_id = %turn_id,
+                                                    llm_reasoning_elapsed_ms = finalize_elapsed.as_millis(),
+                                                    "frontend_skill_interpret_response"
+                                                );
+                                            }
                                             record_backend_turn_total("frontend_skill_finalize", "success");
                                             emit_turn_stream_event(
                                                 &mut ws,
@@ -975,6 +1076,20 @@ async fn handle_turn_stream_socket(
                                             .await?;
                                         }
                                         Err(error) => {
+                                            if let Some(ms) = since_turn_start_ms {
+                                                info!(
+                                                    turn_id = %turn_id,
+                                                    since_turn_start_ms = ms,
+                                                    llm_reasoning_elapsed_ms = finalize_elapsed.as_millis(),
+                                                    "frontend_skill_interpret_response_error"
+                                                );
+                                            } else {
+                                                info!(
+                                                    turn_id = %turn_id,
+                                                    llm_reasoning_elapsed_ms = finalize_elapsed.as_millis(),
+                                                    "frontend_skill_interpret_response_error"
+                                                );
+                                            }
                                             record_backend_turn_total("frontend_skill_finalize", "error");
                                             emit_turn_stream_event(
                                                 &mut ws,
@@ -985,6 +1100,15 @@ async fn handle_turn_stream_socket(
                                             )
                                             .await?;
                                         }
+                                    }
+                                    if let Some(ms) = since_turn_start_ms {
+                                        info!(
+                                            turn_id = %turn_id,
+                                            since_turn_start_ms = ms,
+                                            "turn_done"
+                                        );
+                                    } else {
+                                        info!(turn_id = %turn_id, "turn_done");
                                     }
                                     emit_turn_stream_event(
                                         &mut ws,
@@ -1015,10 +1139,19 @@ async fn handle_turn_stream_socket(
                                 continue;
                             }
                             record_backend_turn_stage_duration("speculative_generate", duration);
+                            let since_turn_start_ms = state.started_at.elapsed().as_millis();
                             state.active_task = None;
                             state.completed_generation = Some(generation);
                             match result {
                                 Ok(decision) => {
+                                    info!(
+                                        turn_id = %state.turn_id,
+                                        generation,
+                                        decision = ?decision,
+                                        classify_elapsed_ms = duration.as_millis(),
+                                        since_turn_start_ms,
+                                        "llm_classified_response"
+                                    );
                                     let frontend_caps: Option<Vec<String>> = if state.supported_frontend_intents.is_empty() {
                                         None
                                     } else {
@@ -1052,6 +1185,14 @@ async fn handle_turn_stream_socket(
                                     }
                                 }
                                 Err(error) => {
+                                    info!(
+                                        turn_id = %state.turn_id,
+                                        generation,
+                                        classify_elapsed_ms = duration.as_millis(),
+                                        since_turn_start_ms,
+                                        error = %error,
+                                        "llm_classified_response_error"
+                                    );
                                     emit_turn_stream_event(
                                         &mut ws,
                                         &TurnStreamServerEvent::Error {
@@ -1063,6 +1204,11 @@ async fn handle_turn_stream_socket(
                                 }
                             }
                             if state.done_requested && !state.awaiting_skill_result {
+                                info!(
+                                    turn_id = %state.turn_id,
+                                    since_turn_start_ms = state.started_at.elapsed().as_millis(),
+                                    "turn_done"
+                                );
                                 emit_turn_stream_event(
                                     &mut ws,
                                     &TurnStreamServerEvent::Done {
@@ -1715,7 +1861,8 @@ impl BackendEngine for AiceBackendEngine {
                 IntentDecision::Chat
             }
         };
-        record_backend_turn_stage_duration("classify_intent", classify_started.elapsed());
+        let classify_elapsed = classify_started.elapsed();
+        record_backend_turn_stage_duration("classify_intent", classify_elapsed);
 
         let build_frontend_intent = |intent: &str, slots: serde_json::Value| {
             BackendEngineDecision::FrontendSkillIntent(FrontendSkillIntent {
