@@ -9,6 +9,7 @@ use core_runtime_protocol::{
     TurnStreamServerEvent,
 };
 use futures_util::{SinkExt, StreamExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::connect_async;
@@ -124,6 +125,32 @@ impl BackendEngine for EchoEngine {
     }
 }
 
+struct CountingEchoEngine {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl BackendEngine for CountingEchoEngine {
+    async fn process_turn(
+        &self,
+        request: TurnRequest,
+    ) -> Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(BackendEngineDecision::Chat(format!(
+            "echo:{}",
+            request.transcript.trim()
+        )))
+    }
+
+    async fn finalize_frontend_skill(
+        &self,
+        _turn_id: &str,
+        _request: FrontendSkillResultRequest,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok("done".to_string())
+    }
+}
+
 fn pcm_binary_frame(samples: &[i16]) -> Vec<u8> {
     samples.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
@@ -153,7 +180,7 @@ async fn healthz_returns_ok() {
 }
 
 #[tokio::test]
-async fn turn_stream_binary_audio_emits_token_before_done() {
+async fn turn_stream_binary_audio_does_not_emit_token_before_done() {
     let engine: Arc<dyn BackendEngine> = Arc::new(EchoEngine);
     let transcriber: Arc<dyn AudioTranscriber> = Arc::new(StaticTranscriber {
         transcript: "hello backend".to_string(),
@@ -194,33 +221,25 @@ async fn turn_stream_binary_audio_emits_token_before_done() {
         .unwrap_or_else(|error| panic!("send binary failed: {error}"));
 
     let first_message = recv_ws(&mut read).await;
-
     let Message::Text(text) = first_message else {
         panic!("expected text websocket message");
     };
     let event: TurnStreamServerEvent =
         serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode event failed: {error}"));
-    match event {
-        TurnStreamServerEvent::PartialTranscript { .. } | TurnStreamServerEvent::Token { .. } => {}
-        other => panic!("unexpected first event: {other:?}"),
-    }
+    assert!(
+        matches!(event, TurnStreamServerEvent::PartialTranscript { .. }),
+        "expected first event to be partial transcript, got: {event:?}"
+    );
 
-    let mut saw_token_before_done = matches!(event, TurnStreamServerEvent::Token { .. });
-    if !saw_token_before_done {
-        for _ in 0..4 {
-            let msg = recv_ws(&mut read).await;
-            let Message::Text(text) = msg else {
-                continue;
-            };
-            let ev: TurnStreamServerEvent = serde_json::from_str(&text)
-                .unwrap_or_else(|error| panic!("decode event failed: {error}"));
-            if matches!(ev, TurnStreamServerEvent::Token { .. }) {
-                saw_token_before_done = true;
-                break;
-            }
-        }
+    let maybe_next = timeout(Duration::from_millis(250), read.next()).await;
+    if let Ok(Some(Ok(Message::Text(text)))) = maybe_next {
+        let ev: TurnStreamServerEvent = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("decode event failed: {error}"));
+        assert!(
+            !matches!(ev, TurnStreamServerEvent::Token { .. }),
+            "unexpected token before turn_done: {ev:?}"
+        );
     }
-    assert!(saw_token_before_done);
 
     write
         .send(Message::Text(
@@ -234,7 +253,7 @@ async fn turn_stream_binary_audio_emits_token_before_done() {
 }
 
 #[tokio::test]
-async fn turn_stream_transcript_divergence_emits_latest_token() {
+async fn turn_stream_transcript_divergence_only_emits_final_token_after_done() {
     let engine: Arc<dyn BackendEngine> = Arc::new(EchoEngine);
     let transcriber: Arc<dyn AudioTranscriber> = Arc::new(SequencedTranscriber {
         transcripts: Mutex::new(vec![
@@ -304,10 +323,94 @@ async fn turn_stream_transcript_divergence_emits_latest_token() {
     }
     assert!(
         tokens.iter().any(|token| token.contains("final coherent")),
-        "expected latest speculative transcript token in {:?}",
+        "expected final transcript token in {:?}",
+        tokens
+    );
+    assert_eq!(
+        tokens.len(),
+        1,
+        "expected exactly one token response after turn_done, got {:?}",
         tokens
     );
 
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn turn_stream_only_classifies_once_after_turn_done() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let engine: Arc<dyn BackendEngine> = Arc::new(CountingEchoEngine {
+        calls: calls.clone(),
+    });
+    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(SequencedTranscriber {
+        transcripts: Mutex::new(vec![
+            "old hypothesis".to_string(),
+            "final coherent".to_string(),
+        ]),
+    });
+    let handle = spawn_server_with_audio(
+        "127.0.0.1:0",
+        engine,
+        transcriber,
+        AudioIngressConfig::default(),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("spawn failed: {error}"));
+
+    let ws_url = format!("ws://{}/turns/stream", handle.bind);
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .unwrap_or_else(|error| panic!("ws connect failed: {error}"));
+    let (mut write, mut read) = ws_stream.split();
+
+    write
+        .send(Message::Text(
+            serde_json::to_string(&TurnStreamClientMessage::TurnStart {
+                session_id: "s1".to_string(),
+                device_id: Some("device-a".to_string()),
+                turn_id: "turn-ws-count".to_string(),
+                supported_frontend_intents: vec![],
+                schema_version: None,
+            })
+            .unwrap_or_else(|error| panic!("encode failed: {error}")),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("send failed: {error}"));
+
+    for _ in 0..3_u64 {
+        write
+            .send(Message::Binary(pcm_binary_frame(&[
+                100, 101, 102, 103, 104, 105,
+            ])))
+            .await
+            .unwrap_or_else(|error| panic!("send failed: {error}"));
+    }
+
+    write
+        .send(Message::Text(
+            serde_json::to_string(&TurnStreamClientMessage::TurnDone)
+                .unwrap_or_else(|error| panic!("encode failed: {error}")),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("send failed: {error}"));
+
+    for _ in 0..12 {
+        let msg = recv_ws(&mut read).await;
+        let Message::Text(text) = msg else {
+            continue;
+        };
+        let ev: TurnStreamServerEvent = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("decode event failed: {error}"));
+        if matches!(ev, TurnStreamServerEvent::Done { .. }) {
+            break;
+        }
+    }
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "expected one backend classification call after turn_done"
+    );
     handle.shutdown().await;
 }
 

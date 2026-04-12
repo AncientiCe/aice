@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let engine: Arc<dyn BackendEngine> = Arc::new(AiceBackendEngine::from_config(&config).await?);
     let transcriber = Arc::new(WhisperAudioTranscriber::new(
         config.stt.whisper_model_path.clone(),
+        config.stt.preload_model_on_startup,
     )?);
     let handle = spawn_server_with_audio(
         &bind,

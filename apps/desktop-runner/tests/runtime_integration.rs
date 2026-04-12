@@ -18,10 +18,12 @@ use desktop_runner::{
 use futures::stream;
 use serial_test::serial;
 use std::collections::VecDeque;
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tracing_subscriber::fmt::MakeWriter;
 
 pub trait TestResultExt<T, E> {
     fn must(self) -> T;
@@ -324,6 +326,33 @@ struct MockTts {
     stops_requested: usize,
 }
 
+#[derive(Clone)]
+struct SharedBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl io::Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().must().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct SharedMakeWriter {
+    sink: Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+impl<'a> MakeWriter<'a> for SharedMakeWriter {
+    type Writer = SharedBuf;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedBuf(self.sink.clone())
+    }
+}
+
 struct ScriptedCapture {
     chunks: VecDeque<Vec<i16>>,
 }
@@ -435,6 +464,45 @@ async fn runtime_empty_input_returns_empty_input() {
         .must();
 
     assert_eq!(outcome, RuntimeTurnOutcome::EmptyInput);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn runtime_logs_final_stt_transcript_before_llm_handoff() {
+    let config = Config::default();
+    let mut runtime = DesktopRuntime::new(config);
+    runtime.activate_wake();
+    let mut stt = MockStt("what is the weather in Berlin".to_string());
+    let llm = MockLlm("Sunny");
+    let mut tts = MockTts::new();
+    let (_tx, rx) = tokio::sync::broadcast::channel(1);
+    let sink = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let make_writer = SharedMakeWriter { sink: sink.clone() };
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(make_writer)
+        .without_time()
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let outcome = runtime
+        .run_one_turn(&mut stt, &llm, &mut tts, None::<&MockSearch>, rx)
+        .await
+        .must();
+    drop(_guard);
+
+    assert_eq!(outcome, RuntimeTurnOutcome::Complete);
+    let output = String::from_utf8(sink.lock().must().clone()).must();
+    assert!(
+        output.contains("stt_final_for_llm"),
+        "expected final STT handoff log entry, got: {}",
+        output
+    );
+    assert!(
+        output.contains("what is the weather in Berlin"),
+        "expected final STT transcript in logs, got: {}",
+        output
+    );
 }
 
 #[tokio::test]

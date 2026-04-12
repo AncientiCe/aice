@@ -548,3 +548,28 @@ sequenceDiagram
 - **Outputs:** WebSocket server events `partial_transcript`, `intent_update`, `token`, `frontend_skill_intent`, `done`, `error`.
 - **Latency instrumentation:** `backend_turn_partial_transcript_duration_seconds`, `backend_turn_first_token_duration_seconds`, `backend_turn_speculative_restarts_total`, `backend_turn_cancellations_total{reason}`, `backend_llm_provider_duration_seconds{provider}` plus stage labels `stt_incremental`, `speculative_classify`, `speculative_generate`.
 - **Failure paths:** Invalid message format/sequence or unsupported audio format emits `error`; transcript divergence aborts prior speculative run and increments cancellation/restart metrics; `turn_cancel` aborts active work and emits `done`; WebSocket disconnect cleans up the session.
+
+---
+
+## 22. Startup model preload (STT + LLM warm path)
+
+**Purpose:** Reduce first-turn round-trip latency by preloading Whisper STT and local LLM models at process startup, then keeping LLM model residency alive between turns.
+
+```mermaid
+flowchart LR
+    Boot["Process startup"] --> STTInit["WhisperSttStream::new(model)"]
+    STTInit --> STTWarm{"stt.preload_model_on_startup"}
+    STTWarm -->|true| STTWarmRun["stt.warm_up()"]
+    STTWarm -->|false| SkipStt["Skip STT preload"]
+    Boot --> LLMInit["OllamaLlmStream::new(..., model_keep_alive)"]
+    LLMInit --> LLMWarm{"llm.preload_model_on_startup"}
+    LLMWarm -->|true| LLMWarmRun["llm.warm_up()"]
+    LLMWarm -->|false| SkipLlm["Skip LLM preload"]
+    STTWarmRun --> Metrics["voice_model_preload_total/duration_seconds"]
+    LLMWarmRun --> Metrics
+```
+
+**Notes:**
+- **Inputs:** `stt.preload_model_on_startup`, `llm.preload_model_on_startup`, and `llm.model_keep_alive`.
+- **Outputs:** Lower first-turn latency and reduced model cold-start churn; telemetry `voice_model_preload_total{component,result}` and `voice_model_preload_duration_seconds{component}`.
+- **Failure paths:** Preload failures are non-fatal, logged as warnings, metered as `result="error"`, and runtime continues with lazy model loading.

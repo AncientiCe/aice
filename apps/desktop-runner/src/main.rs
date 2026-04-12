@@ -4,7 +4,8 @@ use core_audio::CpalCapture;
 use core_config::Config;
 use core_llm::OllamaLlmStream;
 use core_observability::{
-    init_json_logging, init_prometheus_exporter, register_metrics, ExporterInitState,
+    init_json_logging, init_prometheus_exporter, record_model_preload,
+    record_model_preload_duration, register_metrics, ExporterInitState,
 };
 use core_observability::{record_memory_load, record_memory_load_duration};
 use core_search::HttpSearchProvider;
@@ -56,6 +57,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut capture = CpalCapture::from_preferred_name(config.audio.input_device.as_deref())?;
     info!(device = %capture.device_name(), "microphone capture initialized");
     let mut stt = WhisperSttStream::new(Path::new(&config.stt.whisper_model_path))?;
+    if config.stt.preload_model_on_startup {
+        let t0 = Instant::now();
+        match stt.warm_up() {
+            Ok(()) => {
+                record_model_preload_duration("stt", t0.elapsed());
+                record_model_preload("stt", "success");
+                info!("stt model preloaded at startup");
+            }
+            Err(error) => {
+                record_model_preload_duration("stt", t0.elapsed());
+                record_model_preload("stt", "error");
+                warn!(%error, "stt preload failed; continuing without startup warmup");
+            }
+        }
+    }
 
     let weather_skill = OpenMeteoWeatherSkill::new();
     let time_skill = OpenMeteoTimeSkill::new();
@@ -117,7 +133,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.llm.short_replies,
         config.llm.max_output_tokens,
         llm_system_prompt,
+        config.llm.model_keep_alive.clone(),
     );
+    if config.llm.preload_model_on_startup {
+        let t0 = Instant::now();
+        match llm.warm_up().await {
+            Ok(()) => {
+                record_model_preload_duration("llm", t0.elapsed());
+                record_model_preload("llm", "success");
+                info!("llm model preloaded at startup");
+            }
+            Err(error) => {
+                record_model_preload_duration("llm", t0.elapsed());
+                record_model_preload("llm", "error");
+                warn!(%error, "llm preload failed; continuing without startup warmup");
+            }
+        }
+    }
     let mut tts = PiperTtsSink::new(Path::new(&config.tts.piper_model_path))?;
 
     let intent_classifier = LlmIntentClassifier::new(&llm);
