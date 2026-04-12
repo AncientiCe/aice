@@ -1,6 +1,5 @@
 //! Desktop runtime: one-turn and continuous-loop flow with wake-word gating.
 
-use chrono::Local;
 use core_audio::{AudioCapture, CaptureError, SAMPLE_RATE};
 use core_config::Config;
 use core_observability::{
@@ -32,10 +31,8 @@ use core_skills::{
 };
 use core_vad::WakeWordGate;
 use serde::Deserialize;
-use std::fs;
 use std::future::Future;
-use std::io::{Error as IoError, ErrorKind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -209,17 +206,6 @@ struct StreamLlmTtsOutcome {
     tts_first_audio_latency: Option<Duration>,
     tts_duration: Duration,
     tts_flush_duration: Duration,
-}
-
-enum LocalCommand {
-    Speak(String),
-    PlayChocobo,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedMediaCommand {
-    action: String,
-    target: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -695,6 +681,7 @@ impl DesktopRuntime {
         }
 
         info!(user_text = %user_text.trim(), "turn");
+        info!(stt_final = %user_text.trim(), "stt_final_for_llm");
 
         let mut decision_override: Option<IntentDecision> = None;
         if let Some(pending) = self.pending_force_quit.take() {
@@ -762,48 +749,6 @@ impl DesktopRuntime {
             record_memory_fact_store_duration("turn", t0.elapsed());
         }
 
-        let lowered = user_text.to_lowercase();
-        if Self::wants_stop(&lowered) {
-            if let Some(skill) = media_skill {
-                let _ = skill.execute(Some("stop"), None).await;
-            }
-            tts.request_stop_playback();
-            return Ok(Self::finish_turn(
-                "stop",
-                RuntimeTurnOutcome::Complete,
-                turn_started_at,
-                &mut timings,
-            ));
-        }
-
-        if let Some(local_command) = Self::local_command(&user_text) {
-            return match local_command {
-                LocalCommand::Speak(local_response) => {
-                    self.register_assistant_utterance(&local_response, Instant::now());
-                    let t0 = Instant::now();
-                    let outcome = Self::speak_with_cancel(tts, &local_response, cancel_rx).await?;
-                    timings.tts = Some(t0.elapsed());
-                    Ok(Self::finish_turn(
-                        "local_command_speak",
-                        outcome,
-                        turn_started_at,
-                        &mut timings,
-                    ))
-                }
-                LocalCommand::PlayChocobo => {
-                    let t0 = Instant::now();
-                    let outcome = Self::play_chocobo_with_cancel(tts, cancel_rx).await?;
-                    timings.tts = Some(t0.elapsed());
-                    Ok(Self::finish_turn(
-                        "local_command_chocobo",
-                        outcome,
-                        turn_started_at,
-                        &mut timings,
-                    ))
-                }
-            };
-        }
-
         if cancel_rx.try_recv().is_ok() {
             tts.request_stop_playback();
             return Ok(Self::finish_turn(
@@ -812,60 +757,6 @@ impl DesktopRuntime {
                 turn_started_at,
                 &mut timings,
             ));
-        }
-
-        let parsed_media_cmd = Self::parse_media_command(&user_text);
-
-        if let Some(media_cmd) = parsed_media_cmd {
-            if let Some(skill) = media_skill {
-                let action_label = media_cmd.action.as_str();
-                let t0 = Instant::now();
-                match skill
-                    .execute(Some(action_label), media_cmd.target.as_deref())
-                    .await
-                {
-                    Ok(result) => {
-                        record_media_skill("success");
-                        record_media_execute("success", action_label);
-                        record_media_execute_duration(action_label, t0.elapsed());
-                        let spoken = if let Some(np) = result.now_playing.as_deref() {
-                            format!("Now Playing - {}", np)
-                        } else {
-                            result.summary
-                        };
-                        self.register_assistant_utterance(&spoken, Instant::now());
-                        let t0 = Instant::now();
-                        let outcome = Self::speak_with_cancel(tts, &spoken, cancel_rx).await?;
-                        timings.tts = Some(t0.elapsed());
-                        return Ok(Self::finish_turn(
-                            "media_direct",
-                            outcome,
-                            turn_started_at,
-                            &mut timings,
-                        ));
-                    }
-                    Err(e) => {
-                        record_media_skill("error");
-                        record_media_execute("error", action_label);
-                        record_media_execute_duration(action_label, t0.elapsed());
-                        warn!(error = %e, "direct media command failed");
-                        let t0 = Instant::now();
-                        let outcome = Self::speak_with_cancel(
-                            tts,
-                            "I could not control Music.app for that command.",
-                            cancel_rx,
-                        )
-                        .await?;
-                        timings.tts = Some(t0.elapsed());
-                        return Ok(Self::finish_turn(
-                            "media_direct_error",
-                            outcome,
-                            turn_started_at,
-                            &mut timings,
-                        ));
-                    }
-                }
-            }
         }
 
         // Intent classification: if we have a classifier, use it to decide chat vs skill.
@@ -2358,179 +2249,10 @@ impl DesktopRuntime {
         None
     }
 
-    /// True if the user is asking to stop ongoing sound/music/speech (voice: "Computer stop", etc.).
-    fn wants_stop(lowered: &str) -> bool {
-        let t = lowered.trim();
-        if t == "stop"
-            || t == "pause"
-            || t == "quiet"
-            || t == "mute"
-            || t == "enough"
-            || t == "cancel"
-        {
-            return true;
-        }
-        lowered.contains("computer stop")
-            || lowered.contains("computer pause")
-            || lowered.contains("computer, stop")
-            || lowered.contains("computer, pause")
-            || lowered.contains("hey computer stop")
-            || lowered.contains("hey computer pause")
-            || lowered.contains("ok computer stop")
-            || lowered.contains("ok computer pause")
-            || lowered.contains("stop talking")
-            || lowered.contains("be quiet")
-            || lowered.contains("shut up")
-            || lowered.contains("stop the music")
-            || lowered.contains("stop music")
-            || lowered.contains("stop playing")
-            || lowered.contains("stop sound")
-            || lowered.contains("stop the sound")
-            || lowered.contains("stop it")
-            || lowered.contains("stop that")
-            || lowered.contains("that's enough")
-            || lowered.contains("thats enough")
-            || lowered.contains("stop playback")
-            || lowered.contains("pause playback")
-            || lowered.contains("pause music")
-    }
-
-    fn local_command(user_text: &str) -> Option<LocalCommand> {
-        let lower = user_text.to_lowercase();
-        let wants_play = lower.contains("play")
-            || lower.contains("start")
-            || lower.contains("run")
-            || lower.contains("music")
-            || lower.contains("song");
-        let mentions_chocobo = lower.contains("chocobo")
-            || lower.contains("choco bo")
-            || lower.contains("choco-bow")
-            || lower.contains("choco bow");
-        if wants_play && mentions_chocobo {
-            return Some(LocalCommand::PlayChocobo);
-        }
-        if lower.contains("what time is it")
-            || lower.contains("tell me the time")
-            || (lower.contains("time") && lower.contains("now"))
-        {
-            let now = Local::now();
-            return Some(LocalCommand::Speak(format!(
-                "The current time is {}.",
-                now.format("%H:%M")
-            )));
-        }
-        if lower.contains("what date is it")
-            || lower.contains("today's date")
-            || lower.contains("today date")
-        {
-            let now = Local::now();
-            return Some(LocalCommand::Speak(format!(
-                "Today's date is {}.",
-                now.format("%Y-%m-%d")
-            )));
-        }
-        None
-    }
-
-    fn parse_media_command(user_text: &str) -> Option<ParsedMediaCommand> {
-        let text = Self::normalize_stt_media_variants(Self::strip_polite_prefix(
-            Self::normalize_voice_command_text(user_text),
-        ));
-        if text.is_empty() {
-            return None;
-        }
-        let lower = text;
-        if let Some(stripped) = lower.strip_prefix("play ") {
-            let target = stripped.trim().trim_matches('.').to_string();
-            if !target.is_empty() {
-                return Some(ParsedMediaCommand {
-                    action: "play".to_string(),
-                    target: Some(target),
-                });
-            }
-        }
-        if matches!(
-            lower.as_str(),
-            "pause"
-                | "stop"
-                | "next"
-                | "previous"
-                | "resume"
-                | "shuffle"
-                | "shuffle on"
-                | "shuffle off"
-        ) {
-            let action = match lower.as_str() {
-                "shuffle" => "shuffle_on".to_string(),
-                "shuffle on" => "shuffle_on".to_string(),
-                "shuffle off" => "shuffle_off".to_string(),
-                _ => lower,
-            };
-            return Some(ParsedMediaCommand {
-                action,
-                target: None,
-            });
-        }
-        if lower.contains("turn on shuffle")
-            || lower.contains("turn shuffle on")
-            || lower.contains("enable shuffle")
-        {
-            return Some(ParsedMediaCommand {
-                action: "shuffle_on".to_string(),
-                target: None,
-            });
-        }
-        if lower.contains("turn off shuffle")
-            || lower.contains("turn shuffle off")
-            || lower.contains("disable shuffle")
-        {
-            return Some(ParsedMediaCommand {
-                action: "shuffle_off".to_string(),
-                target: None,
-            });
-        }
-        if lower.contains("pause music") || lower.contains("stop music") {
-            return Some(ParsedMediaCommand {
-                action: "stop".to_string(),
-                target: None,
-            });
-        }
-        None
-    }
-
-    fn normalize_stt_media_variants(user_text: &str) -> String {
-        // Keep deterministic normalization minimal; semantic repair belongs to LLM normalization.
-        Self::normalize_text(user_text)
-    }
-
-    fn strip_polite_prefix(user_text: &str) -> &str {
-        let mut text = user_text.trim();
-        loop {
-            let lower = text.to_lowercase();
-            let next = if lower.starts_with("please ") {
-                Some(&text[7..])
-            } else if lower.starts_with("can you ") {
-                Some(&text[8..])
-            } else if lower.starts_with("could you ") {
-                Some(&text[10..])
-            } else {
-                None
-            };
-            let Some(next_text) = next else {
-                break;
-            };
-            text = next_text.trim_start();
-        }
-        text
-    }
-
     fn is_non_action_fragment(user_text: &str) -> bool {
         let normalized = Self::normalize_text(user_text);
         if normalized.is_empty() {
             return true;
-        }
-        if Self::wants_stop(&normalized) || Self::parse_media_command(&normalized).is_some() {
-            return false;
         }
         matches!(
             normalized.as_str(),
@@ -2551,8 +2273,8 @@ impl DesktopRuntime {
     }
 
     fn is_gate_bypass_command(user_text: &str) -> bool {
-        let lowered = user_text.to_lowercase();
-        Self::wants_stop(&lowered)
+        let _ = user_text;
+        false
     }
 
     fn register_assistant_utterance(&mut self, text: &str, now: Instant) {
@@ -2565,9 +2287,6 @@ impl DesktopRuntime {
 
     fn is_probable_self_echo(&self, user_text: &str, now: Instant) -> bool {
         let lower = user_text.to_lowercase();
-        if Self::wants_stop(&lower) {
-            return false;
-        }
         let has_wake = self
             .wake_gate
             .phrases()
@@ -2626,25 +2345,6 @@ impl DesktopRuntime {
         rms >= threshold
     }
 
-    fn normalize_voice_command_text(user_text: &str) -> &str {
-        let text = user_text.trim();
-        let lower = text.to_lowercase();
-        for prefix in [
-            "computer,",
-            "computer",
-            "hey computer,",
-            "hey computer",
-            "ok computer,",
-            "ok computer",
-        ] {
-            if lower.starts_with(prefix) {
-                return text[prefix.len()..]
-                    .trim_start_matches(|c: char| c == ',' || c == ':' || c.is_whitespace());
-            }
-        }
-        text
-    }
-
     fn is_console_interrupt_stt_error(err: &(dyn std::error::Error + Send + Sync)) -> bool {
         let msg = err.to_string().to_ascii_lowercase();
         msg.contains("whisper-cli interrupted by console control event")
@@ -2654,75 +2354,6 @@ impl DesktopRuntime {
     fn is_access_violation_stt_error(err: &(dyn std::error::Error + Send + Sync)) -> bool {
         let msg = err.to_string().to_ascii_lowercase();
         msg.contains("whisper-cli access violation (0xc0000005)") || msg.contains("0xc0000005")
-    }
-
-    async fn play_chocobo_with_cancel<T: TtsSink>(
-        tts: &mut T,
-        cancel_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<RuntimeTurnOutcome, Box<dyn std::error::Error + Send + Sync>> {
-        if cancel_rx.try_recv().is_ok() {
-            tts.request_stop_playback();
-            return Ok(RuntimeTurnOutcome::Interrupted);
-        }
-        let pcm = Self::load_chocobo_pcm()?;
-        if cancel_rx.try_recv().is_ok() {
-            tts.request_stop_playback();
-            return Ok(RuntimeTurnOutcome::Interrupted);
-        }
-        let played = tts.play_pcm_bytes(&pcm).await?;
-        if played {
-            Ok(RuntimeTurnOutcome::Complete)
-        } else {
-            Self::speak_with_cancel(
-                tts,
-                "I can play chocobo on the pod when pod audio output is active.",
-                cancel_rx,
-            )
-            .await
-        }
-    }
-
-    fn load_chocobo_pcm() -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        let path = Self::chocobo_path();
-        let source = fs::read_to_string(&path).map_err(|e| {
-            IoError::new(
-                ErrorKind::NotFound,
-                format!("failed to read chocobo source at {}: {e}", path.display()),
-            )
-        })?;
-        let mut out = Vec::new();
-        for token in source
-            .split(|c: char| c == ',' || c == '{' || c == '}' || c == ';' || c.is_whitespace())
-        {
-            let t = token.trim();
-            if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-                if hex.is_empty() || hex.len() > 2 {
-                    continue;
-                }
-                if let Ok(v) = u8::from_str_radix(hex, 16) {
-                    out.push(v);
-                }
-            }
-        }
-        if out.is_empty() {
-            return Err(IoError::new(
-                ErrorKind::InvalidData,
-                format!("no PCM bytes found in {}", path.display()),
-            )
-            .into());
-        }
-        Ok(out)
-    }
-
-    fn chocobo_path() -> PathBuf {
-        if let Ok(p) = std::env::var("AICE_CHOCOBO_C_PATH") {
-            let candidate = PathBuf::from(p);
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-        let default = Path::new("Examples").join("chocobo.c");
-        default
     }
 }
 
@@ -2747,39 +2378,6 @@ mod tests {
     fn detects_recoverable_stt_access_violation_message() {
         let err = std::io::Error::other("whisper-cli access violation (0xc0000005)");
         assert!(DesktopRuntime::is_access_violation_stt_error(&err));
-    }
-
-    #[test]
-    fn parse_media_command_accepts_polite_play_prefix() {
-        let cmd = DesktopRuntime::parse_media_command("computer please play blinding lights.");
-        assert!(cmd.is_some());
-        let Some(cmd) = cmd else {
-            panic!("expected media command");
-        };
-        assert_eq!(cmd.action, "play");
-        assert_eq!(cmd.target.as_deref(), Some("blinding lights"));
-    }
-
-    #[test]
-    fn parse_media_command_accepts_shuffle_on() {
-        let cmd = DesktopRuntime::parse_media_command("computer turn on shuffle");
-        assert!(cmd.is_some());
-        let Some(cmd) = cmd else {
-            panic!("expected media command");
-        };
-        assert_eq!(cmd.action, "shuffle_on");
-        assert!(cmd.target.is_none());
-    }
-
-    #[test]
-    fn parse_media_command_accepts_shuffle_off() {
-        let cmd = DesktopRuntime::parse_media_command("computer turn shuffle off");
-        assert!(cmd.is_some());
-        let Some(cmd) = cmd else {
-            panic!("expected media command");
-        };
-        assert_eq!(cmd.action, "shuffle_off");
-        assert!(cmd.target.is_none());
     }
 
     #[test]

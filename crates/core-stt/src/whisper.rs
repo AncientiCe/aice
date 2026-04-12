@@ -54,6 +54,8 @@ pub struct WhisperSttStream {
     cli_bin: String,
     #[cfg(feature = "whisper")]
     native_ctx: whisper_rs::WhisperContext,
+    #[cfg(feature = "whisper")]
+    native_state: whisper_rs::WhisperState,
 }
 
 impl WhisperSttStream {
@@ -72,6 +74,10 @@ impl WhisperSttStream {
             whisper_rs::WhisperContextParameters::default(),
         )
         .map_err(|e| SttError::Whisper(format!("failed to initialize whisper context: {e}")))?;
+        #[cfg(feature = "whisper")]
+        let native_state = native_ctx
+            .create_state()
+            .map_err(|e| SttError::Whisper(format!("failed to initialize whisper state: {e}")))?;
 
         Ok(Self {
             buffer: Vec::new(),
@@ -81,20 +87,20 @@ impl WhisperSttStream {
             cli_bin,
             #[cfg(feature = "whisper")]
             native_ctx,
+            #[cfg(feature = "whisper")]
+            native_state,
         })
     }
 
     #[cfg(feature = "whisper")]
     fn flush_native(&mut self) -> Result<String, SttError> {
+        // Keep the owning context alive for the persistent Whisper state.
+        let _keep_context_alive = &self.native_ctx;
         if self.buffer.is_empty() || should_skip_short_transcription(self.buffer.len()) {
             return Ok(String::new());
         }
         let mut float_audio = vec![0.0_f32; self.buffer.len()];
         whisper_rs::convert_integer_to_float_audio(&self.buffer, &mut float_audio)
-            .map_err(|e| SttError::Whisper(e.to_string()))?;
-        let mut state = self
-            .native_ctx
-            .create_state()
             .map_err(|e| SttError::Whisper(e.to_string()))?;
         let mut params =
             whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
@@ -112,11 +118,12 @@ impl WhisperSttStream {
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
-        state.full(params, &float_audio).map_err(|e| {
+        self.native_state.full(params, &float_audio).map_err(|e| {
             record_error("stt_flush");
             SttError::Whisper(e.to_string())
         })?;
-        Ok(state
+        Ok(self
+            .native_state
             .as_iter()
             .map(|s| {
                 s.to_str_lossy()
@@ -127,6 +134,11 @@ impl WhisperSttStream {
             .join(" ")
             .trim()
             .to_string())
+    }
+
+    pub fn warm_up(&mut self) -> Result<(), SttError> {
+        let warm_samples = vec![0_i16; 1_600];
+        self.transcribe_blocking(&warm_samples).map(|_| ())
     }
 
     #[cfg(not(feature = "whisper"))]

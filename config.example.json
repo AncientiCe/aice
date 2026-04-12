@@ -10,7 +10,9 @@
     "classifier_prompt_cache_enabled": false,
     "classifier_compact_fewshots_enabled": false,
     "classifier_retry_on_invalid_enabled": false,
-    "classifier_max_output_tokens": 24
+    "classifier_max_output_tokens": 24,
+    "preload_model_on_startup": true,
+    "model_keep_alive": "30m"
   },
   "pod_bind": "0.0.0.0:8765",
   "audio": {
@@ -27,7 +29,8 @@
     "tuned_speech_end_silence_ms": 120
   },
   "stt": {
-    "whisper_model_path": "models/whisper/ggml-tiny.en.bin"
+    "whisper_model_path": "models/whisper/ggml-tiny.en.bin",
+    "preload_model_on_startup": true
   },
   "tts": {
     "piper_model_path": "models/piper/model.onnx",

@@ -193,18 +193,26 @@ pub struct SttConfig {
     /// Path to whisper model file.
     #[serde(default = "default_whisper_model_path")]
     pub whisper_model_path: String,
+    /// Warm Whisper model/state at startup to reduce first-turn latency.
+    #[serde(default = "default_stt_preload_model_on_startup")]
+    pub preload_model_on_startup: bool,
 }
 
 impl Default for SttConfig {
     fn default() -> Self {
         Self {
             whisper_model_path: default_whisper_model_path(),
+            preload_model_on_startup: default_stt_preload_model_on_startup(),
         }
     }
 }
 
 fn default_whisper_model_path() -> String {
     "models/whisper/ggml-tiny.en.bin".to_string()
+}
+
+fn default_stt_preload_model_on_startup() -> bool {
+    true
 }
 
 /// TTS settings.
@@ -333,6 +341,12 @@ pub struct LlmConfig {
     /// Max output tokens for classifier calls.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub classifier_max_output_tokens: u32,
+    /// Warm the LLM model at startup to reduce first-turn latency.
+    #[serde(default = "default_preload_model_on_startup")]
+    pub preload_model_on_startup: bool,
+    /// Keep model resident in provider memory (e.g. Ollama `keep_alive` value like `30m`).
+    #[serde(default = "default_model_keep_alive")]
+    pub model_keep_alive: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -347,6 +361,8 @@ impl Default for LlmConfig {
             classifier_compact_fewshots_enabled: false,
             classifier_retry_on_invalid_enabled: false,
             classifier_max_output_tokens: default_classifier_max_output_tokens(),
+            preload_model_on_startup: default_preload_model_on_startup(),
+            model_keep_alive: default_model_keep_alive(),
         }
     }
 }
@@ -361,6 +377,14 @@ fn default_max_output_tokens() -> u32 {
 
 fn default_classifier_max_output_tokens() -> u32 {
     24
+}
+
+fn default_preload_model_on_startup() -> bool {
+    true
+}
+
+fn default_model_keep_alive() -> Option<String> {
+    Some("30m".to_string())
 }
 
 /// Assistant profile: persona, units, and user identity for prompt context.
@@ -625,6 +649,8 @@ mod tests {
         assert!(!config.llm.classifier_compact_fewshots_enabled);
         assert!(!config.llm.classifier_retry_on_invalid_enabled);
         assert_eq!(config.llm.classifier_max_output_tokens, 24);
+        assert!(config.llm.preload_model_on_startup);
+        assert_eq!(config.llm.model_keep_alive.as_deref(), Some("30m"));
         assert_eq!(config.pod_bind, "0.0.0.0:8765");
         assert_eq!(config.audio.chunk_timeout_ms, 80);
         assert_eq!(config.audio.turn_window_ms, 1500);
@@ -638,6 +664,7 @@ mod tests {
             config.stt.whisper_model_path,
             "models/whisper/ggml-tiny.en.bin"
         );
+        assert!(config.stt.preload_model_on_startup);
         assert_eq!(config.tts.piper_model_path, "models/piper/model.onnx");
         assert_eq!(config.service.health_bind, "127.0.0.1:8780");
         assert!(config.service.metrics_enabled);
@@ -702,12 +729,15 @@ mod tests {
         assert!(!config.llm.classifier_compact_fewshots_enabled);
         assert!(!config.llm.classifier_retry_on_invalid_enabled);
         assert_eq!(config.llm.classifier_max_output_tokens, 24);
+        assert!(config.llm.preload_model_on_startup);
+        assert_eq!(config.llm.model_keep_alive.as_deref(), Some("30m"));
         assert_eq!(config.pod_bind, "0.0.0.0:9000");
         assert_eq!(config.audio.turn_window_ms, 900);
         assert_eq!(config.audio.speech_end_silence_ms, 180);
         assert_eq!(config.audio.speech_rms_threshold, 0.008);
         assert!(!config.audio.enable_endpointing_tuning);
         assert_eq!(config.stt.whisper_model_path, "models/custom-whisper.bin");
+        assert!(config.stt.preload_model_on_startup);
         assert_eq!(config.tts.piper_model_path, "models/custom-piper.onnx");
         assert_eq!(
             config.tts.piper_config_path.as_deref(),
@@ -765,6 +795,52 @@ mod tests {
         assert_eq!(config.memory.max_facts, 20);
         assert!(!config.memory.autosave);
         assert_eq!(config.memory.sqlite_path, "data/memory.sqlite");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_parses_llm_preload_and_keep_alive_overrides() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("aice_config_llm_preload.json");
+        let mut f = std::fs::File::create(&path).must();
+        f.write_all(
+            br#"{
+                "llm": {
+                    "preload_model_on_startup": false,
+                    "model_keep_alive": "2h"
+                }
+            }"#,
+        )
+        .must();
+        f.sync_all().must();
+        drop(f);
+
+        let config = Config::load(&path).must();
+        assert!(!config.llm.preload_model_on_startup);
+        assert_eq!(config.llm.model_keep_alive.as_deref(), Some("2h"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_parses_stt_preload_override() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("aice_config_stt_preload.json");
+        let mut f = std::fs::File::create(&path).must();
+        f.write_all(
+            br#"{
+                "stt": {
+                    "preload_model_on_startup": false
+                }
+            }"#,
+        )
+        .must();
+        f.sync_all().must();
+        drop(f);
+
+        let config = Config::load(&path).must();
+        assert!(!config.stt.preload_model_on_startup);
 
         let _ = std::fs::remove_file(&path);
     }

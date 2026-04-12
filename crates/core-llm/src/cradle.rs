@@ -20,6 +20,7 @@ impl CradleLlmStream {
         short_replies: bool,
         max_output_tokens: u32,
         system_prompt: Option<String>,
+        keep_alive: Option<String>,
     ) -> Self {
         Self {
             inner: OllamaLlmStream::new(
@@ -28,6 +29,7 @@ impl CradleLlmStream {
                 short_replies,
                 max_output_tokens,
                 system_prompt,
+                keep_alive,
             ),
         }
     }
@@ -42,6 +44,10 @@ impl CradleLlmStream {
         self.inner
             .chat_once(user_text, history, system_prompt_override, call_options)
             .await
+    }
+
+    pub async fn warm_up(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.inner.warm_up().await
     }
 }
 

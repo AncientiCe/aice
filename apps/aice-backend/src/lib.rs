@@ -11,10 +11,10 @@ use core_observability::{
     record_backend_llm_provider_duration, record_backend_skill_execute,
     record_backend_skill_execute_duration, record_backend_turn_cancellation,
     record_backend_turn_duration, record_backend_turn_first_token_duration,
-    record_backend_turn_partial_transcript_duration, record_backend_turn_speculative_restart,
-    record_backend_turn_stage_duration, record_backend_turn_total, record_palace_add_memory,
-    record_palace_error, record_palace_ingest, record_palace_open, record_palace_search,
-    record_palace_wake_up,
+    record_backend_turn_partial_transcript_duration, record_backend_turn_stage_duration,
+    record_backend_turn_total, record_model_preload, record_model_preload_duration,
+    record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_open,
+    record_palace_search, record_palace_wake_up,
 };
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
@@ -160,10 +160,24 @@ pub struct WhisperAudioTranscriber {
 }
 
 impl WhisperAudioTranscriber {
-    pub fn new(model_path: impl Into<String>) -> Result<Self, DynError> {
+    pub fn new(model_path: impl Into<String>, preload_on_startup: bool) -> Result<Self, DynError> {
         let path: String = model_path.into();
-        let stt = WhisperSttStream::new(Path::new(&path))
+        let mut stt = WhisperSttStream::new(Path::new(&path))
             .map_err(|error| format!("failed to load whisper model: {error}"))?;
+        if preload_on_startup {
+            let t0 = Instant::now();
+            match stt.warm_up() {
+                Ok(()) => {
+                    record_model_preload_duration("stt", t0.elapsed());
+                    record_model_preload("stt", "success");
+                }
+                Err(error) => {
+                    record_model_preload_duration("stt", t0.elapsed());
+                    record_model_preload("stt", "error");
+                    tracing::warn!(%error, "stt preload failed; continuing without startup warmup");
+                }
+            }
+        }
         Ok(Self {
             stt: Arc::new(std::sync::Mutex::new(stt)),
         })
@@ -688,10 +702,10 @@ fn spawn_speculative_turn(
 async fn process_binary_audio_frame(
     ws: &mut WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
     state: &mut WsTurnState,
-    engine: Arc<dyn BackendEngine>,
+    _engine: Arc<dyn BackendEngine>,
     transcriber: &Arc<dyn AudioTranscriber>,
     audio_config: &AudioIngressConfig,
-    internal_tx: &mpsc::UnboundedSender<TurnStreamInternalEvent>,
+    _internal_tx: &mpsc::UnboundedSender<TurnStreamInternalEvent>,
     raw: &[u8],
 ) -> Result<(), DynError> {
     if state.done_requested {
@@ -786,16 +800,9 @@ async fn process_binary_audio_frame(
         record_backend_turn_partial_transcript_duration(state.started_at.elapsed());
     }
 
-    if state.active_transcript.as_deref() == Some(transcript.as_str()) {
-        return Ok(());
+    if state.active_transcript.as_deref() != Some(transcript.as_str()) {
+        state.active_transcript = Some(transcript);
     }
-    if let Some(task) = state.active_task.take() {
-        task.abort();
-        record_backend_turn_speculative_restart();
-        record_backend_turn_cancellation("transcript_divergence");
-    }
-    state.active_transcript = Some(transcript.clone());
-    spawn_speculative_turn(state, engine, transcript, internal_tx.clone());
     Ok(())
 }
 
@@ -937,36 +944,22 @@ async fn handle_turn_stream_socket(
                                             &audio_config.wake_word,
                                             state.transcript_accum.clone(),
                                         );
-                                        if !final_transcript.is_empty()
-                                            && state.active_transcript.as_deref()
-                                                != Some(final_transcript.as_str())
-                                        {
-                                            if let Some(task) = state.active_task.take() {
-                                                task.abort();
-                                                record_backend_turn_cancellation(
-                                                    "done_transcript_divergence",
-                                                );
-                                            }
-                                            state.completed_generation = None;
-                                            state.active_transcript =
-                                                Some(final_transcript.clone());
-                                            spawn_speculative_turn(
-                                                state,
-                                                engine.clone(),
-                                                final_transcript,
-                                                internal_tx.clone(),
-                                            );
-                                            continue;
+                                        if !final_transcript.is_empty() {
+                                            state.active_transcript = Some(final_transcript);
                                         }
                                     }
-                                    if state.active_task.is_none()
-                                        && state.completed_generation.is_none()
-                                    {
-                                        let transcript = apply_backend_wake_word(
-                                            &audio_config.wake_word,
-                                            state.transcript_accum.clone(),
-                                        );
+                                    if state.active_task.is_none() && !state.awaiting_skill_result {
+                                        let transcript = state
+                                            .active_transcript
+                                            .clone()
+                                            .unwrap_or_else(|| {
+                                                apply_backend_wake_word(
+                                                    &audio_config.wake_word,
+                                                    state.transcript_accum.clone(),
+                                                )
+                                            });
                                         if !transcript.is_empty() {
+                                            state.completed_generation = None;
                                             spawn_speculative_turn(
                                                 state,
                                                 engine.clone(),
@@ -988,17 +981,6 @@ async fn handle_turn_stream_socket(
                                             .await?;
                                             turn = None;
                                         }
-                                    } else if state.active_task.is_none()
-                                        && !state.awaiting_skill_result
-                                    {
-                                        emit_turn_stream_event(
-                                            &mut ws,
-                                            &TurnStreamServerEvent::Done {
-                                                turn_id: state.turn_id.clone(),
-                                            },
-                                        )
-                                        .await?;
-                                        turn = None;
                                     }
                                 }
                                 TurnStreamClientMessage::TurnCancel => {
@@ -1416,7 +1398,22 @@ impl AiceBackendEngine {
             config.llm.short_replies,
             config.llm.max_output_tokens,
             config.llm.system_prompt.clone(),
+            config.llm.model_keep_alive.clone(),
         );
+        if config.llm.preload_model_on_startup {
+            let t0 = Instant::now();
+            match llm.warm_up().await {
+                Ok(()) => {
+                    record_model_preload_duration("llm", t0.elapsed());
+                    record_model_preload("llm", "success");
+                }
+                Err(error) => {
+                    record_model_preload_duration("llm", t0.elapsed());
+                    record_model_preload("llm", "error");
+                    tracing::warn!(%error, "llm preload failed; continuing without startup warmup");
+                }
+            }
+        }
         let weather_skill = OpenMeteoWeatherSkill::new();
         let resolved_location = resolve_startup_location(config, &weather_skill).await;
 

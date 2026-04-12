@@ -72,6 +72,8 @@ const VOICE_SHOPPING_LIST_SKILL_TOTAL: &str = "voice_shopping_list_skill_total";
 const VOICE_VOLUME_SKILL_TOTAL: &str = "voice_volume_skill_total";
 const VOICE_POLICY_DENIED_TOTAL: &str = "voice_policy_denied_total";
 const VOICE_LOCATION_PRELOAD_TOTAL: &str = "voice_location_preload_total";
+const VOICE_MODEL_PRELOAD_TOTAL: &str = "voice_model_preload_total";
+const VOICE_MODEL_PRELOAD_DURATION_SECONDS: &str = "voice_model_preload_duration_seconds";
 const VOICE_LOCATION_CONTRACT_TOTAL: &str = "voice_location_contract_total";
 const VOICE_LOCATION_CONTRACT_DURATION_SECONDS: &str = "voice_location_contract_duration_seconds";
 const VOICE_SHUTDOWN_SIGNALS_TOTAL: &str = "voice_shutdown_signals_total";
@@ -180,6 +182,17 @@ pub fn register_metrics() {
     counter!(VOICE_VOLUME_SKILL_TOTAL, 0, "result" => "unknown");
     counter!(VOICE_POLICY_DENIED_TOTAL, 0, "reason" => "unknown");
     counter!(VOICE_LOCATION_PRELOAD_TOTAL, 0, "result" => "unknown");
+    counter!(
+        VOICE_MODEL_PRELOAD_TOTAL,
+        0,
+        "component" => "unknown",
+        "result" => "unknown"
+    );
+    histogram!(
+        VOICE_MODEL_PRELOAD_DURATION_SECONDS,
+        0.0_f64,
+        "component" => "unknown"
+    );
     counter!(
         VOICE_LOCATION_CONTRACT_TOTAL,
         0,
@@ -748,6 +761,25 @@ pub fn record_policy_denied(reason: &str) {
 /// Record startup location preload result (success or failure).
 pub fn record_location_preload(result: &str) {
     counter!(VOICE_LOCATION_PRELOAD_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record startup model preload result by component (`stt` or `llm`).
+pub fn record_model_preload(component: &str, result: &str) {
+    counter!(
+        VOICE_MODEL_PRELOAD_TOTAL,
+        1,
+        "component" => component.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Record startup model preload latency by component (`stt` or `llm`).
+pub fn record_model_preload_duration(component: &str, duration: Duration) {
+    histogram!(
+        VOICE_MODEL_PRELOAD_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "component" => component.to_string()
+    );
 }
 
 /// Record a location contract normalization decision by intent and result.

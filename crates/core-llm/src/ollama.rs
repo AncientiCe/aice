@@ -25,6 +25,8 @@ struct ChatRequest {
     format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<ChatOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -51,6 +53,17 @@ struct NonStreamResponse {
     message: Option<StreamMessage>,
 }
 
+#[derive(serde::Serialize)]
+struct GenerateRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<ChatOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
+}
+
 /// Stream that yields items from an mpsc receiver.
 struct ReceiverStream(mpsc::UnboundedReceiver<String>);
 
@@ -70,6 +83,7 @@ pub struct OllamaLlmStream {
     short_replies: bool,
     max_output_tokens: u32,
     system_prompt: Option<String>,
+    keep_alive: Option<String>,
 }
 
 impl OllamaLlmStream {
@@ -86,6 +100,7 @@ impl OllamaLlmStream {
         short_replies: bool,
         max_output_tokens: u32,
         system_prompt: Option<String>,
+        keep_alive: Option<String>,
     ) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -94,6 +109,7 @@ impl OllamaLlmStream {
             short_replies,
             max_output_tokens,
             system_prompt,
+            keep_alive,
         }
     }
 
@@ -176,6 +192,59 @@ impl OllamaLlmStream {
             .max(16)
     }
 
+    fn build_chat_request(
+        &self,
+        user_text: &str,
+        history: &[(String, String)],
+        system_prompt_override: Option<&str>,
+        call_options: Option<&LlmCallOptions>,
+        stream: bool,
+    ) -> ChatRequest {
+        let messages = self.build_messages(user_text, history, system_prompt_override);
+        let format = call_options
+            .filter(|o| o.format_json)
+            .map(|_| "json".to_string());
+        let temperature = call_options.and_then(|o| o.temperature);
+        ChatRequest {
+            model: self.model.clone(),
+            messages,
+            stream,
+            format,
+            options: Some(ChatOptions {
+                num_predict: self.resolve_num_predict(call_options),
+                temperature,
+            }),
+            keep_alive: self.keep_alive.clone(),
+        }
+    }
+
+    pub async fn warm_up(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let body = GenerateRequest {
+            model: self.model.clone(),
+            prompt: String::new(),
+            stream: false,
+            options: Some(ChatOptions {
+                num_predict: 1,
+                temperature: Some(0.0),
+            }),
+            keep_alive: self.keep_alive.clone(),
+        };
+        let url = format!("{}/api/generate", self.base_url);
+        let res = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError::Request(e.to_string()))?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(Box::new(LlmError::Request(format!("{}: {}", status, text))));
+        }
+        Ok(())
+    }
+
     pub async fn chat_once(
         &self,
         user_text: &str,
@@ -183,21 +252,13 @@ impl OllamaLlmStream {
         system_prompt_override: Option<&str>,
         call_options: Option<&LlmCallOptions>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let messages = self.build_messages(user_text, history, system_prompt_override);
-        let format = call_options
-            .filter(|o| o.format_json)
-            .map(|_| "json".to_string());
-        let temperature = call_options.and_then(|o| o.temperature);
-        let body = ChatRequest {
-            model: self.model.clone(),
-            messages,
-            stream: false,
-            format,
-            options: Some(ChatOptions {
-                num_predict: self.resolve_num_predict(call_options),
-                temperature,
-            }),
-        };
+        let body = self.build_chat_request(
+            user_text,
+            history,
+            system_prompt_override,
+            call_options,
+            false,
+        );
         let url = format!("{}/api/chat", self.base_url);
         let res = self
             .client
@@ -231,21 +292,13 @@ impl LlmStream for OllamaLlmStream {
         Box<dyn Stream<Item = String> + Send + Unpin>,
         Box<dyn std::error::Error + Send + Sync>,
     > {
-        let messages = self.build_messages(user_text, history, system_prompt_override);
-        let format = call_options
-            .filter(|o| o.format_json)
-            .map(|_| "json".to_string());
-        let temperature = call_options.and_then(|o| o.temperature);
-        let body = ChatRequest {
-            model: self.model.clone(),
-            messages,
-            stream: true,
-            format,
-            options: Some(ChatOptions {
-                num_predict: self.resolve_num_predict(call_options),
-                temperature,
-            }),
-        };
+        let body = self.build_chat_request(
+            user_text,
+            history,
+            system_prompt_override,
+            call_options,
+            true,
+        );
         let url = format!("{}/api/chat", self.base_url);
         let res = self
             .client
@@ -295,11 +348,24 @@ mod tests {
         fn must(self) -> T;
     }
 
+    pub trait TestResultExt<T, E> {
+        fn must(self) -> T;
+    }
+
     impl<T> TestOptionExt<T> for Option<T> {
         fn must(self) -> T {
             match self {
                 Some(value) => value,
                 None => panic!("expected Some(..) in test"),
+            }
+        }
+    }
+
+    impl<T, E: std::fmt::Debug> TestResultExt<T, E> for Result<T, E> {
+        fn must(self) -> T {
+            match self {
+                Ok(value) => value,
+                Err(error) => panic!("expected Ok(..) in test, got Err: {:?}", error),
             }
         }
     }
@@ -314,6 +380,7 @@ mod tests {
             true,
             64,
             Some("You are concise.".to_string()),
+            None,
         );
         let prompt = llm.compose_system_prompt(None).must();
         assert!(prompt.contains("You are concise."));
@@ -328,6 +395,7 @@ mod tests {
             true,
             64,
             Some("ignored".to_string()),
+            None,
         );
         let prompt = llm
             .compose_system_prompt(Some("classification only"))
@@ -343,6 +411,7 @@ mod tests {
             false,
             64,
             Some("You are helpful.".to_string()),
+            None,
         );
         let prompt = llm.compose_system_prompt(None).must();
         assert!(prompt.contains("You are helpful."));
@@ -357,6 +426,7 @@ mod tests {
             true,
             64,
             Some("You are helpful.".to_string()),
+            None,
         );
         let msg = llm.compose_user_message("tell me something", None);
         assert!(msg.starts_with("tell me something"));
@@ -372,6 +442,7 @@ mod tests {
             true,
             64,
             Some("You are helpful.".to_string()),
+            None,
         );
         let msg = llm.compose_user_message("classify this", Some("override"));
         assert_eq!(msg, "classify this");
@@ -385,6 +456,7 @@ mod tests {
             true,
             64,
             Some("You are helpful.".to_string()),
+            Some("30m".to_string()),
         );
         let options = LlmCallOptions {
             temperature: Some(0.1),
@@ -393,5 +465,35 @@ mod tests {
         };
         assert_eq!(llm.resolve_num_predict(Some(&options)), 24);
         assert_eq!(llm.resolve_num_predict(None), 64);
+    }
+
+    #[test]
+    fn build_chat_request_includes_keep_alive_when_configured() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("You are helpful.".to_string()),
+            Some("45m".to_string()),
+        );
+        let body = llm.build_chat_request("hello", &[], None, None, true);
+        let json = serde_json::to_value(body).must();
+        assert_eq!(json.get("keep_alive").and_then(|v| v.as_str()), Some("45m"));
+    }
+
+    #[test]
+    fn build_chat_request_omits_keep_alive_when_disabled() {
+        let llm = OllamaLlmStream::new(
+            "http://localhost:11434".to_string(),
+            "tiny".to_string(),
+            true,
+            64,
+            Some("You are helpful.".to_string()),
+            None,
+        );
+        let body = llm.build_chat_request("hello", &[], None, None, true);
+        let json = serde_json::to_value(body).must();
+        assert!(json.get("keep_alive").is_none());
     }
 }
