@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+    # Temporary exception: no viable transitive upgrade path in this workspace yet.
+    "RUSTSEC-2026-0097",
+]
