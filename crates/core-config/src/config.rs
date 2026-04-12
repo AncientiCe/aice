@@ -292,7 +292,7 @@ fn default_metrics_enabled() -> bool {
 }
 
 fn default_metrics_bind() -> String {
-    "127.0.0.1:9000".to_string()
+    "127.0.0.1:9001".to_string()
 }
 
 fn default_audio_session_idle_timeout_ms() -> u64 {
@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(config.tts.piper_model_path, "models/piper/model.onnx");
         assert_eq!(config.service.health_bind, "127.0.0.1:8780");
         assert!(config.service.metrics_enabled);
-        assert_eq!(config.service.metrics_bind, "127.0.0.1:9000");
+        assert_eq!(config.service.metrics_bind, "127.0.0.1:9001");
         assert_eq!(config.service.audio_session_idle_timeout_ms, 5_000);
         assert_eq!(config.service.audio_session_max_duration_ms, 20_000);
         assert_eq!(config.assistant_profile.unit_system, "metric");
