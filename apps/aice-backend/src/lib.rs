@@ -18,8 +18,9 @@ use core_observability::{
 };
 use core_orchestrator::{
     intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
-    intent_classifier_system_prompt_for_skills, parse_intent, validate_intent_decision,
-    IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
+    intent_classifier_json_schema_for_skills, intent_classifier_system_prompt_for_skills,
+    parse_intent, validate_intent_decision, IntentClassifier, IntentDecision, LlmCallOptions,
+    LlmStream,
 };
 use core_runtime_protocol::{
     FrontendSkillIntent, FrontendSkillResultRequest, TurnRequest, TurnStreamClientMessage,
@@ -92,15 +93,18 @@ const FRONTEND_CLASSIFIER_SKILLS: [&str; 11] = [
 struct ClassifierPromptArtifacts {
     system_prompt: String,
     compact_few_shots: Vec<(String, String)>,
+    json_schema: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct ClassifierOptimizationConfig {
     nonstream_enabled: bool,
     prompt_cache_enabled: bool,
     compact_fewshots_enabled: bool,
     retry_on_invalid_enabled: bool,
     max_output_tokens: u32,
+    structured_output_enabled: bool,
+    num_ctx: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -472,10 +476,18 @@ fn classifier_cache_key(available_skills: &[&str]) -> String {
     normalized.join("|")
 }
 
-fn build_classifier_prompt_artifacts(available_skills: &[&str]) -> ClassifierPromptArtifacts {
+fn build_classifier_prompt_artifacts(
+    available_skills: &[&str],
+    structured_output: bool,
+) -> ClassifierPromptArtifacts {
     ClassifierPromptArtifacts {
         system_prompt: intent_classifier_system_prompt_for_skills(available_skills),
         compact_few_shots: intent_classifier_few_shots_for_skills(available_skills),
+        json_schema: if structured_output {
+            Some(intent_classifier_json_schema_for_skills(available_skills))
+        } else {
+            None
+        },
     }
 }
 
@@ -1476,6 +1488,8 @@ impl AiceBackendEngine {
                 compact_fewshots_enabled: config.llm.classifier_compact_fewshots_enabled,
                 retry_on_invalid_enabled: config.llm.classifier_retry_on_invalid_enabled,
                 max_output_tokens: config.llm.classifier_max_output_tokens,
+                structured_output_enabled: config.llm.classifier_structured_output_enabled,
+                num_ctx: config.llm.classifier_num_ctx,
             },
         })
     }
@@ -1550,6 +1564,7 @@ impl AiceBackendEngine {
     ) -> Result<IntentDecision, DynError> {
         let prompt = build_intent_classification_prompt(user_text);
         let prompt_build_started = Instant::now();
+        let structured = self.classifier_optimization.structured_output_enabled;
         let artifacts = if self.classifier_optimization.prompt_cache_enabled {
             let key = classifier_cache_key(available_skills);
             if let Ok(cache) = self.classifier_prompt_cache.read() {
@@ -1558,14 +1573,14 @@ impl AiceBackendEngine {
                 None
             }
             .unwrap_or_else(|| {
-                let built = build_classifier_prompt_artifacts(available_skills);
+                let built = build_classifier_prompt_artifacts(available_skills, structured);
                 if let Ok(mut cache) = self.classifier_prompt_cache.write() {
                     cache.entry(key).or_insert_with(|| built.clone());
                 }
                 built
             })
         } else {
-            build_classifier_prompt_artifacts(available_skills)
+            build_classifier_prompt_artifacts(available_skills, structured)
         };
         let few_shot_history = if self.classifier_optimization.compact_fewshots_enabled {
             artifacts.compact_few_shots.clone()
@@ -1580,6 +1595,8 @@ impl AiceBackendEngine {
         let mut fast_options = LlmCallOptions::for_classification();
         fast_options.max_output_tokens =
             Some(self.classifier_optimization.max_output_tokens.max(1));
+        fast_options.format_json_schema = artifacts.json_schema.clone();
+        fast_options.num_ctx = self.classifier_optimization.num_ctx;
 
         let llm_started = Instant::now();
         let fast_raw = if self.classifier_optimization.nonstream_enabled {
@@ -1635,6 +1652,7 @@ impl AiceBackendEngine {
         retry_options.max_output_tokens =
             Some(self.classifier_optimization.max_output_tokens.max(48));
 
+        retry_options.num_ctx = self.classifier_optimization.num_ctx;
         let retry_llm_started = Instant::now();
         let retry_raw = self
             .collect_llm(
@@ -2486,13 +2504,13 @@ mod tests {
         let examples = intent_classifier_few_shots();
         assert!(
             examples.iter().any(|(u, a)| {
-                u.contains("send a message to John saying running late")
+                u.contains("ask my wife how she is")
                     && a.contains("\"intent\":\"skill_message\"")
                     && a.contains("\"command\":\"send\"")
-                    && a.contains("\"message_contact\":\"John\"")
-                    && a.contains("\"message_text\":\"running late\"")
+                    && a.contains("\"message_contact\":\"my wife\"")
+                    && a.contains("\"message_text\":\"How are you?\"")
             }),
-            "expected canonical message send few-shot contract example"
+            "expected canonical message rewrite few-shot contract example"
         );
         assert!(
             examples.iter().any(|(u, a)| {
@@ -2626,7 +2644,7 @@ mod tests {
 
     #[test]
     fn classifier_prompt_artifacts_scope_compact_few_shots() {
-        let artifacts = build_classifier_prompt_artifacts(&["skill_time"]);
+        let artifacts = build_classifier_prompt_artifacts(&["skill_time"], false);
         assert!(artifacts.system_prompt.contains("\"skill_time\""));
         assert!(!artifacts.compact_few_shots.is_empty());
         assert!(artifacts

@@ -22,7 +22,7 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<String>,
+    format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<ChatOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,6 +34,8 @@ struct ChatOptions {
     num_predict: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -201,10 +203,17 @@ impl OllamaLlmStream {
         stream: bool,
     ) -> ChatRequest {
         let messages = self.build_messages(user_text, history, system_prompt_override);
-        let format = call_options
-            .filter(|o| o.format_json)
-            .map(|_| "json".to_string());
+        let format = call_options.and_then(|o| {
+            if let Some(ref schema) = o.format_json_schema {
+                Some(schema.clone())
+            } else if o.format_json {
+                Some(serde_json::Value::String("json".to_string()))
+            } else {
+                None
+            }
+        });
         let temperature = call_options.and_then(|o| o.temperature);
+        let num_ctx = call_options.and_then(|o| o.num_ctx);
         ChatRequest {
             model: self.model.clone(),
             messages,
@@ -213,6 +222,7 @@ impl OllamaLlmStream {
             options: Some(ChatOptions {
                 num_predict: self.resolve_num_predict(call_options),
                 temperature,
+                num_ctx,
             }),
             keep_alive: self.keep_alive.clone(),
         }
@@ -226,6 +236,7 @@ impl OllamaLlmStream {
             options: Some(ChatOptions {
                 num_predict: 1,
                 temperature: Some(0.0),
+                num_ctx: None,
             }),
             keep_alive: self.keep_alive.clone(),
         };
@@ -461,7 +472,9 @@ mod tests {
         let options = LlmCallOptions {
             temperature: Some(0.1),
             format_json: true,
+            format_json_schema: None,
             max_output_tokens: Some(24),
+            num_ctx: None,
         };
         assert_eq!(llm.resolve_num_predict(Some(&options)), 24);
         assert_eq!(llm.resolve_num_predict(None), 64);

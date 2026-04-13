@@ -29,6 +29,131 @@ fn has_skill(available_skills: &[&str], skill: &str) -> bool {
         .any(|value| value.trim().eq_ignore_ascii_case(skill))
 }
 
+/// Schema field entries relevant to each skill.  `"intent"` and `"command"` are
+/// always included and not listed here.
+fn schema_fields_for_skill(skill: &str) -> &'static [(&'static str, &'static str)] {
+    match skill {
+        "skill_weather" | "skill_time" => &[("location", "string")],
+        "skill_distance" => &[("origin", "string"), ("destination", "string")],
+        "skill_sports_live" => &[("sports_query", "string"), ("sports_date", "string")],
+        "skill_holiday_lookup" => &[
+            ("holiday_name", "string"),
+            ("holiday_date", "string"),
+            ("holiday_country_code", "string"),
+            ("holiday_region_code", "string"),
+            ("holiday_year", "number"),
+        ],
+        "skill_fuel_price_lookup" => &[
+            ("fuel_country_code", "string"),
+            ("fuel_region", "string"),
+            ("fuel_type", "string"),
+        ],
+        "skill_horoscope_daily" => &[("horoscope_sign", "string"), ("horoscope_date", "string")],
+        "skill_news_headlines" => &[
+            ("news_topic", "string"),
+            ("news_country_code", "string"),
+            ("news_limit", "number"),
+        ],
+        "skill_smart_home" => &[
+            ("smart_home_target", "string"),
+            ("smart_home_action", "string"),
+        ],
+        "skill_assistant" => &[("assistant_kind", "string")],
+        "skill_media" => &[("media_target", "string"), ("media_action", "string")],
+        "skill_memory" => &[("memory_query", "string"), ("memory_store", "boolean")],
+        "skill_computer" => &[("computer_target", "string"), ("computer_action", "string")],
+        "skill_screenshot" => &[("screenshot_filename", "string")],
+        "skill_app_switcher" => &[
+            ("app_switcher_target", "string"),
+            ("app_switcher_action", "string"),
+        ],
+        "skill_reminder" => &[("reminder_title", "string"), ("reminder_when", "string")],
+        "skill_timer" => &[("timer_duration", "string"), ("timer_name", "string")],
+        "skill_shopping_list" => &[("shopping_items", "[string]"), ("shopping_when", "string")],
+        "skill_message" => &[("message_contact", "string"), ("message_text", "string")],
+        "skill_volume" => &[("volume_action", "string"), ("volume_level", "number")],
+        _ => &[],
+    }
+}
+
+fn render_output_schema(available_skills: &[&str]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut fields: Vec<(&str, &str)> = Vec::new();
+    for skill in ALL_CLASSIFIER_SKILLS {
+        if !has_skill(available_skills, skill) {
+            continue;
+        }
+        for &(name, ty) in schema_fields_for_skill(skill) {
+            if seen.insert(name) {
+                fields.push((name, ty));
+            }
+        }
+    }
+    let mut schema = "{\n  \"intent\": string,\n  \"command\": string".to_string();
+    for (name, ty) in &fields {
+        schema.push_str(&format!(",\n  \"{name}\": {ty}"));
+    }
+    schema.push_str("\n}");
+    schema
+}
+
+fn collect_valid_intents(available_skills: &[&str]) -> Vec<String> {
+    let mut intents = vec!["chat".to_string()];
+    for skill in ALL_CLASSIFIER_SKILLS {
+        if has_skill(available_skills, skill) {
+            intents.push(skill.to_string());
+        }
+    }
+    intents
+}
+
+/// Build a JSON Schema that Ollama can use for grammar-constrained generation.
+///
+/// The `intent` field gets a strict `enum` so the model literally cannot output
+/// an invalid intent string.
+pub fn intent_classifier_json_schema_for_skills(available_skills: &[&str]) -> serde_json::Value {
+    let valid_intents = collect_valid_intents(available_skills);
+
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "intent".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "enum": valid_intents,
+        }),
+    );
+    properties.insert(
+        "command".to_string(),
+        serde_json::json!({ "type": "string" }),
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for skill in ALL_CLASSIFIER_SKILLS {
+        if !has_skill(available_skills, skill) {
+            continue;
+        }
+        for &(name, ty) in schema_fields_for_skill(skill) {
+            if !seen.insert(name) {
+                continue;
+            }
+            let json_ty = match ty {
+                "number" => serde_json::json!({ "type": "number" }),
+                "boolean" => serde_json::json!({ "type": "boolean" }),
+                "[string]" => serde_json::json!({ "type": "array", "items": { "type": "string" } }),
+                _ => serde_json::json!({ "type": "string" }),
+            };
+            properties.insert(name.to_string(), json_ty);
+        }
+    }
+
+    serde_json::json!({
+        "type": "object",
+        "required": ["intent"],
+        "properties": properties,
+        "additionalProperties": false,
+    })
+}
+
 fn render_decision_order(available_skills: &[&str]) -> String {
     let mut steps = Vec::new();
     if has_skill(available_skills, "skill_message") {
@@ -149,12 +274,7 @@ pub fn intent_classifier_system_prompt() -> String {
 
 /// Build the canonical system prompt for a set of available skills.
 pub fn intent_classifier_system_prompt_for_skills(available_skills: &[&str]) -> String {
-    let mut valid_intents = vec!["chat".to_string()];
-    for skill in ALL_CLASSIFIER_SKILLS {
-        if has_skill(available_skills, skill) {
-            valid_intents.push(skill.to_string());
-        }
-    }
+    let valid_intents = collect_valid_intents(available_skills);
     let valid_intents_json = format!(
         "[{}]",
         valid_intents
@@ -168,17 +288,8 @@ pub fn intent_classifier_system_prompt_for_skills(available_skills: &[&str]) -> 
     let include_assistant_restriction = has_skill(available_skills, "skill_assistant");
     let include_message_restriction = has_skill(available_skills, "skill_message");
     let include_message_rewrite_block = has_skill(available_skills, "skill_message");
-    let mut prompt = r#"You are a strict intent classifier.
-
-Reply with only valid JSON.
-Do not output markdown.
-Do not output explanations.
-Do not output keys not listed below.
-Return the smallest valid JSON object for the chosen intent.
-Always include "intent".
-Include "command" for every non-chat intent.
-Do not include null fields.
-Think about what the user wants, then pick the most specific skill from the available list.
+    let mut prompt = r#"You are a strict intent classifier. Reply with only a JSON object.
+Pick the most specific skill. Always include "intent". Include "command" for every non-chat intent. Omit null fields.
 
 Valid intents:
 "#
@@ -191,54 +302,11 @@ Decision order:
 "#,
     );
     prompt.push_str(&decision_order);
+    let output_schema = render_output_schema(available_skills);
+    prompt.push_str("\n\nOutput schema:\n");
+    prompt.push_str(&output_schema);
     prompt.push_str(
         r#"
-
-Output schema:
-{
-  "intent": string,
-  "command": string,
-  "location": string,
-  "origin": string,
-  "destination": string,
-  "sports_query": string,
-  "sports_date": string,
-  "holiday_name": string,
-  "holiday_date": string,
-  "holiday_country_code": string,
-  "holiday_region_code": string,
-  "holiday_year": number,
-  "fuel_country_code": string,
-  "fuel_region": string,
-  "fuel_type": string,
-  "horoscope_sign": string,
-  "horoscope_date": string,
-  "news_topic": string,
-  "news_country_code": string,
-  "news_limit": number,
-  "smart_home_target": string,
-  "smart_home_action": string,
-  "media_target": string,
-  "media_action": string,
-  "memory_query": string,
-  "memory_store": boolean,
-  "computer_target": string,
-  "computer_action": string,
-  "screenshot_filename": string,
-  "app_switcher_target": string,
-  "app_switcher_action": string,
-  "reminder_title": string,
-  "reminder_when": string,
-  "timer_duration": string,
-  "timer_name": string,
-  "shopping_items": [string],
-  "shopping_when": string,
-  "message_contact": string,
-  "message_text": string,
-  "volume_action": string,
-  "volume_level": number,
-  "assistant_kind": string
-}
 
 Per-intent rules:
 "#,
@@ -295,12 +363,15 @@ Output only the final send-ready message in message_text."#,
 }
 
 /// Canonical few-shot examples for intent classification.
+///
+/// Kept minimal: one example per disambiguation-critical boundary. Simple
+/// `command:"get"` skills (sports, holiday, fuel, horoscope, news) rely on
+/// per-intent rules and don't need few-shots.
 pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
     vec![
         (
-            "how far is Paris?".to_string(),
-            "{\"intent\":\"skill_distance\",\"command\":\"get\",\"destination\":\"Paris, France\"}"
-                .to_string(),
+            "tell me a joke".to_string(),
+            "{\"intent\":\"chat\"}".to_string(),
         ),
         (
             "what's the weather in Paris?".to_string(),
@@ -308,45 +379,13 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
                 .to_string(),
         ),
         (
-            "sports update for lakers vs celtics today".to_string(),
-            "{\"intent\":\"skill_sports_live\",\"command\":\"get\",\"sports_query\":\"lakers vs celtics\"}".to_string(),
-        ),
-        (
-            "is there a holiday in Germany on 2026-10-03?".to_string(),
-            "{\"intent\":\"skill_holiday_lookup\",\"command\":\"get\",\"holiday_country_code\":\"DE\",\"holiday_date\":\"2026-10-03\"}".to_string(),
-        ),
-        (
-            "fuel price in the uk for diesel".to_string(),
-            "{\"intent\":\"skill_fuel_price_lookup\",\"command\":\"get\",\"fuel_country_code\":\"GB\",\"fuel_type\":\"diesel\"}".to_string(),
-        ),
-        (
-            "today horoscope for aries".to_string(),
-            "{\"intent\":\"skill_horoscope_daily\",\"command\":\"get\",\"horoscope_sign\":\"aries\"}".to_string(),
-        ),
-        (
-            "top technology headlines in the us".to_string(),
-            "{\"intent\":\"skill_news_headlines\",\"command\":\"get\",\"news_topic\":\"technology\",\"news_country_code\":\"US\"}".to_string(),
-        ),
-        (
-            "what's the weather?".to_string(),
-            "{\"intent\":\"skill_weather\",\"command\":\"get\"}".to_string(),
-        ),
-        (
             "time in Tokyo".to_string(),
             "{\"intent\":\"skill_time\",\"command\":\"get\",\"location\":\"Tokyo, Japan\"}"
                 .to_string(),
         ),
         (
-            "what's the time?".to_string(),
-            "{\"intent\":\"skill_time\",\"command\":\"get\"}".to_string(),
-        ),
-        (
-            "what time is it?".to_string(),
-            "{\"intent\":\"skill_time\",\"command\":\"get\"}".to_string(),
-        ),
-        (
-            "what time is it in London?".to_string(),
-            "{\"intent\":\"skill_time\",\"command\":\"get\",\"location\":\"London, UK\"}"
+            "how far is Paris?".to_string(),
+            "{\"intent\":\"skill_distance\",\"command\":\"get\",\"destination\":\"Paris, France\"}"
                 .to_string(),
         ),
         (
@@ -359,8 +398,8 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
             "{\"intent\":\"skill_reminder\",\"command\":\"add\",\"reminder_title\":\"Ask my wife how she is\",\"reminder_when\":\"PT5M\"}".to_string(),
         ),
         (
-            "send a message to John saying running late".to_string(),
-            "{\"intent\":\"skill_message\",\"command\":\"send\",\"message_contact\":\"John\",\"message_text\":\"running late\"}".to_string(),
+            "ask my wife how she is".to_string(),
+            "{\"intent\":\"skill_message\",\"command\":\"send\",\"message_contact\":\"my wife\",\"message_text\":\"How are you?\"}".to_string(),
         ),
         (
             "send a message to my wife.".to_string(),
@@ -368,23 +407,7 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
                 .to_string(),
         ),
         (
-            "ask my wife how she is".to_string(),
-            "{\"intent\":\"skill_message\",\"command\":\"send\",\"message_contact\":\"my wife\",\"message_text\":\"How are you?\"}".to_string(),
-        ),
-        (
-            "next song".to_string(),
-            "{\"intent\":\"skill_media\",\"command\":\"next\"}".to_string(),
-        ),
-        (
-            "pause the music".to_string(),
-            "{\"intent\":\"skill_media\",\"command\":\"pause\"}".to_string(),
-        ),
-        (
             "unpause.".to_string(),
-            "{\"intent\":\"skill_media\",\"command\":\"resume\"}".to_string(),
-        ),
-        (
-            "resume the music".to_string(),
             "{\"intent\":\"skill_media\",\"command\":\"resume\"}".to_string(),
         ),
         (
@@ -428,7 +451,8 @@ pub fn intent_classifier_few_shots_for_skills(available_skills: &[&str]) -> Vec<
 mod tests {
     use super::{
         intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
-        intent_classifier_system_prompt, intent_classifier_system_prompt_for_skills,
+        intent_classifier_json_schema_for_skills, intent_classifier_system_prompt,
+        intent_classifier_system_prompt_for_skills,
     };
 
     #[test]
@@ -445,7 +469,10 @@ mod tests {
     #[test]
     fn prompt_enforces_command_field_for_skills() {
         let prompt = intent_classifier_system_prompt();
-        assert!(prompt.contains("\"command\": string"));
+        assert!(
+            prompt.contains("\"command\": string"),
+            "expected command in output schema"
+        );
         assert!(prompt.contains(
             "- skill_volume -> command in [\"set\",\"up\",\"down\",\"mute\",\"unmute\",\"get\"]"
         ));
@@ -462,6 +489,35 @@ mod tests {
         assert!(prompt.contains("- skill_time -> command=\"get\""));
         assert!(prompt.contains("- skill_timer -> command=\"set\", timer_duration required"));
         assert!(!prompt.contains("- skill_weather -> command=\"get\""));
+    }
+
+    #[test]
+    fn prompt_schema_only_includes_fields_for_enabled_skills() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_time", "skill_timer"]);
+        assert!(
+            prompt.contains("\"location\": string"),
+            "expected time location field"
+        );
+        assert!(
+            prompt.contains("\"timer_duration\": string"),
+            "expected timer field"
+        );
+        assert!(
+            !prompt.contains("\"sports_query\""),
+            "sports field should be absent"
+        );
+        assert!(
+            !prompt.contains("\"smart_home_target\""),
+            "smart_home field should be absent"
+        );
+        assert!(
+            !prompt.contains("\"message_contact\""),
+            "message field should be absent"
+        );
+        assert!(
+            !prompt.contains("\"volume_level\""),
+            "volume field should be absent"
+        );
     }
 
     #[test]
@@ -489,13 +545,6 @@ mod tests {
     fn few_shots_cover_message_send_contract() {
         let few_shots = intent_classifier_few_shots();
         assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("send a message to John saying running late")
-                && a.contains("\"intent\":\"skill_message\"")
-                && a.contains("\"command\":\"send\"")
-                && a.contains("\"message_contact\":\"John\"")
-                && a.contains("\"message_text\":\"running late\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
             u.contains("ask my wife how she is")
                 && a.contains("\"intent\":\"skill_message\"")
                 && a.contains("\"command\":\"send\"")
@@ -518,24 +567,14 @@ mod tests {
     }
 
     #[test]
-    fn few_shots_cover_local_time_queries() {
+    fn few_shots_include_chat_negative_example() {
         let few_shots = intent_classifier_few_shots();
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("what's the time?")
-                && a.contains("\"intent\":\"skill_time\"")
-                && a.contains("\"command\":\"get\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("what time is it?")
-                && a.contains("\"intent\":\"skill_time\"")
-                && a.contains("\"command\":\"get\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("what time is it in London?")
-                && a.contains("\"intent\":\"skill_time\"")
-                && a.contains("\"command\":\"get\"")
-                && a.contains("\"location\":\"London, UK\"")
-        }));
+        assert!(
+            few_shots
+                .iter()
+                .any(|(_, a)| a.contains("\"intent\":\"chat\"")),
+            "expected a chat negative example in few-shots"
+        );
     }
 
     #[test]
@@ -587,25 +626,8 @@ mod tests {
     }
 
     #[test]
-    fn few_shots_cover_media_domain_boundary() {
+    fn few_shots_cover_media_resume_boundary() {
         let few_shots = intent_classifier_few_shots();
-
-        assert!(
-            few_shots.iter().any(|(u, a)| {
-                u.contains("next song")
-                    && a.contains("\"intent\":\"skill_media\"")
-                    && a.contains("\"command\":\"next\"")
-            }),
-            "expected 'next song' -> skill_media next few-shot"
-        );
-        assert!(
-            few_shots.iter().any(|(u, a)| {
-                u.contains("pause the music")
-                    && a.contains("\"intent\":\"skill_media\"")
-                    && a.contains("\"command\":\"pause\"")
-            }),
-            "expected 'pause the music' -> skill_media pause few-shot"
-        );
         assert!(
             few_shots.iter().any(|(u, a)| {
                 u.contains("unpause")
@@ -613,14 +635,6 @@ mod tests {
                     && a.contains("\"command\":\"resume\"")
             }),
             "expected 'unpause' -> skill_media resume few-shot"
-        );
-        assert!(
-            few_shots.iter().any(|(u, a)| {
-                u.contains("resume the music")
-                    && a.contains("\"intent\":\"skill_media\"")
-                    && a.contains("\"command\":\"resume\"")
-            }),
-            "expected 'resume the music' -> skill_media resume few-shot"
         );
     }
 
@@ -661,33 +675,13 @@ mod tests {
     }
 
     #[test]
-    fn few_shots_cover_new_core_common_skills() {
+    fn few_shots_count_is_compact() {
         let few_shots = intent_classifier_few_shots();
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("sports")
-                && a.contains("\"intent\":\"skill_sports_live\"")
-                && a.contains("\"command\":\"get\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("holiday")
-                && a.contains("\"intent\":\"skill_holiday_lookup\"")
-                && a.contains("\"command\":\"get\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("fuel")
-                && a.contains("\"intent\":\"skill_fuel_price_lookup\"")
-                && a.contains("\"command\":\"get\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("horoscope")
-                && a.contains("\"intent\":\"skill_horoscope_daily\"")
-                && a.contains("\"command\":\"get\"")
-        }));
-        assert!(few_shots.iter().any(|(u, a)| {
-            u.contains("headline")
-                && a.contains("\"intent\":\"skill_news_headlines\"")
-                && a.contains("\"command\":\"get\"")
-        }));
+        assert!(
+            few_shots.len() <= 12,
+            "few-shot set should stay compact; got {} examples",
+            few_shots.len()
+        );
     }
 
     #[test]
@@ -705,5 +699,52 @@ mod tests {
         let filtered = intent_classifier_few_shots_for_skills(&["skill_not_real"]);
         let full = intent_classifier_few_shots();
         assert_eq!(filtered, full);
+    }
+
+    #[test]
+    fn json_schema_constrains_intent_enum_to_enabled_skills() {
+        let schema = intent_classifier_json_schema_for_skills(&["skill_time", "skill_timer"]);
+        let intent_prop = &schema["properties"]["intent"];
+        let allowed: Vec<&str> = intent_prop["enum"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(allowed.contains(&"chat"), "chat must always be in enum");
+        assert!(allowed.contains(&"skill_time"));
+        assert!(allowed.contains(&"skill_timer"));
+        assert!(
+            !allowed.contains(&"skill_weather"),
+            "disabled skill must be absent"
+        );
+    }
+
+    #[test]
+    fn json_schema_only_includes_fields_for_enabled_skills() {
+        let schema = intent_classifier_json_schema_for_skills(&["skill_time"]);
+        let props = schema["properties"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(props.contains(&"intent".to_string()));
+        assert!(props.contains(&"command".to_string()));
+        assert!(props.contains(&"location".to_string()));
+        assert!(!props.contains(&"sports_query".to_string()));
+        assert!(!props.contains(&"smart_home_target".to_string()));
+    }
+
+    #[test]
+    fn json_schema_marks_additional_properties_false() {
+        let schema = intent_classifier_json_schema_for_skills(&["skill_time"]);
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn json_schema_requires_intent_field() {
+        let schema = intent_classifier_json_schema_for_skills(&["skill_time"]);
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(required.contains(&"intent"));
     }
 }

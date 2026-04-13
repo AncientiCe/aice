@@ -341,6 +341,12 @@ pub struct LlmConfig {
     /// Max output tokens for classifier calls.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub classifier_max_output_tokens: u32,
+    /// Use Ollama JSON Schema structured output for classifier (grammar-constrained decoding).
+    #[serde(default)]
+    pub classifier_structured_output_enabled: bool,
+    /// Context window cap for classifier calls (Ollama `num_ctx`). Smaller saves VRAM.
+    #[serde(default = "default_classifier_num_ctx")]
+    pub classifier_num_ctx: Option<u32>,
     /// Warm the LLM model at startup to reduce first-turn latency.
     #[serde(default = "default_preload_model_on_startup")]
     pub preload_model_on_startup: bool,
@@ -361,6 +367,8 @@ impl Default for LlmConfig {
             classifier_compact_fewshots_enabled: false,
             classifier_retry_on_invalid_enabled: false,
             classifier_max_output_tokens: default_classifier_max_output_tokens(),
+            classifier_structured_output_enabled: false,
+            classifier_num_ctx: default_classifier_num_ctx(),
             preload_model_on_startup: default_preload_model_on_startup(),
             model_keep_alive: default_model_keep_alive(),
         }
@@ -377,6 +385,10 @@ fn default_max_output_tokens() -> u32 {
 
 fn default_classifier_max_output_tokens() -> u32 {
     24
+}
+
+fn default_classifier_num_ctx() -> Option<u32> {
+    Some(1024)
 }
 
 fn default_preload_model_on_startup() -> bool {
@@ -649,6 +661,8 @@ mod tests {
         assert!(!config.llm.classifier_compact_fewshots_enabled);
         assert!(!config.llm.classifier_retry_on_invalid_enabled);
         assert_eq!(config.llm.classifier_max_output_tokens, 24);
+        assert!(!config.llm.classifier_structured_output_enabled);
+        assert_eq!(config.llm.classifier_num_ctx, Some(1024));
         assert!(config.llm.preload_model_on_startup);
         assert_eq!(config.llm.model_keep_alive.as_deref(), Some("30m"));
         assert_eq!(config.pod_bind, "0.0.0.0:8765");
@@ -729,6 +743,8 @@ mod tests {
         assert!(!config.llm.classifier_compact_fewshots_enabled);
         assert!(!config.llm.classifier_retry_on_invalid_enabled);
         assert_eq!(config.llm.classifier_max_output_tokens, 24);
+        assert!(!config.llm.classifier_structured_output_enabled);
+        assert_eq!(config.llm.classifier_num_ctx, Some(1024));
         assert!(config.llm.preload_model_on_startup);
         assert_eq!(config.llm.model_keep_alive.as_deref(), Some("30m"));
         assert_eq!(config.pod_bind, "0.0.0.0:9000");
