@@ -326,27 +326,14 @@ pub struct LlmConfig {
     /// Skip secondary LLM answer-composer calls for backend skill summaries.
     #[serde(default)]
     pub skip_secondary_llm_for_skill_answers: bool,
-    /// Enable non-streaming classifier calls for lower overhead.
-    #[serde(default)]
-    pub classifier_nonstream_enabled: bool,
-    /// Enable prompt artifact caching for classifier calls.
-    #[serde(default)]
-    pub classifier_prompt_cache_enabled: bool,
-    /// Enable compact few-shots scoped to available skills.
-    #[serde(default)]
-    pub classifier_compact_fewshots_enabled: bool,
-    /// Retry classification with strict full prompt when first parse/validation fails.
-    #[serde(default)]
-    pub classifier_retry_on_invalid_enabled: bool,
-    /// Max output tokens for classifier calls.
-    #[serde(default = "default_classifier_max_output_tokens")]
-    pub classifier_max_output_tokens: u32,
-    /// Use Ollama JSON Schema structured output for classifier (grammar-constrained decoding).
-    #[serde(default)]
-    pub classifier_structured_output_enabled: bool,
-    /// Context window cap for classifier calls (Ollama `num_ctx`). Smaller saves VRAM.
+    /// Context window cap for classifier calls (Ollama `num_ctx`). Smaller saves VRAM and
+    /// reduces prefill time.
     #[serde(default = "default_classifier_num_ctx")]
     pub classifier_num_ctx: Option<u32>,
+    /// Optional separate Ollama URL for classification (e.g. `http://127.0.0.1:11435`).
+    /// Keeps classifier KV cache isolated from chat generation on the main instance.
+    #[serde(default)]
+    pub classifier_ollama_url: Option<String>,
     /// Warm the LLM model at startup to reduce first-turn latency.
     #[serde(default = "default_preload_model_on_startup")]
     pub preload_model_on_startup: bool,
@@ -362,13 +349,8 @@ impl Default for LlmConfig {
             max_output_tokens: default_max_output_tokens(),
             system_prompt: None,
             skip_secondary_llm_for_skill_answers: false,
-            classifier_nonstream_enabled: false,
-            classifier_prompt_cache_enabled: false,
-            classifier_compact_fewshots_enabled: false,
-            classifier_retry_on_invalid_enabled: false,
-            classifier_max_output_tokens: default_classifier_max_output_tokens(),
-            classifier_structured_output_enabled: false,
             classifier_num_ctx: default_classifier_num_ctx(),
+            classifier_ollama_url: None,
             preload_model_on_startup: default_preload_model_on_startup(),
             model_keep_alive: default_model_keep_alive(),
         }
@@ -381,10 +363,6 @@ fn default_short_replies() -> bool {
 
 fn default_max_output_tokens() -> u32 {
     48
-}
-
-fn default_classifier_max_output_tokens() -> u32 {
-    24
 }
 
 fn default_classifier_num_ctx() -> Option<u32> {
@@ -656,12 +634,6 @@ mod tests {
         assert_eq!(config.model, "llama3.2");
         assert!(config.llm.short_replies);
         assert_eq!(config.llm.max_output_tokens, 48);
-        assert!(!config.llm.classifier_nonstream_enabled);
-        assert!(!config.llm.classifier_prompt_cache_enabled);
-        assert!(!config.llm.classifier_compact_fewshots_enabled);
-        assert!(!config.llm.classifier_retry_on_invalid_enabled);
-        assert_eq!(config.llm.classifier_max_output_tokens, 24);
-        assert!(!config.llm.classifier_structured_output_enabled);
         assert_eq!(config.llm.classifier_num_ctx, Some(1024));
         assert!(config.llm.preload_model_on_startup);
         assert_eq!(config.llm.model_keep_alive.as_deref(), Some("30m"));
@@ -738,12 +710,6 @@ mod tests {
             config.llm.system_prompt.as_deref(),
             Some("You are concise.")
         );
-        assert!(!config.llm.classifier_nonstream_enabled);
-        assert!(!config.llm.classifier_prompt_cache_enabled);
-        assert!(!config.llm.classifier_compact_fewshots_enabled);
-        assert!(!config.llm.classifier_retry_on_invalid_enabled);
-        assert_eq!(config.llm.classifier_max_output_tokens, 24);
-        assert!(!config.llm.classifier_structured_output_enabled);
         assert_eq!(config.llm.classifier_num_ctx, Some(1024));
         assert!(config.llm.preload_model_on_startup);
         assert_eq!(config.llm.model_keep_alive.as_deref(), Some("30m"));
