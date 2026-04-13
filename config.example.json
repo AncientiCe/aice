@@ -11,6 +11,8 @@
     "classifier_compact_fewshots_enabled": false,
     "classifier_retry_on_invalid_enabled": false,
     "classifier_max_output_tokens": 24,
+    "classifier_structured_output_enabled": false,
+    "classifier_num_ctx": 1024,
     "preload_model_on_startup": true,
     "model_keep_alive": "30m"
   },
