@@ -163,12 +163,15 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         .trim();
     #[derive(serde::Deserialize)]
     struct Payload {
+        #[serde(alias = "i")]
         intent: String,
-        #[serde(default)]
+        #[serde(default, alias = "c")]
+        command: Option<String>,
+        #[serde(default, alias = "l")]
         location: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "o")]
         origin: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "d")]
         destination: Option<String>,
         #[serde(default)]
         sports_query: Option<String>,
@@ -206,8 +209,6 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         smart_home_action: Option<String>,
         #[serde(default)]
         assistant_kind: Option<String>,
-        #[serde(default)]
-        command: Option<String>,
         #[serde(default)]
         media_action: Option<String>,
         #[serde(default)]
@@ -248,100 +249,152 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         volume_action: Option<String>,
         #[serde(default)]
         volume_level: Option<u8>,
+        // Compact generic short-key fields (shared across skills)
+        #[serde(default)]
+        t: Option<String>,
+        #[serde(default)]
+        q: Option<String>,
+        #[serde(default)]
+        n: Option<String>,
+        #[serde(default)]
+        w: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_optional_string_or_array")]
+        p: Option<String>,
+        #[serde(default)]
+        v: Option<String>,
+        #[serde(default)]
+        vl: Option<u8>,
+        #[serde(default)]
+        ak: Option<String>,
+        #[serde(default)]
+        ms: Option<bool>,
+        #[serde(default)]
+        sf: Option<String>,
+        #[serde(default)]
+        hs: Option<String>,
+        #[serde(default)]
+        hcc: Option<String>,
+        #[serde(default)]
+        hrc: Option<String>,
+        #[serde(default)]
+        hy: Option<i32>,
+        #[serde(default)]
+        fcc: Option<String>,
+        #[serde(default)]
+        fr: Option<String>,
+        #[serde(default)]
+        ft: Option<String>,
+        #[serde(default)]
+        ncc: Option<String>,
+        #[serde(default)]
+        nl: Option<usize>,
     }
     let p: Payload = serde_json::from_str(s).map_err(ParseIntentError::Json)?;
     let intent = p.intent.to_lowercase().trim().to_string();
-    let location = p.location.filter(|l| !l.trim().is_empty());
-    let origin = p.origin.filter(|o| !o.trim().is_empty());
-    let destination = p.destination.filter(|d| !d.trim().is_empty());
     let opt_str = |o: Option<String>| o.filter(|x| !x.trim().is_empty());
+    let or_opt = |a: Option<String>, b: Option<String>| opt_str(a).or_else(|| opt_str(b));
     let command = opt_str(p.command);
     let action_from = |field: Option<String>, fallback: &Option<String>| {
         opt_str(field).or_else(|| fallback.clone())
     };
+    let generic_t = opt_str(p.t);
+    let generic_q = opt_str(p.q);
+    let generic_n = opt_str(p.n);
+    let generic_w = opt_str(p.w);
+    let generic_v = opt_str(p.v);
 
     match intent.as_str() {
         "chat" => Ok(IntentDecision::Chat),
-        "skill_weather" | "weather" => Ok(IntentDecision::SkillWeather { location }),
-        "skill_time" | "time" => Ok(IntentDecision::SkillTime { location }),
-        "skill_distance" | "distance" => Ok(IntentDecision::SkillDistance {
-            origin,
-            destination,
+        "skill_weather" | "weather" => Ok(IntentDecision::SkillWeather {
+            location: or_opt(p.location, generic_t.clone()),
         }),
-        "skill_sports_live" | "sports_live" => Ok(IntentDecision::SkillSportsLive {
-            query: opt_str(p.sports_query),
-            date: opt_str(p.sports_date),
+        "skill_time" | "time" => Ok(IntentDecision::SkillTime {
+            location: or_opt(p.location, generic_t.clone()),
         }),
-        "skill_holiday_lookup" | "holiday_lookup" => Ok(IntentDecision::SkillHolidayLookup {
-            name: opt_str(p.holiday_name),
-            date: opt_str(p.holiday_date),
-            country_code: opt_str(p.holiday_country_code),
-            region_code: opt_str(p.holiday_region_code),
-            year: p.holiday_year,
+        "skill_distance" | "distance" | "dist" => Ok(IntentDecision::SkillDistance {
+            origin: opt_str(p.origin),
+            destination: opt_str(p.destination),
         }),
-        "skill_fuel_price_lookup" | "fuel_price_lookup" => {
-            Ok(IntentDecision::SkillFuelPriceLookup {
-                country_code: opt_str(p.fuel_country_code),
-                region: opt_str(p.fuel_region),
-                fuel_type: opt_str(p.fuel_type),
+        "skill_sports_live" | "sports_live" | "sports" => Ok(IntentDecision::SkillSportsLive {
+            query: or_opt(p.sports_query, generic_q.clone()),
+            date: or_opt(p.sports_date, generic_w.clone()),
+        }),
+        "skill_holiday_lookup" | "holiday_lookup" | "holiday" => {
+            Ok(IntentDecision::SkillHolidayLookup {
+                name: or_opt(p.holiday_name, generic_n.clone()),
+                date: or_opt(p.holiday_date, generic_w.clone()),
+                country_code: or_opt(p.holiday_country_code, opt_str(p.hcc)),
+                region_code: or_opt(p.holiday_region_code, opt_str(p.hrc)),
+                year: p.holiday_year.or(p.hy),
             })
         }
-        "skill_horoscope_daily" | "horoscope_daily" => Ok(IntentDecision::SkillHoroscopeDaily {
-            sign: opt_str(p.horoscope_sign),
-            date: opt_str(p.horoscope_date),
-        }),
-        "skill_news_headlines" | "news_headlines" => Ok(IntentDecision::SkillNewsHeadlines {
-            topic: opt_str(p.news_topic),
-            country_code: opt_str(p.news_country_code),
-            limit: p.news_limit,
-        }),
-        "skill_smart_home" | "smart_home" => Ok(IntentDecision::SkillSmartHome {
-            target: opt_str(p.smart_home_target),
+        "skill_fuel_price_lookup" | "fuel_price_lookup" | "fuel" => {
+            Ok(IntentDecision::SkillFuelPriceLookup {
+                country_code: or_opt(p.fuel_country_code, opt_str(p.fcc)),
+                region: or_opt(p.fuel_region, opt_str(p.fr)),
+                fuel_type: or_opt(p.fuel_type, opt_str(p.ft)),
+            })
+        }
+        "skill_horoscope_daily" | "horoscope_daily" | "horoscope" => {
+            Ok(IntentDecision::SkillHoroscopeDaily {
+                sign: or_opt(p.horoscope_sign, opt_str(p.hs)),
+                date: or_opt(p.horoscope_date, generic_w.clone()),
+            })
+        }
+        "skill_news_headlines" | "news_headlines" | "news" => {
+            Ok(IntentDecision::SkillNewsHeadlines {
+                topic: or_opt(p.news_topic, generic_q.clone()),
+                country_code: or_opt(p.news_country_code, opt_str(p.ncc)),
+                limit: p.news_limit.or(p.nl),
+            })
+        }
+        "skill_smart_home" | "smart_home" | "shome" => Ok(IntentDecision::SkillSmartHome {
+            target: or_opt(p.smart_home_target, generic_t.clone()),
             action: action_from(p.smart_home_action, &command),
         }),
-        "skill_assistant" | "assistant" => Ok(IntentDecision::SkillAssistant {
-            kind: opt_str(p.assistant_kind),
+        "skill_assistant" | "assistant" | "assist" => Ok(IntentDecision::SkillAssistant {
+            kind: or_opt(p.assistant_kind, opt_str(p.ak)),
         }),
         "skill_media" | "media" => Ok(IntentDecision::SkillMedia {
             action: action_from(p.media_action, &command),
-            target: opt_str(p.media_target),
+            target: or_opt(p.media_target, generic_t.clone()),
         }),
-        "skill_memory" | "memory" => Ok(IntentDecision::SkillMemory {
-            query: opt_str(p.memory_query),
-            store: p.memory_store,
+        "skill_memory" | "memory" | "mem" => Ok(IntentDecision::SkillMemory {
+            query: or_opt(p.memory_query, generic_q.clone()),
+            store: p.memory_store.or(p.ms),
         }),
         "skill_computer" | "computer" => Ok(IntentDecision::SkillComputer {
             action: action_from(p.computer_action, &command),
-            target: opt_str(p.computer_target),
+            target: or_opt(p.computer_target, generic_t.clone()),
         }),
         "skill_screenshot" | "screenshot" => Ok(IntentDecision::SkillScreenshot {
-            filename: opt_str(p.screenshot_filename),
+            filename: or_opt(p.screenshot_filename, opt_str(p.sf)),
         }),
-        "skill_app_switcher" | "app_switcher" => Ok(IntentDecision::SkillAppSwitcher {
+        "skill_app_switcher" | "app_switcher" | "aswitch" => Ok(IntentDecision::SkillAppSwitcher {
             action: action_from(p.app_switcher_action, &command),
-            target: opt_str(p.app_switcher_target),
+            target: or_opt(p.app_switcher_target, generic_t.clone()),
         }),
         "skill_reminder" | "reminder" => Ok(IntentDecision::SkillReminder {
-            title: opt_str(p.reminder_title),
-            when: opt_str(p.reminder_when),
+            title: or_opt(p.reminder_title, generic_n.clone()),
+            when: or_opt(p.reminder_when, generic_w.clone()),
         }),
         "skill_timer" | "timer" => Ok(IntentDecision::SkillTimer {
-            duration: opt_str(p.timer_duration),
-            name: opt_str(p.timer_name),
+            duration: or_opt(p.timer_duration, generic_v.clone()),
+            name: or_opt(p.timer_name, generic_n.clone()),
         }),
-        "skill_shopping_list" | "shopping_list" => Ok(IntentDecision::SkillShoppingList {
+        "skill_shopping_list" | "shopping_list" | "shop" => Ok(IntentDecision::SkillShoppingList {
             action: action_from(p.shopping_action, &command),
-            items: opt_str(p.shopping_items),
-            when: opt_str(p.shopping_when),
+            items: or_opt(p.shopping_items, opt_str(p.p)),
+            when: or_opt(p.shopping_when, generic_w.clone()),
         }),
-        "skill_message" | "message" => Ok(IntentDecision::SkillMessage {
+        "skill_message" | "message" | "msg" => Ok(IntentDecision::SkillMessage {
             command: command.clone(),
-            contact: opt_str(p.message_contact),
-            message: opt_str(p.message_text),
+            contact: or_opt(p.message_contact, generic_t.clone()),
+            message: or_opt(p.message_text, generic_v.clone()),
         }),
-        "skill_volume" | "volume" => Ok(IntentDecision::SkillVolume {
+        "skill_volume" | "volume" | "vol" => Ok(IntentDecision::SkillVolume {
             action: action_from(p.volume_action, &command),
-            level: p.volume_level,
+            level: p.volume_level.or(p.vl),
         }),
         _ => Ok(IntentDecision::Chat),
     }
@@ -929,6 +982,184 @@ mod tests {
         ];
         for d in cases {
             assert_eq!(validate_intent_decision(d.clone()), d);
+        }
+    }
+
+    // --- compact format tests (short keys + short intent names) ---
+
+    #[test]
+    fn parse_compact_weather() {
+        let raw = r#"{"i":"weather","c":"get","l":"Paris, France"}"#;
+        let d = parse_intent(raw).must();
+        assert_eq!(
+            d,
+            IntentDecision::SkillWeather {
+                location: Some("Paris, France".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_compact_distance() {
+        let raw = r#"{"i":"dist","c":"get","d":"Paris, France"}"#;
+        let d = parse_intent(raw).must();
+        assert_eq!(
+            d,
+            IntentDecision::SkillDistance {
+                origin: None,
+                destination: Some("Paris, France".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn parse_compact_shopping_list() {
+        let raw = r#"{"i":"shop","c":"add","p":["strawberries","salami"]}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillShoppingList {
+                action,
+                items,
+                when,
+            } => {
+                assert_eq!(action.as_deref(), Some("add"));
+                assert_eq!(items.as_deref(), Some("strawberries, salami"));
+                assert!(when.is_none());
+            }
+            _ => panic!("expected SkillShoppingList"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_message() {
+        let raw = r#"{"i":"msg","c":"send","t":"my wife","v":"How are you?"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillMessage {
+                command,
+                contact,
+                message,
+            } => {
+                assert_eq!(command.as_deref(), Some("send"));
+                assert_eq!(contact.as_deref(), Some("my wife"));
+                assert_eq!(message.as_deref(), Some("How are you?"));
+            }
+            _ => panic!("expected SkillMessage"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_timer() {
+        let raw = r#"{"i":"timer","c":"set","v":"5 minutes","n":"pasta"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillTimer { duration, name } => {
+                assert_eq!(duration.as_deref(), Some("5 minutes"));
+                assert_eq!(name.as_deref(), Some("pasta"));
+            }
+            _ => panic!("expected SkillTimer"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_reminder() {
+        let raw = r#"{"i":"reminder","c":"add","n":"Call mom","w":"PT5M"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillReminder { title, when } => {
+                assert_eq!(title.as_deref(), Some("Call mom"));
+                assert_eq!(when.as_deref(), Some("PT5M"));
+            }
+            _ => panic!("expected SkillReminder"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_smart_home() {
+        let raw = r#"{"i":"shome","c":"on","t":"kitchen lights"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillSmartHome { target, action } => {
+                assert_eq!(target.as_deref(), Some("kitchen lights"));
+                assert_eq!(action.as_deref(), Some("on"));
+            }
+            _ => panic!("expected SkillSmartHome"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_media() {
+        let raw = r#"{"i":"media","c":"resume"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillMedia { action, target } => {
+                assert_eq!(action.as_deref(), Some("resume"));
+                assert!(target.is_none());
+            }
+            _ => panic!("expected SkillMedia"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_volume() {
+        let raw = r#"{"i":"vol","c":"set","vl":40}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillVolume { action, level } => {
+                assert_eq!(action.as_deref(), Some("set"));
+                assert_eq!(*level, Some(40));
+            }
+            _ => panic!("expected SkillVolume"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_app_switcher() {
+        let raw = r#"{"i":"aswitch","c":"next"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillAppSwitcher { action, target } => {
+                assert_eq!(action.as_deref(), Some("next"));
+                assert!(target.is_none());
+            }
+            _ => panic!("expected SkillAppSwitcher"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_fuel() {
+        let raw = r#"{"i":"fuel","c":"get","fcc":"GB","fr":"london","ft":"diesel"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillFuelPriceLookup {
+                country_code,
+                region,
+                fuel_type,
+            } => {
+                assert_eq!(country_code.as_deref(), Some("GB"));
+                assert_eq!(region.as_deref(), Some("london"));
+                assert_eq!(fuel_type.as_deref(), Some("diesel"));
+            }
+            _ => panic!("expected SkillFuelPriceLookup"),
+        }
+    }
+
+    #[test]
+    fn parse_compact_holiday() {
+        let raw = r#"{"i":"holiday","c":"get","n":"easter","hcc":"DE","hy":2026}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillHolidayLookup {
+                name,
+                country_code,
+                year,
+                ..
+            } => {
+                assert_eq!(name.as_deref(), Some("easter"));
+                assert_eq!(country_code.as_deref(), Some("DE"));
+                assert_eq!(*year, Some(2026));
+            }
+            _ => panic!("expected SkillHolidayLookup"),
         }
     }
 }

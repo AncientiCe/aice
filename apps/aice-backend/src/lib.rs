@@ -17,10 +17,9 @@ use core_observability::{
     record_palace_search, record_palace_wake_up,
 };
 use core_orchestrator::{
-    intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
-    intent_classifier_json_schema_for_skills, intent_classifier_system_prompt_for_skills,
-    parse_intent, validate_intent_decision, IntentClassifier, IntentDecision, LlmCallOptions,
-    LlmStream,
+    intent_classifier_few_shots_for_skills, intent_classifier_json_schema_for_skills,
+    intent_classifier_system_prompt_for_skills, parse_intent, validate_intent_decision,
+    IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
 };
 use core_runtime_protocol::{
     FrontendSkillIntent, FrontendSkillResultRequest, TurnRequest, TurnStreamClientMessage,
@@ -96,16 +95,9 @@ struct ClassifierPromptArtifacts {
     json_schema: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug)]
-struct ClassifierOptimizationConfig {
-    nonstream_enabled: bool,
-    prompt_cache_enabled: bool,
-    compact_fewshots_enabled: bool,
-    retry_on_invalid_enabled: bool,
-    max_output_tokens: u32,
-    structured_output_enabled: bool,
-    num_ctx: Option<u32>,
-}
+/// Hardcoded classifier output token cap. Kept small for decode-speed on
+/// memory-bandwidth-limited devices (each token costs ~25ms on M4 Mini with 7B).
+const CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 24;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FrontendSessionKey {
@@ -476,37 +468,16 @@ fn classifier_cache_key(available_skills: &[&str]) -> String {
     normalized.join("|")
 }
 
-fn build_classifier_prompt_artifacts(
-    available_skills: &[&str],
-    structured_output: bool,
-) -> ClassifierPromptArtifacts {
+fn build_classifier_prompt_artifacts(available_skills: &[&str]) -> ClassifierPromptArtifacts {
     ClassifierPromptArtifacts {
         system_prompt: intent_classifier_system_prompt_for_skills(available_skills),
         compact_few_shots: intent_classifier_few_shots_for_skills(available_skills),
-        json_schema: if structured_output {
-            Some(intent_classifier_json_schema_for_skills(available_skills))
-        } else {
-            None
-        },
+        json_schema: Some(intent_classifier_json_schema_for_skills(available_skills)),
     }
 }
 
 fn parse_validated_intent(raw: &str) -> Option<IntentDecision> {
     parse_intent(raw.trim()).ok().map(validate_intent_decision)
-}
-
-fn choose_classification_decision(
-    fast: Option<IntentDecision>,
-    retry: Option<IntentDecision>,
-    retry_enabled: bool,
-) -> IntentDecision {
-    if let Some(decision) = fast {
-        return decision;
-    }
-    if retry_enabled {
-        return retry.unwrap_or(IntentDecision::Chat);
-    }
-    IntentDecision::Chat
 }
 
 fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> String {
@@ -1352,7 +1323,8 @@ pub struct AiceBackendEngine {
     resolved_location: Option<ResolvedLocation>,
     skip_secondary_llm_for_skill_answers: bool,
     classifier_prompt_cache: ClassifierPromptCache,
-    classifier_optimization: ClassifierOptimizationConfig,
+    classifier_num_ctx: Option<u32>,
+    classifier_llm: Arc<CradleLlmStream>,
 }
 
 /// LLM-backed intent classifier reused by backend and compatibility wrappers.
@@ -1467,8 +1439,38 @@ impl AiceBackendEngine {
             }
         };
 
+        let llm_arc = Arc::new(llm);
+        let classifier_llm = if let Some(ref url) = config.llm.classifier_ollama_url {
+            let cls_llm = CradleLlmStream::new(
+                url.clone(),
+                config.model.clone(),
+                false,
+                CLASSIFIER_MAX_OUTPUT_TOKENS,
+                None,
+                config.llm.model_keep_alive.clone(),
+            );
+            if config.llm.preload_model_on_startup {
+                let t0 = Instant::now();
+                match cls_llm.warm_up().await {
+                    Ok(()) => {
+                        record_model_preload_duration("classifier_llm", t0.elapsed());
+                        record_model_preload("classifier_llm", "success");
+                    }
+                    Err(error) => {
+                        record_model_preload_duration("classifier_llm", t0.elapsed());
+                        record_model_preload("classifier_llm", "error");
+                        tracing::warn!(%error, "classifier llm preload failed");
+                    }
+                }
+            }
+            info!(classifier_url = %url, "using dedicated classifier Ollama instance");
+            Arc::new(cls_llm)
+        } else {
+            Arc::clone(&llm_arc)
+        };
+
         Ok(Self {
-            llm: Arc::new(llm),
+            llm: llm_arc,
             weather_skill,
             time_skill: OpenMeteoTimeSkill::new(),
             distance_skill: OpenMeteoDistanceSkill::new(),
@@ -1482,15 +1484,8 @@ impl AiceBackendEngine {
             resolved_location,
             skip_secondary_llm_for_skill_answers: config.llm.skip_secondary_llm_for_skill_answers,
             classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
-            classifier_optimization: ClassifierOptimizationConfig {
-                nonstream_enabled: config.llm.classifier_nonstream_enabled,
-                prompt_cache_enabled: config.llm.classifier_prompt_cache_enabled,
-                compact_fewshots_enabled: config.llm.classifier_compact_fewshots_enabled,
-                retry_on_invalid_enabled: config.llm.classifier_retry_on_invalid_enabled,
-                max_output_tokens: config.llm.classifier_max_output_tokens,
-                structured_output_enabled: config.llm.classifier_structured_output_enabled,
-                num_ctx: config.llm.classifier_num_ctx,
-            },
+            classifier_num_ctx: config.llm.classifier_num_ctx,
+            classifier_llm,
         })
     }
 
@@ -1528,35 +1523,6 @@ impl AiceBackendEngine {
         Ok(output)
     }
 
-    async fn collect_llm_once(
-        &self,
-        operation: &str,
-        user_text: &str,
-        history: &[(String, String)],
-        system_prompt_override: Option<&str>,
-        call_options: Option<&LlmCallOptions>,
-    ) -> Result<String, DynError> {
-        debug!(
-            operation,
-            llm_input = %user_text.trim(),
-            history_len = history.len(),
-            has_system_prompt_override = system_prompt_override.is_some(),
-            "llm_input_nonstream"
-        );
-        let llm_started = Instant::now();
-        let output = self
-            .llm
-            .chat_once(user_text, history, system_prompt_override, call_options)
-            .await?;
-        record_backend_llm_provider_duration("cradle", llm_started.elapsed());
-        debug!(
-            operation,
-            llm_output = %output.trim(),
-            "llm_output_nonstream"
-        );
-        Ok(output)
-    }
-
     async fn classify_intent(
         &self,
         user_text: &str,
@@ -1564,118 +1530,67 @@ impl AiceBackendEngine {
     ) -> Result<IntentDecision, DynError> {
         let prompt = build_intent_classification_prompt(user_text);
         let prompt_build_started = Instant::now();
-        let structured = self.classifier_optimization.structured_output_enabled;
-        let artifacts = if self.classifier_optimization.prompt_cache_enabled {
-            let key = classifier_cache_key(available_skills);
-            if let Ok(cache) = self.classifier_prompt_cache.read() {
-                cache.get(&key).cloned()
-            } else {
-                None
+        let key = classifier_cache_key(available_skills);
+        let artifacts = if let Ok(cache) = self.classifier_prompt_cache.read() {
+            cache.get(&key).cloned()
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            let built = build_classifier_prompt_artifacts(available_skills);
+            if let Ok(mut cache) = self.classifier_prompt_cache.write() {
+                cache.entry(key).or_insert_with(|| built.clone());
             }
-            .unwrap_or_else(|| {
-                let built = build_classifier_prompt_artifacts(available_skills, structured);
-                if let Ok(mut cache) = self.classifier_prompt_cache.write() {
-                    cache.entry(key).or_insert_with(|| built.clone());
-                }
-                built
-            })
-        } else {
-            build_classifier_prompt_artifacts(available_skills, structured)
-        };
-        let few_shot_history = if self.classifier_optimization.compact_fewshots_enabled {
-            artifacts.compact_few_shots.clone()
-        } else {
-            intent_classifier_few_shots()
-        };
+            built
+        });
+        let few_shot_history = artifacts.compact_few_shots.clone();
         record_backend_turn_stage_duration(
             "classifier_prompt_build",
             prompt_build_started.elapsed(),
         );
 
-        let mut fast_options = LlmCallOptions::for_classification();
-        fast_options.max_output_tokens =
-            Some(self.classifier_optimization.max_output_tokens.max(1));
-        fast_options.format_json_schema = artifacts.json_schema.clone();
-        fast_options.num_ctx = self.classifier_optimization.num_ctx;
+        let mut options = LlmCallOptions::for_classification();
+        options.max_output_tokens = Some(CLASSIFIER_MAX_OUTPUT_TOKENS.max(1));
+        options.format_json_schema = artifacts.json_schema.clone();
+        options.num_ctx = self.classifier_num_ctx;
 
+        debug!(
+            operation = "intent_classification",
+            llm_input = %prompt.trim(),
+            history_len = few_shot_history.len(),
+            "classifier_llm_input"
+        );
         let llm_started = Instant::now();
-        let fast_raw = if self.classifier_optimization.nonstream_enabled {
-            self.collect_llm_once(
-                "intent_classification_fast",
+        let raw = self
+            .classifier_llm
+            .chat_once(
                 &prompt,
                 few_shot_history.as_slice(),
                 Some(artifacts.system_prompt.as_str()),
-                Some(&fast_options),
+                Some(&options),
             )
             .await
-        } else {
-            self.collect_llm(
-                "intent_classification_fast",
-                &prompt,
-                few_shot_history.as_slice(),
-                Some(artifacts.system_prompt.as_str()),
-                Some(&fast_options),
-            )
-            .await
-        };
+            .map_err(|e| -> DynError { e });
+        record_backend_llm_provider_duration("classifier", llm_started.elapsed());
+        if let Ok(ref output) = raw {
+            debug!(
+                operation = "intent_classification",
+                llm_output = %output.trim(),
+                "classifier_llm_output"
+            );
+        }
         record_backend_turn_stage_duration("classifier_llm_roundtrip", llm_started.elapsed());
 
         let parse_started = Instant::now();
-        let fast_decision = fast_raw
-            .as_ref()
-            .ok()
-            .and_then(|raw| parse_validated_intent(raw));
+        let decision = raw.as_ref().ok().and_then(|r| parse_validated_intent(r));
         record_backend_turn_stage_duration("intent_parse_validate", parse_started.elapsed());
 
-        if fast_decision.is_some() {
-            return Ok(choose_classification_decision(
-                fast_decision,
-                None,
-                self.classifier_optimization.retry_on_invalid_enabled,
-            ));
+        if let Some(d) = decision {
+            return Ok(d);
         }
 
-        if !self.classifier_optimization.retry_on_invalid_enabled {
-            fast_raw?;
-            return Ok(IntentDecision::Chat);
-        }
-
-        let retry_prompt_build_started = Instant::now();
-        let retry_prompt = intent_classifier_system_prompt_for_skills(available_skills);
-        let retry_history = intent_classifier_few_shots();
-        record_backend_turn_stage_duration(
-            "classifier_prompt_build",
-            retry_prompt_build_started.elapsed(),
-        );
-
-        let mut retry_options = LlmCallOptions::for_classification();
-        retry_options.max_output_tokens =
-            Some(self.classifier_optimization.max_output_tokens.max(48));
-
-        retry_options.num_ctx = self.classifier_optimization.num_ctx;
-        let retry_llm_started = Instant::now();
-        let retry_raw = self
-            .collect_llm(
-                "intent_classification_retry",
-                &prompt,
-                retry_history.as_slice(),
-                Some(retry_prompt.as_str()),
-                Some(&retry_options),
-            )
-            .await;
-        record_backend_turn_stage_duration("classifier_llm_roundtrip", retry_llm_started.elapsed());
-
-        let retry_parse_started = Instant::now();
-        let retry_decision = retry_raw
-            .as_ref()
-            .ok()
-            .and_then(|raw| parse_validated_intent(raw));
-        record_backend_turn_stage_duration("intent_parse_validate", retry_parse_started.elapsed());
-        Ok(choose_classification_decision(
-            None,
-            retry_decision,
-            self.classifier_optimization.retry_on_invalid_enabled,
-        ))
+        raw?;
+        Ok(IntentDecision::Chat)
     }
 
     async fn compose_skill_answer(
@@ -2443,10 +2358,9 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 mod tests {
     use super::{
         build_available_classifier_skills, build_classifier_prompt_artifacts,
-        build_intent_classification_prompt, choose_classification_decision, classifier_cache_key,
-        compose_distance_answer, compose_frontend_skill_error_outcome,
-        compose_frontend_skill_success_echo, compose_time_answer, compose_weather_answer,
-        parse_validated_intent,
+        build_intent_classification_prompt, classifier_cache_key, compose_distance_answer,
+        compose_frontend_skill_error_outcome, compose_frontend_skill_success_echo,
+        compose_time_answer, compose_weather_answer, parse_validated_intent,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -2505,20 +2419,20 @@ mod tests {
         assert!(
             examples.iter().any(|(u, a)| {
                 u.contains("ask my wife how she is")
-                    && a.contains("\"intent\":\"skill_message\"")
-                    && a.contains("\"command\":\"send\"")
-                    && a.contains("\"message_contact\":\"my wife\"")
-                    && a.contains("\"message_text\":\"How are you?\"")
+                    && a.contains("\"i\":\"msg\"")
+                    && a.contains("\"c\":\"send\"")
+                    && a.contains("\"t\":\"my wife\"")
+                    && a.contains("\"v\":\"How are you?\"")
             }),
             "expected canonical message rewrite few-shot contract example"
         );
         assert!(
             examples.iter().any(|(u, a)| {
                 u.contains("send a message to my wife.")
-                    && a.contains("\"intent\":\"skill_message\"")
-                    && a.contains("\"command\":\"send\"")
-                    && a.contains("\"message_contact\":\"my wife\"")
-                    && !a.contains("\"message_text\"")
+                    && a.contains("\"i\":\"msg\"")
+                    && a.contains("\"c\":\"send\"")
+                    && a.contains("\"t\":\"my wife\"")
+                    && !a.contains("\"v\"")
             }),
             "expected no-invention message example for missing message text"
         );
@@ -2644,29 +2558,23 @@ mod tests {
 
     #[test]
     fn classifier_prompt_artifacts_scope_compact_few_shots() {
-        let artifacts = build_classifier_prompt_artifacts(&["skill_time"], false);
-        assert!(artifacts.system_prompt.contains("\"skill_time\""));
+        let artifacts = build_classifier_prompt_artifacts(&["skill_time"]);
+        assert!(artifacts.system_prompt.contains("\"time\""));
         assert!(!artifacts.compact_few_shots.is_empty());
         assert!(artifacts
             .compact_few_shots
             .iter()
-            .all(|(_, answer)| answer.contains("\"intent\":\"skill_time\"")));
+            .all(|(_, answer)| answer.contains("\"i\":\"time\"")));
     }
 
     #[test]
-    fn choose_classification_decision_retries_only_when_enabled() {
-        let fast = None;
-        let retry = Some(super::IntentDecision::SkillTimer {
-            duration: Some("5 minutes".to_string()),
-            name: None,
-        });
-        let without_retry = choose_classification_decision(fast.clone(), retry.clone(), false);
-        assert_eq!(without_retry, super::IntentDecision::Chat);
-        let with_retry = choose_classification_decision(fast, retry, true);
-        assert!(matches!(
-            with_retry,
-            super::IntentDecision::SkillTimer { .. }
-        ));
+    fn classifier_prompt_artifacts_are_byte_identical_across_calls() {
+        let skills = &["skill_weather", "skill_time", "skill_media"][..];
+        let a = build_classifier_prompt_artifacts(skills);
+        let b = build_classifier_prompt_artifacts(skills);
+        assert_eq!(a.system_prompt, b.system_prompt);
+        assert_eq!(a.compact_few_shots, b.compact_few_shots);
+        assert_eq!(a.json_schema, b.json_schema);
     }
 
     #[test]
