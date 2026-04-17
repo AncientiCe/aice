@@ -208,7 +208,7 @@ impl Default for SttConfig {
 }
 
 fn default_whisper_model_path() -> String {
-    "models/whisper/ggml-tiny.en.bin".to_string()
+    "models/whisper/ggml-base.en.bin".to_string()
 }
 
 fn default_stt_preload_model_on_startup() -> bool {
@@ -505,7 +505,7 @@ pub struct Config {
     /// Ollama base URL (e.g. http://127.0.0.1:11434).
     #[serde(default = "default_ollama_url")]
     pub ollama_url: String,
-    /// Model name for chat (e.g. llama3.2).
+    /// Model name for chat (e.g. qwen2.5:7b).
     #[serde(default = "default_model")]
     pub model: String,
     /// LLM behavior options.
@@ -545,7 +545,7 @@ fn default_ollama_url() -> String {
 }
 
 fn default_model() -> String {
-    "llama3.2".to_string()
+    "qwen2.5:7b".to_string()
 }
 
 fn default_pod_bind() -> String {
@@ -631,7 +631,7 @@ mod tests {
         let path = Path::new("nonexistent_config_that_does_not_exist_12345.json");
         let config = Config::load(path).must();
         assert_eq!(config.ollama_url, "http://127.0.0.1:11434");
-        assert_eq!(config.model, "llama3.2");
+        assert_eq!(config.model, "qwen2.5:7b");
         assert!(config.llm.short_replies);
         assert_eq!(config.llm.max_output_tokens, 48);
         assert_eq!(config.llm.classifier_num_ctx, Some(1024));
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(config.audio.tuned_speech_end_silence_ms, 120);
         assert_eq!(
             config.stt.whisper_model_path,
-            "models/whisper/ggml-tiny.en.bin"
+            "models/whisper/ggml-base.en.bin"
         );
         assert!(config.stt.preload_model_on_startup);
         assert_eq!(config.tts.piper_model_path, "models/piper/model.onnx");

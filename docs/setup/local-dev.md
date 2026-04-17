@@ -90,11 +90,11 @@ Verify it responds:
 curl -fsS http://127.0.0.1:11434/api/tags
 ```
 
-Pull the default model used by this repo (`llama3.2` in `config.example.json`):
+Pull the default model used by this repo (`qwen2.5:7b` in `config.example.json`):
 
 ```bash
-ollama pull llama3.2
-ollama list | grep -E '^llama3.2'
+ollama pull qwen2.5:7b
+ollama list | grep -E '^qwen2.5:7b'
 ```
 
 ### 0.6 Whisper CLI (`whisper-cli`)
@@ -174,8 +174,8 @@ Download Whisper model expected by default:
 
 ```bash
 curl -fL \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin \
-  -o models/whisper/ggml-tiny.en.bin
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin \
+  -o models/whisper/ggml-base.en.bin
 ```
 
 Download Piper voice model expected by default:
@@ -192,7 +192,7 @@ curl -fL \
 Verify model files:
 
 ```bash
-ls -lh models/whisper/ggml-tiny.en.bin
+ls -lh models/whisper/ggml-base.en.bin
 ls -lh models/piper/model.onnx
 ls -lh models/piper/model.onnx.json
 ```
@@ -204,11 +204,11 @@ If your files are in different paths, update `config.json`:
 #### Which models to pull (defaults and options)
 
 - Ollama default:
-  - `llama3.2`
-  - pull: `ollama pull llama3.2`
+  - `qwen2.5:7b`
+  - pull: `ollama pull qwen2.5:7b`
 - Whisper default:
-  - file: `models/whisper/ggml-tiny.en.bin`
-  - URL: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin`
+  - file: `models/whisper/ggml-base.en.bin`
+  - URL: `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
 - Piper default:
   - files: `models/piper/model.onnx` and `models/piper/model.onnx.json`
   - voice source: `en_US-lessac-medium`
@@ -258,11 +258,11 @@ if command -v whisper-cli >/dev/null || [ -n "${WHISPER_CLI_BIN:-}" ]; then ok "
 if command -v piper >/dev/null || [ -n "${PIPER_BIN:-}" ]; then ok "piper"; else bad "piper (set PIPER_BIN)"; fi
 
 if [ -f config.json ]; then ok "config.json"; else bad "config.json"; fi
-if [ -f models/whisper/ggml-tiny.en.bin ]; then ok "whisper model"; else bad "models/whisper/ggml-tiny.en.bin"; fi
+if [ -f models/whisper/ggml-base.en.bin ]; then ok "whisper model"; else bad "models/whisper/ggml-base.en.bin"; fi
 if [ -f models/piper/model.onnx ]; then ok "piper model .onnx"; else bad "models/piper/model.onnx"; fi
 if [ -f models/piper/model.onnx.json ]; then ok "piper model .onnx.json"; else bad "models/piper/model.onnx.json"; fi
 
-if ollama list 2>/dev/null | grep -q '^llama3.2'; then ok "ollama model llama3.2"; else bad "ollama pull llama3.2"; fi
+if ollama list 2>/dev/null | grep -q '^qwen2.5:7b'; then ok "ollama model qwen2.5:7b"; else bad "ollama pull qwen2.5:7b"; fi
 ```
 
 ### 0.11 Project gates and run
@@ -284,15 +284,15 @@ If you already installed runtimes (`ollama`, `whisper-cli`, `piper`) and only ne
 ```
 
 This downloads to the default paths expected by config:
-- `models/whisper/ggml-tiny.en.bin`
+- `models/whisper/ggml-base.en.bin`
 - `models/piper/model.onnx`
 - `models/piper/model.onnx.json`
-- pulls Ollama model `llama3.2`
+- pulls Ollama model `qwen2.5:7b`
 
 You can override what gets pulled:
 
 ```bash
-OLLAMA_MODEL=llama3.2 \
+OLLAMA_MODEL=qwen2.5:7b \
 WHISPER_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin \
 PIPER_ONNX_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx \
 PIPER_JSON_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx.json \
