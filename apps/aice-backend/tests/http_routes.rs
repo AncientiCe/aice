@@ -819,10 +819,8 @@ async fn turn_stream_frontend_skill_round_trip() {
         let ev: TurnStreamServerEvent = serde_json::from_str(&text)
             .unwrap_or_else(|error| panic!("decode event failed: {error}"));
         match ev {
-            TurnStreamServerEvent::Token { text, .. } => {
-                if text.contains("done from finalize") {
-                    saw_token = true;
-                }
+            TurnStreamServerEvent::Token { text, .. } if text.contains("done from finalize") => {
+                saw_token = true;
             }
             TurnStreamServerEvent::Done { .. } => {
                 saw_done = true;
