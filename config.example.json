@@ -1,6 +1,6 @@
 {
   "ollama_url": "http://127.0.0.1:11434",
-  "model": "llama3.2",
+  "model": "qwen2.5:7b",
   "llm": {
     "short_replies": true,
     "max_output_tokens": 48,
@@ -26,7 +26,7 @@
     "tuned_speech_end_silence_ms": 120
   },
   "stt": {
-    "whisper_model_path": "models/whisper/ggml-tiny.en.bin",
+    "whisper_model_path": "models/whisper/ggml-base.en.bin",
     "preload_model_on_startup": true
   },
   "tts": {
@@ -39,7 +39,9 @@
     "health_bind": "127.0.0.1:8780",
     "metrics_enabled": true,
     "metrics_bind": "127.0.0.1:9001",
-    "restart_backoff_secs": 3
+    "restart_backoff_secs": 3,
+    "audio_session_idle_timeout_ms": 5000,
+    "audio_session_max_duration_ms": 20000
   },
   "wake_word": {
     "enabled": true,
@@ -78,6 +80,8 @@
     "max_recent_turns": 10,
     "max_facts": 50,
     "autosave": true,
-    "sqlite_path": "memory.sqlite"
+    "sqlite_path": "memory.sqlite",
+    "palace_db_path": ".mempalace/palace/palace.db",
+    "palace_identity_path": ".mempalace/identity.txt"
   }
 }

@@ -1,22 +1,135 @@
-# Aice: Local-First Streaming Jarvis
+# Aice: Local-First Voice AI Core
 [![CI](https://github.com/AncientiCe/aice/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/ci.yml) [![Release Build Check](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml) [![Latest Release](https://img.shields.io/github/v/release/AncientiCe/aice)](https://github.com/AncientiCe/aice/releases) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Aice social card](docs/assets/aice-social-card.png)
+![Aice social card](docs/assets/aice-social-card.svg)
 
-Aice is a private, local voice runtime for home automation and media control.
+Aice is a private, local voice AI system. **`aice-backend`** is the cross-platform (Windows, macOS, Linux) core that runs STT, LLM orchestration, memory, and backend-owned skills. Platform frontends (e.g. [`aice-macos`](https://github.com/AncientiCe/aice-macos)) talk to it over the local network.
 
-Core flow is built for low latency:
-`speech -> STT -> model -> TTS` with streaming where possible.
+No cloud lock-in is required for the runtime loop. You run it on your own machine.
 
-## Latency observability
+License: Apache-2.0 (see [LICENSE](LICENSE)).
+
+## What is `aice-backend`
+
+`aice-backend` (see [apps/aice-backend](apps/aice-backend)) is a single cross-platform Rust service that exposes HTTP and WebSocket endpoints for frontends plus a UDP discovery responder so frontends can find it automatically on the local network. The discovery layer is deliberately broadcast-based (no mDNS/multicast) and [works on macOS, Linux, and Windows](apps/aice-backend/src/discovery_broadcast.rs) on the same broadcast domain.
+
+It owns:
+
+- **STT** via Whisper (`core-stt`, `whisper-cli` model files).
+- **LLM orchestration** via Ollama (`core-llm`, `core-orchestrator`).
+- **Memory Palace** persistent memory (`mempalace-rs`).
+- **Backend-owned skills** (weather, time, distance, smart-home, news, holidays, sports, horoscope, fuel prices) pulled from the external [`aice-skills`](https://github.com/AncientiCe/aice-skills) repo as a pinned Cargo git dependency.
+- **UDP broadcast discovery** so frontends find the backend with zero manual configuration.
+- **Prometheus metrics** for every code path (`core-observability`).
+
+```mermaid
+flowchart LR
+    Frontend["Frontend (e.g. aice-macos)"] <-->|HTTP + WS| Backend["aice-backend (core)"]
+    Backend --> STT[Whisper STT]
+    Backend --> LLM[Ollama LLM]
+    Backend --> Skills["aice-skills (git dep)"]
+    Backend --> Memory["Memory Palace (mempalace-rs)"]
+    Frontend -.->|UDP discovery| Backend
+```
+
+## Repositories in the ecosystem
+
+| Repo | Role | Link |
+|------|------|------|
+| `aice` (this repo) | Cross-platform core backend workspace (`apps/aice-backend`, `crates/core-*`). | you are here |
+| `aice-skills` | All skill crates and implementations. Consumed by `aice-backend` as a pinned Cargo git dependency. Point here for the **full skills list and implementation details**. | [AncientiCe/aice-skills](https://github.com/AncientiCe/aice-skills) |
+| `aice-macos` | Fully functional macOS frontend: mic capture, VAD, TTS, and deep macOS-ecosystem skills (timers, reminders, messages, screenshots, app switching, volume, media, shopping list). Auto-discovers the backend via UDP. | [AncientiCe/aice-macos](https://github.com/AncientiCe/aice-macos) |
+
+## Supported platforms
+
+- **Backend (`aice-backend`)**: Windows, macOS, and Linux. Pure Rust; no platform-specific build steps for the core service.
+- **Frontends**: macOS today via [`aice-macos`](https://github.com/AncientiCe/aice-macos). Windows and Linux frontends are not in scope for this repo.
+
+## Quick start (backend)
+
+Prerequisites (all platforms):
+
+- Rust toolchain (`cargo`).
+- [Ollama](https://ollama.com) running locally for the LLM.
+- `whisper-cli` + a Whisper model file for STT.
+- SSH access to `git@github.com:AncientiCe/aice-skills.git` (the skills crate is consumed as a pinned git dependency).
+
+Steps:
+
+1. Create config:
+
+   ```bash
+   cp config.example.json config.json
+   ```
+
+2. Download required models:
+
+   ```bash
+   ./scripts/download-required-models.sh
+   ```
+
+   The script is a POSIX shell script. On Windows, run it from Git Bash or WSL, or download the models manually using the URLs inside the script. See [docs/setup/local-dev.md](docs/setup/local-dev.md) for platform-specific prerequisites.
+
+3. Run quality gates:
+
+   ```bash
+   cargo aice-fmt
+   cargo aice-clippy
+   cargo aice-audit
+   cargo aice-test
+   ```
+
+4. Start the backend:
+
+   ```bash
+   cargo aice-backend
+   ```
+
+   The service binds `0.0.0.0:8781` by default (override with `AICE_BACKEND_BIND`). See [apps/aice-backend/src/main.rs](apps/aice-backend/src/main.rs).
+
+### Pair with a frontend
+
+Once the backend is healthy, start a frontend so you have a voice loop. The reference frontend is the macOS app in [`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos) — it auto-discovers the backend via UDP and registers its macOS-local skills on activation. Follow that repo's README for frontend setup; do not duplicate it here.
+
+## Canonical cargo commands
+
+Defined in `.cargo/config.toml`:
+
+- `cargo aice-backend` &rarr; run the cross-platform core backend service.
+- `cargo aice-fmt` &rarr; `cargo fmt --all -- --check`.
+- `cargo aice-clippy` &rarr; `cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`.
+- `cargo aice-audit` &rarr; dependency audit.
+- `cargo aice-test` &rarr; workspace tests excluding the deprecated `desktop-runner` app.
+
+Legacy runtimes (`cargo aice-pod-voice`, `cargo aice-gateway`) are documented under [Legacy / experimental](#legacy--experimental).
+
+## Skills
+
+Skills are defined and implemented in the external [`aice-skills`](https://github.com/AncientiCe/aice-skills) repository and consumed by `aice-backend` via a pinned Cargo git dependency in [apps/aice-backend/Cargo.toml](apps/aice-backend/Cargo.toml). Backend-owned skills (e.g. weather, time, distance, smart-home) execute inside `aice-backend`; frontend-owned skills (e.g. timers, reminders, messages) execute in the connected frontend and are declared at activation time.
+
+- **Full skills list & status**: [docs/skills/README.md](docs/skills/README.md).
+- **Authoritative implementation**: [AncientiCe/aice-skills](https://github.com/AncientiCe/aice-skills).
+
+## Repository layout
+
+- `apps/aice-backend`: cross-platform core backend service (primary).
+- `crates/core-*`: runtime building blocks (`core-config`, `core-llm`, `core-stt`, `core-orchestrator`, `core-observability`, `core-runtime-protocol`).
+- `apps/desktop-runner`, `apps/pod-gateway`, `pod-firmware`: legacy / experimental components — see below.
+
+## Public repository safety
+
+- Never commit local runtime state or credentials (`config.json`, `.env*`, `memory.json`, `memory.sqlite`, `*.pem`, `*.key`).
+- Start from `config.example.json` and keep machine-local overrides out of git.
+- If a secret is committed by mistake, rotate it and remove it from git history before publishing tags/releases.
+
+## Observability
 
 Use metrics dashboards for latency tracking and SLO checks:
+
 - `timing-deep-dive`
 - `backend-timings`
 - `frontend-timings`
 
-## Local metrics dashboard
-
-Start local Prometheus + Grafana stack on demand:
+Start a local Prometheus + Grafana stack on demand:
 
 ```bash
 ./scripts/observability.sh up
@@ -25,105 +138,31 @@ Start local Prometheus + Grafana stack on demand:
 - Grafana: `http://127.0.0.1:3000`
 - Prometheus: `http://127.0.0.1:9090`
 
-Runbook: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md)
+Runbook: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md).
 
-No cloud lock-in is required for the runtime loop. You run it on your own machine.
+## Ops and docs
 
-License: Apache-2.0 (see [LICENSE](LICENSE)).
+- Local setup: [docs/setup/local-dev.md](docs/setup/local-dev.md) (currently macOS-focused; Windows and Linux users should follow the equivalent prereqs — Rust, Ollama, Whisper, optionally Piper — for their platform).
+- Architecture: [docs/architecture/README.md](docs/architecture/README.md).
+- Local observability: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md).
+- Changelog: [CHANGELOG.md](CHANGELOG.md).
+- Security policy: [SECURITY.md](SECURITY.md).
+- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md).
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-## Product direction
+## Legacy / experimental
 
-- Primary runtime: `pod-voice` (single process, voice loop + pod transport).
-- `pod-gateway` remains available as an advanced/internal transport service.
-- Hardware direction: Signal Pod is the target device.
-- M5Stack ATOM Echo is supported as an experimental test device.
-- Skills are pluggable by design (`core-skills`); see the [skills catalog](docs/skills/README.md).
-- Recommended host for home deployments: Mac mini on macOS.
+These components predate the split-runtime design and are retained for continuity. New deployments should use `aice-backend` with a platform frontend.
 
-## Stability and support matrix
+- **`apps/desktop-runner` (`pod-voice`)**: deprecated single-process macOS runtime that bundled voice loop and pod transport into one binary. Prefer `aice-backend` + [`aice-macos`](https://github.com/AncientiCe/aice-macos). Invoke via `cargo aice-pod-voice` if needed.
+- **`apps/pod-gateway`**: standalone WebSocket ingest/egress transport for advanced/internal deployments. Invoke via `cargo aice-gateway`.
+- **`pod-firmware` + M5Stack ATOM Echo**: experimental hardware path, not covered by binary release guarantees. See [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md) and [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md).
 
-- Stable runtime path: `apps/desktop-runner` via `pod-voice` on macOS arm64.
-- `desktop-runner` binary is deprecated; prefer `pod-voice` or split runtime with `aice-backend` plus the external macOS frontend repo ([AncientiCe/aice-macos](https://github.com/AncientiCe/aice-macos)).
-- Advanced path: `apps/pod-gateway` is available for transport-focused deployments and experimentation.
-- Experimental hardware path: `pod-firmware` and M5Stack ATOM Echo integration are not covered by binary release guarantees.
-- Compatibility policy: `0.1.x` preserves current `config.example.json` defaults unless release notes state otherwise.
+### Release v0.1.0 (legacy)
 
-## Public repository safety
+The `v0.1.0` binary release predates the cross-platform backend story and ships `pod-voice` artifacts only.
 
-- Never commit local runtime state or credentials (`config.json`, `.env*`, `memory.json`, `memory.sqlite`, `*.pem`, `*.key`).
-- Start from `config.example.json` and keep machine-local overrides out of git.
-- If a secret is committed by mistake, rotate it and remove it from git history before publishing tags/releases.
-
-## For public consumers
-
-- Best effort stability is focused on `pod-voice` and the documented macOS setup flow.
-- Experimental components may change faster and can break between releases.
-- Prefer release-tagged assets/runbooks over arbitrary `main` snapshots for production-like usage.
-
-## Quick start
-
-First-time setup on macOS (install + verification, step by step):
-[docs/setup/local-dev.md#0-first-time-macos-setup-checklist](docs/setup/local-dev.md#0-first-time-macos-setup-checklist)
-
-Download all required models in one command:
-
-```bash
-./scripts/download-required-models.sh
-```
-
-Override model selections (example):
-
-```bash
-OLLAMA_MODEL=llama3.2 \
-WHISPER_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin \
-PIPER_ONNX_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx \
-PIPER_JSON_URL=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx.json \
-./scripts/download-required-models.sh
-```
-
-1. Create config:
-
-```bash
-cp config.example.json config.json
-```
-
-2. Run quality gates:
-
-```bash
-cargo aice-fmt
-cargo aice-clippy
-cargo aice-audit
-cargo aice-test
-```
-
-3. Start the primary runtime:
-
-```bash
-cargo aice-pod-voice
-```
-
-Split runtime (two services):
-
-```bash
-cargo aice-backend
-# start macOS frontend from external repo: https://github.com/AncientiCe/aice-macos
-```
-
-## Canonical cargo commands
-
-Defined in `.cargo/config.toml`:
-
-- `cargo aice-pod-voice` -> run local Jarvis runtime (primary path)
-- `cargo aice-backend` -> backend LLM/orchestration service
-- `cargo aice-gateway` -> standalone pod transport service
-- `cargo aice-fmt` -> `cargo fmt --all -- --check`
-- `cargo aice-clippy` -> `cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`
-- `cargo aice-audit` -> dependency audit
-- `cargo aice-test` -> workspace tests excluding deprecated app (`desktop-runner`)
-
-## Releases (v0.1.0)
-
-- Distribution channel for `v0.1.0`: GitHub Releases (no crates.io publishing for this release).
+- Distribution channel: GitHub Releases (no crates.io publishing for this release).
 - Official binary support matrix: macOS arm64.
 - Runtime compatibility target for `0.1.x`: preserve current `config.example.json` defaults unless a change is explicitly called out in release notes.
 - Firmware status: `pod-firmware` remains experimental in `v0.1.0` and is shipped as source + docs only (no firmware artifact).
@@ -133,45 +172,15 @@ Install from release assets:
 1. Download `aice-v0.1.0-macos-arm64.tar.gz` and `aice-v0.1.0-macos-arm64.tar.gz.sha256` from the GitHub release page.
 2. Verify checksum:
 
-```bash
-shasum -a 256 -c aice-v0.1.0-macos-arm64.tar.gz.sha256
-```
+   ```bash
+   shasum -a 256 -c aice-v0.1.0-macos-arm64.tar.gz.sha256
+   ```
 
-3. Extract and run binaries:
+3. Extract and run:
 
-```bash
-tar -xzf aice-v0.1.0-macos-arm64.tar.gz
-./pod-voice
-```
+   ```bash
+   tar -xzf aice-v0.1.0-macos-arm64.tar.gz
+   ./pod-voice
+   ```
 
-## Skills
-
-Aice is designed for plug-and-play skills. See [docs/skills/README.md](docs/skills/README.md).
-
-Current notable integrations:
-
-- Smart-home lighting via Hue
-- Weather, time, distance, assistant, memory, and computer control skill interfaces
-
-**Host recommendation:** Run this project on a home Mac mini.
-
-## Repository layout
-
-- `apps/desktop-runner`: local voice runtime binaries (`desktop-runner` deprecated, `pod-voice` primary)
-- `apps/pod-gateway`: standalone WebSocket ingest/egress transport
-- `crates/core-*`: core pipeline and platform modules
-- `crates/core-skills`: pluggable skills
-- `pod-firmware`: embedded firmware for experimental M5Stack testing
-
-## Ops and hardware docs
-
-- Local setup: [docs/setup/local-dev.md](docs/setup/local-dev.md)
-- Local observability: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md)
-- Architecture: [docs/architecture/README.md](docs/architecture/README.md)
-- Release runbook: [docs/runbooks/release-v0.1.0.md](docs/runbooks/release-v0.1.0.md)
-- Experimental M5Stack deployment: [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md)
-- Pod networking: [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Security policy: [SECURITY.md](SECURITY.md)
-- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+Release runbook: [docs/runbooks/release-v0.1.0.md](docs/runbooks/release-v0.1.0.md).
