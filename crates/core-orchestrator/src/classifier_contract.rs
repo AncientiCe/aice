@@ -1,6 +1,6 @@
 //! Canonical intent-classifier contract shared by backend and desktop runtimes.
 
-const ALL_CLASSIFIER_SKILLS: [&str; 20] = [
+const ALL_CLASSIFIER_SKILLS: [&str; 30] = [
     "skill_weather",
     "skill_time",
     "skill_distance",
@@ -9,10 +9,20 @@ const ALL_CLASSIFIER_SKILLS: [&str; 20] = [
     "skill_fuel_price_lookup",
     "skill_horoscope_daily",
     "skill_news_headlines",
+    "skill_calculator",
+    "skill_unit_conversion",
+    "skill_currency",
+    "skill_air_quality",
+    "skill_dictionary",
+    "skill_translate",
+    "skill_calendar",
+    "skill_meeting_notes",
+    "skill_email",
+    "skill_briefing",
+    "skill_journal",
+    "skill_screen_ocr",
     "skill_smart_home",
-    "skill_assistant",
     "skill_media",
-    "skill_memory",
     "skill_computer",
     "skill_screenshot",
     "skill_app_switcher",
@@ -40,10 +50,20 @@ fn short_intent_name(skill: &str) -> &'static str {
         "skill_fuel_price_lookup" => "fuel",
         "skill_horoscope_daily" => "horoscope",
         "skill_news_headlines" => "news",
+        "skill_calculator" => "calc",
+        "skill_unit_conversion" => "unit",
+        "skill_currency" => "fx",
+        "skill_air_quality" => "air",
+        "skill_dictionary" => "dict",
+        "skill_translate" => "tx",
+        "skill_calendar" => "cal",
+        "skill_meeting_notes" => "mtg",
+        "skill_email" => "email",
+        "skill_briefing" => "brief",
+        "skill_journal" => "jrnl",
+        "skill_screen_ocr" => "ocr",
         "skill_smart_home" => "shome",
-        "skill_assistant" => "assist",
         "skill_media" => "media",
-        "skill_memory" => "mem",
         "skill_computer" => "computer",
         "skill_screenshot" => "screenshot",
         "skill_app_switcher" => "aswitch",
@@ -77,10 +97,37 @@ fn schema_fields_for_skill(skill: &str) -> &'static [(&'static str, &'static str
         "skill_fuel_price_lookup" => &[("fcc", "string"), ("fr", "string"), ("ft", "string")],
         "skill_horoscope_daily" => &[("hs", "string"), ("w", "string")],
         "skill_news_headlines" => &[("q", "string"), ("ncc", "string"), ("nl", "number")],
+        "skill_calculator" => &[("q", "string")],
+        "skill_unit_conversion" => &[
+            ("q", "string"),
+            ("uv", "number"),
+            ("uf", "string"),
+            ("ut", "string"),
+        ],
+        "skill_currency" => &[("cam", "number"), ("cf", "string"), ("ct", "string")],
+        "skill_air_quality" => &[("l", "string")],
+        "skill_dictionary" => &[("q", "string")],
+        "skill_translate" => &[("q", "string"), ("tsl", "string"), ("ttl", "string")],
+        "skill_calendar" => &[
+            ("n", "string"),
+            ("w", "string"),
+            ("cdy", "number"),
+            ("l", "string"),
+            ("ccn", "string"),
+        ],
+        "skill_meeting_notes" => &[("q", "string"), ("n", "string"), ("mr", "boolean")],
+        "skill_email" => &[("q", "string"), ("el", "number"), ("em", "string")],
+        "skill_briefing" => &[("bi", "[string]"), ("bnt", "string"), ("bnc", "string")],
+        "skill_journal" => &[
+            ("v", "string"),
+            ("js", "string"),
+            ("jt", "[string]"),
+            ("q", "string"),
+            ("jl", "number"),
+        ],
+        "skill_screen_ocr" => &[("q", "string"), ("sf", "string")],
         "skill_smart_home" => &[("t", "string")],
-        "skill_assistant" => &[("ak", "string")],
         "skill_media" => &[("t", "string")],
-        "skill_memory" => &[("q", "string"), ("ms", "boolean")],
         "skill_computer" => &[("t", "string")],
         "skill_screenshot" => &[("sf", "string")],
         "skill_app_switcher" => &[("t", "string")],
@@ -160,13 +207,26 @@ fn render_compact_rules(available_skills: &[&str]) -> String {
         ("skill_fuel_price_lookup", "c=get fcc? fr? ft?"),
         ("skill_horoscope_daily", "c=get hs? w?"),
         ("skill_news_headlines", "c=get q? ncc? nl?"),
+        ("skill_calculator", "c=eval q!"),
+        ("skill_unit_conversion", "c=convert q? uv? uf? ut?"),
+        ("skill_currency", "c=convert cam? cf? ct?"),
+        ("skill_air_quality", "c=get l?"),
+        ("skill_dictionary", "c=define q!"),
+        ("skill_translate", "c=translate q! tsl? ttl!"),
+        (
+            "skill_calendar",
+            "c=list_today|list_tomorrow|list_upcoming|create n? w? cdy? l? ccn?",
+        ),
+        ("skill_meeting_notes", "c=summarize q! n? mr?"),
+        ("skill_email", "c=list_unread|list_inbox|search|triage q? el? em?"),
+        ("skill_briefing", "c=get bi? bnt? bnc?"),
+        ("skill_journal", "c=add|recall|stats v? js? jt? q? jl?"),
+        ("skill_screen_ocr", "c=ask q? sf?"),
         ("skill_smart_home", "c=on|off|toggle|status|set t?"),
-        ("skill_assistant", "c=calendar ak=\"calendar\""),
         (
             "skill_media",
             "c=play|pause|resume|next|previous|shuffle_on|shuffle_off|status t?",
         ),
-        ("skill_memory", "c=store|recall q? ms?"),
         ("skill_computer", "c=open|launch|browse|run t?"),
         ("skill_screenshot", "c=take sf?"),
         (
@@ -194,9 +254,6 @@ fn render_disambiguation(available_skills: &[&str]) -> String {
         lines.push("resume=unpause/continue. play=new playback only.");
     }
     if has_skill(available_skills, "skill_message") {
-        if has_skill(available_skills, "skill_assistant") {
-            lines.push("Contact/send to a person -> msg, never assist.");
-        }
         lines.push(
             "msg v: rewrite indirect phrasing to direct recipient text. \"how she is\"->\"How are you?\". Omit v if user gave no content.",
         );
@@ -209,6 +266,31 @@ fn render_disambiguation(available_skills: &[&str]) -> String {
         && has_skill(available_skills, "skill_app_switcher")
     {
         lines.push("media next/prev=audio track. aswitch next/prev=app/window.");
+    }
+    let has_calc = has_skill(available_skills, "skill_calculator");
+    let has_unit = has_skill(available_skills, "skill_unit_conversion");
+    let has_fx = has_skill(available_skills, "skill_currency");
+    if (has_calc as u8 + has_unit as u8 + has_fx as u8) >= 2 {
+        lines.push("calc=arithmetic. unit=X to Y units. fx=X to Y currencies.");
+    }
+    if has_skill(available_skills, "skill_translate") {
+        lines.push("tx requires explicit ttl (target language). Otherwise chat.");
+    }
+    if has_skill(available_skills, "skill_meeting_notes") {
+        lines.push("mtg requires q (transcript text). Without it use chat.");
+    }
+    if has_skill(available_skills, "skill_journal")
+        && has_skill(available_skills, "skill_reminder")
+    {
+        lines.push("jrnl=personal log entry. reminder=task with due time.");
+    }
+    if has_skill(available_skills, "skill_email") && has_skill(available_skills, "skill_message") {
+        lines.push("email=mailbox/inbox/unread. msg=iMessage/SMS to a contact.");
+    }
+    if has_skill(available_skills, "skill_calendar") {
+        lines.push(
+            "cal action: today/tomorrow/upcoming list events; create needs n (title) and w.",
+        );
     }
     lines.join("\n")
 }
@@ -298,6 +380,54 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
             "switch to the next app".to_string(),
             "{\"i\":\"aswitch\",\"c\":\"next\"}".to_string(),
         ),
+        (
+            "what's 12 times 7".to_string(),
+            "{\"i\":\"calc\",\"c\":\"eval\",\"q\":\"12 * 7\"}".to_string(),
+        ),
+        (
+            "convert 10 pounds to kilograms".to_string(),
+            "{\"i\":\"unit\",\"c\":\"convert\",\"uv\":10,\"uf\":\"lb\",\"ut\":\"kg\"}".to_string(),
+        ),
+        (
+            "how much is 100 USD in EUR".to_string(),
+            "{\"i\":\"fx\",\"c\":\"convert\",\"cam\":100,\"cf\":\"USD\",\"ct\":\"EUR\"}".to_string(),
+        ),
+        (
+            "is the air quality bad in Milan".to_string(),
+            "{\"i\":\"air\",\"c\":\"get\",\"l\":\"Milan, Italy\"}".to_string(),
+        ),
+        (
+            "what does serendipity mean".to_string(),
+            "{\"i\":\"dict\",\"c\":\"define\",\"q\":\"serendipity\"}".to_string(),
+        ),
+        (
+            "translate 'good morning' to italian".to_string(),
+            "{\"i\":\"tx\",\"c\":\"translate\",\"q\":\"good morning\",\"ttl\":\"it\"}".to_string(),
+        ),
+        (
+            "what's on my calendar today".to_string(),
+            "{\"i\":\"cal\",\"c\":\"list_today\"}".to_string(),
+        ),
+        (
+            "summarize this meeting transcript: Alice ship Friday. Bob ok.".to_string(),
+            "{\"i\":\"mtg\",\"c\":\"summarize\",\"q\":\"Alice ship Friday. Bob ok.\"}".to_string(),
+        ),
+        (
+            "any unread emails".to_string(),
+            "{\"i\":\"email\",\"c\":\"list_unread\"}".to_string(),
+        ),
+        (
+            "give me my morning briefing".to_string(),
+            "{\"i\":\"brief\",\"c\":\"get\"}".to_string(),
+        ),
+        (
+            "journal today: had a great run".to_string(),
+            "{\"i\":\"jrnl\",\"c\":\"add\",\"v\":\"had a great run\"}".to_string(),
+        ),
+        (
+            "what does this screenshot say".to_string(),
+            "{\"i\":\"ocr\",\"c\":\"ask\",\"q\":\"what does this screenshot say\"}".to_string(),
+        ),
     ]
 }
 
@@ -341,12 +471,81 @@ mod tests {
     };
 
     #[test]
-    fn prompt_lists_message_and_assistant_disambiguation() {
+    fn prompt_lists_message_disambiguation() {
         let prompt = intent_classifier_system_prompt();
         assert!(prompt.contains("Intents: "));
         assert!(prompt.contains("msg: c=send t! v?"));
-        assert!(prompt.contains("msg, never assist"));
         assert!(prompt.contains("rewrite indirect phrasing"));
+    }
+
+    #[test]
+    fn prompt_does_not_mention_deprecated_assistant_or_memory_skills() {
+        let prompt = intent_classifier_system_prompt();
+        assert!(
+            !prompt.contains("\"assist\""),
+            "assistant short name must not appear"
+        );
+        assert!(
+            !prompt.contains("\"mem\""),
+            "memory short name must not appear"
+        );
+        assert!(!prompt.contains("skill_assistant"));
+        assert!(!prompt.contains("skill_memory"));
+    }
+
+    #[test]
+    fn prompt_lists_new_skill_short_names() {
+        let prompt = intent_classifier_system_prompt();
+        for short in [
+            "calc", "unit", "fx", "air", "dict", "tx", "cal", "mtg", "email", "brief", "jrnl",
+            "ocr",
+        ] {
+            assert!(
+                prompt.contains(&format!("\"{short}\"")),
+                "expected short name '{short}' in intents enum"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_includes_new_skill_rule_lines() {
+        let prompt = intent_classifier_system_prompt();
+        assert!(prompt.contains("calc: c=eval q!"));
+        assert!(prompt.contains("unit: c=convert"));
+        assert!(prompt.contains("fx: c=convert"));
+        assert!(prompt.contains("air: c=get l?"));
+        assert!(prompt.contains("dict: c=define q!"));
+        assert!(prompt.contains("tx: c=translate q! tsl? ttl!"));
+        assert!(prompt.contains("cal: c=list_today|list_tomorrow|list_upcoming|create"));
+        assert!(prompt.contains("mtg: c=summarize q!"));
+        assert!(prompt.contains("email: c=list_unread|list_inbox|search|triage"));
+        assert!(prompt.contains("brief: c=get bi?"));
+        assert!(prompt.contains("jrnl: c=add|recall|stats"));
+        assert!(prompt.contains("ocr: c=ask q? sf?"));
+    }
+
+    #[test]
+    fn prompt_includes_translate_target_language_disambiguation() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_translate"]);
+        assert!(prompt.contains("tx requires explicit ttl"));
+    }
+
+    #[test]
+    fn prompt_includes_calc_unit_fx_disambiguation_when_multiple_present() {
+        let prompt = intent_classifier_system_prompt_for_skills(&[
+            "skill_calculator",
+            "skill_unit_conversion",
+            "skill_currency",
+        ]);
+        assert!(prompt.contains("calc=arithmetic"));
+        assert!(prompt.contains("unit=X to Y units"));
+        assert!(prompt.contains("fx=X to Y currencies"));
+    }
+
+    #[test]
+    fn prompt_includes_meeting_notes_transcript_requirement() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_meeting_notes"]);
+        assert!(prompt.contains("mtg requires q (transcript text)"));
     }
 
     #[test]
@@ -531,10 +730,23 @@ mod tests {
     fn few_shots_count_is_compact() {
         let few_shots = intent_classifier_few_shots();
         assert!(
-            few_shots.len() <= 12,
+            few_shots.len() <= 23,
             "few-shot set should stay compact; got {} examples",
             few_shots.len()
         );
+    }
+
+    #[test]
+    fn few_shots_cover_new_skill_boundaries() {
+        let few_shots = intent_classifier_few_shots();
+        for short in ["calc", "unit", "fx", "air", "dict", "tx", "cal", "mtg", "email", "brief", "jrnl", "ocr"]
+        {
+            let needle = format!("\"i\":\"{short}\"");
+            assert!(
+                few_shots.iter().any(|(_, a)| a.contains(&needle)),
+                "expected at least one few-shot for short intent '{short}'"
+            );
+        }
     }
 
     #[test]
@@ -626,8 +838,8 @@ mod tests {
     fn compact_prompt_is_significantly_smaller_than_full_skill_set() {
         let prompt = intent_classifier_system_prompt();
         assert!(
-            prompt.len() < 2000,
-            "compact prompt should be under 2000 chars; got {} chars",
+            prompt.len() < 2700,
+            "compact prompt should stay under 2700 chars; got {} chars",
             prompt.len()
         );
     }

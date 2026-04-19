@@ -2,7 +2,7 @@
 
 Run Aice as a private local Jarvis on your own machine.
 
-Primary path is `pod-voice`, which runs the voice runtime and pod transport in one process.
+Primary path is `aice-backend`, the cross-platform core service. Pair it with a frontend (e.g. [`aice-macos`](https://github.com/AncientiCe/aice-macos)) for the full voice loop.
 
 ## 0. First-time macOS setup checklist
 
@@ -272,7 +272,7 @@ cargo aice-fmt
 cargo aice-clippy
 cargo aice-audit
 cargo aice-test
-cargo aice-pod-voice
+cargo aice-backend
 ```
 
 ## 0.12 One-command model download
@@ -309,7 +309,7 @@ If runtime says:
 Run with explicit path:
 
 ```bash
-PIPER_BIN="$HOME/.venvs/piper/bin/piper" cargo run -p desktop-runner
+PIPER_BIN="$HOME/.venvs/piper/bin/piper" cargo aice-backend
 ```
 
 Then persist:
@@ -373,7 +373,7 @@ cargo aice-fmt
 cargo aice-clippy
 cargo aice-audit
 cargo aice-test
-cargo aice-pod-voice
+cargo aice-backend
 ```
 
 ## 4. Runtime options
@@ -381,14 +381,13 @@ cargo aice-pod-voice
 Primary runtime:
 
 ```bash
-cargo aice-pod-voice
+cargo aice-backend
 ```
 
-Advanced split runtime:
+Standalone pod transport (advanced/internal):
 
 ```bash
 cargo aice-gateway
-cargo aice-desktop
 ```
 
 ## 5. Local observability dashboard (Prometheus + Grafana)

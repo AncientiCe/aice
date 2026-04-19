@@ -39,9 +39,9 @@ Equivalent raw commands:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
 cargo audit --deny warnings
-cargo test --workspace --exclude desktop-runner
+cargo test --workspace
 ```
 
 ## RC cut procedure (`v0.1.0-rc.1`)

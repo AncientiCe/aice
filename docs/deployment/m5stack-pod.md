@@ -34,10 +34,11 @@ pio device monitor --project-dir pod-firmware --baud 115200
 
 ## Runtime verification
 
-1. Start primary runtime:
+1. Start the pod transport alongside the backend:
 
 ```bash
-cargo aice-pod-voice
+cargo aice-gateway
+cargo aice-backend
 ```
 
 2. Confirm pod connects and streams audio.

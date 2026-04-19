@@ -13,7 +13,6 @@ members = [
     "crates/core-search",
     "crates/core-runtime-protocol",
     "crates/pod-protocol",
-    "apps/desktop-runner",
     "apps/aice-backend",
     "apps/pod-gateway",
 ]

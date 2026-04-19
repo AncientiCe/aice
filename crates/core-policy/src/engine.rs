@@ -87,9 +87,7 @@ pub fn skill_id_and_risk(skill_name: &str) -> (SkillId, RiskTier) {
         "skill_time" => (SkillId::Time, RiskTier::Low),
         "skill_distance" => (SkillId::Distance, RiskTier::Low),
         "skill_smart_home" => (SkillId::SmartHome, RiskTier::Medium),
-        "skill_assistant" => (SkillId::Assistant, RiskTier::Medium),
         "skill_media" => (SkillId::Media, RiskTier::Low),
-        "skill_memory" => (SkillId::Memory, RiskTier::Low),
         "skill_computer" => (SkillId::Computer, RiskTier::High),
         "skill_app_switcher" => (SkillId::AppSwitcher, RiskTier::High),
         "skill_reminder" => (SkillId::Reminder, RiskTier::Medium),
@@ -97,6 +95,19 @@ pub fn skill_id_and_risk(skill_name: &str) -> (SkillId, RiskTier) {
         "skill_timer" => (SkillId::Timer, RiskTier::Low),
         "skill_shopping_list" => (SkillId::ShoppingList, RiskTier::Medium),
         "skill_volume" => (SkillId::Volume, RiskTier::Low),
+        // --- new skills ---
+        "skill_calculator" => (SkillId::Calculator, RiskTier::Low),
+        "skill_unit_conversion" => (SkillId::UnitConversion, RiskTier::Low),
+        "skill_currency" => (SkillId::Currency, RiskTier::Low),
+        "skill_air_quality" => (SkillId::AirQuality, RiskTier::Low),
+        "skill_dictionary" => (SkillId::Dictionary, RiskTier::Low),
+        "skill_translate" => (SkillId::Translate, RiskTier::Low),
+        "skill_calendar" => (SkillId::Calendar, RiskTier::Medium),
+        "skill_meeting_notes" => (SkillId::MeetingNotes, RiskTier::Medium),
+        "skill_email" => (SkillId::Email, RiskTier::Medium),
+        "skill_briefing" => (SkillId::Briefing, RiskTier::Low),
+        "skill_journal" => (SkillId::Journal, RiskTier::Low),
+        "skill_screen_ocr" => (SkillId::ScreenOcr, RiskTier::Medium),
         _ => (SkillId::Weather, RiskTier::Low), // fallback
     }
 }

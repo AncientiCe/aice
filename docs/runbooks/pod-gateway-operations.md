@@ -8,11 +8,9 @@ Operate `pod-gateway` as a long-running transport service with health checks and
 
 - Foreground gateway only:
   - `cargo aice-gateway`
-- Primary full runtime (recommended):
-  - `cargo aice-pod-voice`
-- Split runtime (advanced):
+- Paired with backend (advanced/internal):
   - terminal 1: `cargo aice-gateway`
-  - terminal 2: `cargo aice-desktop`
+  - terminal 2: `cargo aice-backend`
 
 ## Quality and safety checks
 

@@ -4,7 +4,7 @@ Aice is focused on one clear outcome: a private, local, streaming Jarvis runtime
 
 ## Current direction
 
-- Primary runtime: `pod-voice`
+- Primary runtime: `aice-backend` (cross-platform core service) paired with a platform frontend (e.g. [`aice-macos`](https://github.com/AncientiCe/aice-macos)).
 - Transport component: `pod-gateway` (advanced/internal)
 - Skills-first architecture for easy plug-in integrations
 - Signal Pod target hardware, M5Stack experimental
@@ -17,7 +17,7 @@ Canonical workflow is cargo aliases:
 - `cargo aice-clippy`
 - `cargo aice-audit`
 - `cargo aice-test`
-- `cargo aice-pod-voice`
+- `cargo aice-backend`
 
 ## Core docs
 

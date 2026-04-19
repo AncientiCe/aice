@@ -112,30 +112,6 @@ sequenceDiagram
 
 ---
 
-## 5. Desktop runtime (wake word and continuous loop)
-
-**Purpose:** The desktop-runner composes config, wake-word gate, microphone capture, Whisper STT, Ollama LLM, and streaming Piper TTS routing. It continuously captures audio windows and streams LLM tokens directly to TTS with cancellation support. The `desktop-runner` binary is deprecated; `pod-voice` and split runtime are the supported paths.
-
-```mermaid
-flowchart LR
-    Mic[MicCapture] --> STT[WhisperSTT]
-    STT --> Gate[WakeWordGate]
-    Gate -->|open| LLM[chat_stream tokens]
-    LLM --> TTS[RoutingTtsSink push_text]
-    TTS --> Pod[Gateway egress audio chunks]
-    TTS --> Desktop[Local speaker fallback]
-    Cancel[cancel_rx or voice stop] --> Stop[request_stop_playback]
-    Stop --> Pod
-    Stop --> LLM
-```
-
-**Notes:**
-- **Inputs:** Config (`audio`, `stt`, `tts`, `wake_word`, `ollama_url`, `model`, `llm`); capture/STT/LLM/TTS instances; `cancel_rx` for barge-in.
-- **Outputs:** Continuous `RuntimeLoopStats` and per-turn `RuntimeTurnOutcome`; chunked pod audio egress or local playback.
-- **Failure paths:** Missing whisper/piper binaries or model files fail startup/preflight; wake-closed windows are ignored until phrase activation; pod egress queue pressure is logged/metriced.
-
----
-
 ## 6. Intent classification and skills (weather, time, distance, sports, holidays, fuel, horoscope, news, smart home, assistant, media, computer, screenshot, app switcher, volume)
 
 **Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
@@ -325,13 +301,13 @@ sequenceDiagram
 | Wi‑Fi and gateway host/port for pods | [Wi‑Fi configuration](../network/wifi-configuration.md) |
 | Plan and implementation status | [Local voice AI plan](../local_voice_ai_plan.md) |
 
-Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, `cargo aice-audit`, `cargo aice-test`, `cargo aice-pod-voice`.
+Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, `cargo aice-audit`, `cargo aice-test`, `cargo aice-backend`.
 
 ---
 
 ## 10. Real skill integrations (Hue, macOS Music.app)
 
-**Purpose:** Production integrations for smart-home and media are wired as concrete skills in runtime (desktop + pod-voice), not `None`. Memory is handled as core infrastructure (see §7 Memory Palace), not as a skill.
+**Purpose:** Production integrations for smart-home and media are wired as concrete skills in `aice-backend`, not `None`. Memory is handled as core infrastructure (see §7 Memory Palace), not as a skill.
 
 ```mermaid
 flowchart LR

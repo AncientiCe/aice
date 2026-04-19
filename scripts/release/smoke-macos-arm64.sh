@@ -29,16 +29,10 @@ if ! command -v whisper-cli >/dev/null 2>&1 && [[ -z "${WHISPER_CLI_BIN:-}" ]]; 
   echo "Missing whisper-cli and WHISPER_CLI_BIN is not set."
   exit 1
 fi
-if ! command -v piper >/dev/null 2>&1 && [[ -z "${PIPER_BIN:-}" ]]; then
-  echo "Missing piper and PIPER_BIN is not set."
-  exit 1
-fi
 
 echo "==> Verifying required config and models"
 [[ -f config.json ]] || { echo "Missing config.json"; exit 1; }
 [[ -f models/whisper/ggml-tiny.en.bin ]] || { echo "Missing models/whisper/ggml-tiny.en.bin"; exit 1; }
-[[ -f models/piper/model.onnx ]] || { echo "Missing models/piper/model.onnx"; exit 1; }
-[[ -f models/piper/model.onnx.json ]] || { echo "Missing models/piper/model.onnx.json"; exit 1; }
 
 echo "==> Running local quality gates"
 cargo aice-fmt
@@ -47,17 +41,16 @@ cargo aice-audit
 cargo aice-test
 
 echo "==> Building release binaries in scope"
-cargo build --release -p desktop-runner --bin pod-voice
-cargo build --release -p desktop-runner --bin desktop-runner
+cargo build --release -p aice-backend --bin aice-backend
 
-echo "==> Verifying desktop-runner binary starts"
-./target/release/desktop-runner --help >/dev/null
+echo "==> Verifying aice-backend binary starts"
+./target/release/aice-backend --help >/dev/null
 
 cat <<'EOF'
 ==> Scripted checks passed.
 
 Manual RC validation still required:
-1. Run `cargo aice-pod-voice` and complete one real voice turn (speech -> STT -> LLM -> TTS).
+1. Start `cargo aice-backend` with a paired frontend (e.g. aice-macos) and complete one real voice turn (speech -> STT -> LLM -> TTS).
 2. Execute at least one skill intent (weather or media) and confirm spoken response.
 3. Trigger one policy denial (emergency stop or budget exhausted) and confirm chat fallback.
 4. Validate metrics/log emission for both success and failure paths.
