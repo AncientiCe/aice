@@ -112,11 +112,11 @@ sequenceDiagram
 
 ---
 
-## 6. Intent classification and skills (weather, time, distance, sports, holidays, fuel, horoscope, news, smart home, assistant, media, computer, screenshot, app switcher, volume)
+## 6. Intent classification and skills
 
-**Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. The weather skill fetches data and the LLM turns it into a short spoken answer, streamed to TTS.
+**Purpose:** User requests are classified by the LLM into known skills or chat. No keyword-based routing; the LLM returns a JSON intent. For weather, when the classifier provides a place, runtime performs an LLM location-contract normalization step (strict `City, Country` JSON contract) before skill execution. Each skill fetches data (or dispatches to the frontend) and the LLM turns the structured result into a short spoken answer, streamed to TTS.
 
-All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills it is configured for (weather, time, distance, sports-live, holiday-lookup, fuel-price-lookup, horoscope-daily, news-headlines, smart home); platform-specific skills (media, computer, screenshot, app switcher, etc.) are forwarded as `FrontendSkillIntent` to the connected frontend. Memory is handled as core infrastructure (see §7), not as a skill. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
+All skill crates live in the shared **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository, consumed by both backend and frontend apps as a Cargo git dependency. The backend executes skills that are stateless utilities, HTTP-backed lookups, or LLM-heavy processing — `weather`, `time`, `distance`, `sports_live`, `holiday_lookup`, `fuel_price_lookup`, `horoscope_daily`, `news_headlines`, `smart_home`, `calculator`, `unit_conversion`, `currency`, `air_quality`, `dictionary`, `translate`, `meeting_notes`, `briefing`, `journal`. Platform-specific skills with per-frontend providers or device state — `media`, `computer`, `screenshot`, `app_switcher`, `volume`, `reminder`, `timer`, `shopping_list`, `message`, `calendar`, `email` — are dispatched as `FrontendSkillIntent` to the connected `aice-macos` frontend. `screen_ocr` is hybrid: the frontend captures + OCRs, then sends the text back via `FrontendSkillResultRequest.structured_result_context` for the backend's vision LLM to answer. Memory is handled as core infrastructure (see §7), not as a skill. See [`docs/skills/README.md`](../skills/README.md) for the full per-skill execution ownership table.
 
 ```mermaid
 flowchart LR
@@ -130,11 +130,8 @@ flowchart LR
     PolicyCheck -->|allow| TimeSkill[TimeSkill]
     PolicyCheck -->|allow| DistanceSkill[DistanceSkill]
     PolicyCheck -->|allow| SmartHomeSkill[SmartHomeSkill]
-    PolicyCheck -->|allow| AssistantSkill[AssistantSkill]
-    PolicyCheck -->|allow| MediaSkill[MediaSkill]
-    PolicyCheck -->|allow| ComputerSkill[ComputerSkill]
-    PolicyCheck -->|allow| ScreenshotSkill[ScreenshotSkill]
-    PolicyCheck -->|allow| AppSwitcherSkill[AppSwitcherSkill]
+    PolicyCheck -->|allow backend skills| BackendSkills["Calculator/UnitConversion/Currency/AirQuality/Dictionary/Translate/MeetingNotes/Briefing/Journal/..."]
+    PolicyCheck -->|allow frontend dispatch| Frontend["FrontendSkillIntent → aice-macos (media/computer/calendar/email/screen_ocr/...)"]
     PolicyCheck -->|deny| ChatLLM
     StartupLocation[StartupLocationContext] --> WeatherSkill
     StartupLocation --> TimeSkill
@@ -143,11 +140,8 @@ flowchart LR
     TimeSkill --> SkillPayload
     DistanceSkill --> SkillPayload
     SmartHomeSkill --> SkillPayload
-    AssistantSkill --> SkillPayload
-    MediaSkill --> SkillPayload
-    ComputerSkill --> SkillPayload
-    ScreenshotSkill --> SkillPayload
-    AppSwitcherSkill --> SkillPayload
+    BackendSkills --> SkillPayload
+    Frontend --> SkillPayload
     SkillPayload --> AnswerLLM[AnswerComposerLLM]
     ChatLLM --> TokenStream[TokenStream]
     AnswerLLM --> TokenStream
@@ -157,7 +151,7 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, sports_live, holiday_lookup, fuel_price_lookup, horoscope_daily, news_headlines, smart_home, assistant, media, computer, screenshot, app_switcher), resolved location, and optional `PolicyEngine`.
+- **Inputs:** User transcript; optional intent classifier, skill implementations (weather, time, distance, sports_live, holiday_lookup, fuel_price_lookup, horoscope_daily, news_headlines, smart_home, calculator, unit_conversion, currency, air_quality, dictionary, translate, meeting_notes, briefing, journal, plus frontend-dispatched media/computer/calendar/email/screen_ocr/...), resolved location, and optional `PolicyEngine`.
 - **Outputs:** Streamed TTS to desktop or pod; metrics `voice_intent_classifier_total`, `voice_intent_routed_total{intent}`, `voice_*_skill_total` per skill, `voice_policy_denied_total`, `voice_location_contract_total{intent,result}`, `voice_location_contract_duration_seconds{intent}`; audit log events `skill_executed` and policy denial warnings.
 - **Failure paths:** Classification parse failure or skill error fall back to chat path; policy denial (emergency stop or budget exhausted) falls back to chat; weather location contract ambiguity returns a short clarification and does not execute the weather skill.
 - **Classifier optimizations:** The system prompt and output schema are dynamically pruned to only enabled skills. Grammar-constrained decoding via Ollama JSON Schema structured output prevents invalid intent strings. Prompt artifacts and compact few-shots are cached for KV-cache-friendly prefix stability. Classification always uses non-streaming calls and has no retry path (structured output eliminates invalid JSON). A context window cap (`classifier_num_ctx`) reduces VRAM use and prefill time. An optional `classifier_ollama_url` allows a dedicated Ollama instance for classification to prevent chat from evicting the classifier KV cache. The 7B model is kept for classification to preserve reasoning (e.g. mapping "I'd like to eat some strawberries" to `skill_shopping_list`).
@@ -193,7 +187,7 @@ flowchart TD
 
 ## 7. Memory Palace (core persistent memory)
 
-**Purpose:** The Memory Palace (`mempalace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides a 4-layer structured, persistent, semantic memory system inspired by the memory palace concept. Every chat turn automatically enriches the LLM system prompt with contextual memory (wake-up) and ingests the conversation for long-term recall. An explicit store/search path handles user requests like "remember this" or "what do you know about X" via the `SkillMemory` intent — handled directly by the backend, not as an external skill.
+**Purpose:** The Memory Palace (`mempalace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides a 4-layer structured, persistent, semantic memory system inspired by the memory palace concept. Every chat turn automatically enriches the LLM system prompt with contextual memory (wake-up) and ingests the conversation for long-term recall. There is no longer a `SkillMemory` intent — store/recall happens implicitly per turn (and explicit user-controlled note-taking is handled by the [Journal](../skills/journal.md) skill).
 
 ```mermaid
 flowchart TD
@@ -209,12 +203,6 @@ flowchart TD
     LLM --> Reply[AssistantReply]
     Reply --> Ingest["palace.ingest_turn(user, assistant)"]
     Ingest --> NextTurn[NextTurn]
-
-    Ready --> MemoryIntent["IntentDecision::SkillMemory"]
-    MemoryIntent -->|store=true| AddMemory["palace.add_memory(wing, room, content, source, importance)"]
-    MemoryIntent -->|query| Search["palace.search(query, n) → Vec<SearchResult>"]
-    AddMemory --> Compose[AnswerComposerLLM]
-    Search --> Compose
 ```
 
 **Notes:**
@@ -305,23 +293,23 @@ Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, 
 
 ---
 
-## 10. Real skill integrations (Hue, macOS Music.app)
+## 10. Real skill integrations (Hue smart-home in backend; media in frontend)
 
-**Purpose:** Production integrations for smart-home and media are wired as concrete skills in `aice-backend`, not `None`. Memory is handled as core infrastructure (see §7 Memory Palace), not as a skill.
+**Purpose:** Smart-home is a real backend integration via Philips Hue. Media (Apple Music, Spotify, etc.) is a per-frontend integration owned by `aice-macos`; the backend only dispatches `skill_media`. Memory is handled as core infrastructure (see §7 Memory Palace), not as a skill.
 
 ```mermaid
 flowchart LR
     Transcript[Transcript] --> Intent[IntentClassifier]
     Intent -->|skill_smart_home| Hue[HueSmartHomeSkill]
-    Intent -->|skill_media| Music[MacOsMusicSkill]
+    Intent -->|skill_media| Dispatch["FrontendSkillIntent → aice-macos"]
     Hue --> Prompt[SkillPromptContext]
-    Music --> Prompt
+    Dispatch --> Prompt
     Prompt --> LLM[AnswerComposerLLM]
     LLM --> TTS[TTS]
 ```
 
 **Notes:**
-- **Inputs:** `smart_home.hue.*`, `media.macos_music.*` from config.
+- **Inputs:** `smart_home.hue.*` from backend config; per-frontend media provider configuration lives in `aice-macos`.
 - **Outputs:** Skill payload context for voice answer generation.
 - **Failure paths:** Missing provider config keeps a skill disabled; skill execution errors fall back to chat path with existing metrics/error logs.
 

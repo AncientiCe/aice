@@ -88,151 +88,19 @@ pub struct MacOsMusicConfig {
     pub enabled: bool,
 }
 
-/// Spotify Web API settings for media skill.
-///
-/// Auth credentials become a `StaticSpotifyAuth` once the engine refreshes;
-/// this struct only carries the OAuth client + refresh-token material.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct SpotifyConfig {
-    /// Enable the Spotify backend skill.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Spotify OAuth client id.
-    #[serde(default)]
-    pub client_id: Option<String>,
-    /// Spotify OAuth client secret.
-    #[serde(default)]
-    pub client_secret: Option<String>,
-    /// Long-lived refresh token; engine exchanges it for short-lived access tokens.
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-    /// Optional default device name to target when the user does not specify one.
-    #[serde(default)]
-    pub default_device_name: Option<String>,
-}
-
 /// Media feature settings.
+///
+/// Provider selection is owned by the frontend (e.g. aice-macos picks Spotify vs.
+/// Apple Music locally). The backend only forwards the classified slots; no
+/// provider credentials live in core config.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct MediaConfig {
     #[serde(default)]
     pub macos_music: MacOsMusicConfig,
-    /// Optional preferred provider override (e.g. `"spotify"`, `"macos_music"`,
-    /// `"windows_apple_music"`). When `None`, the backend infers from `media_target`
-    /// or platform defaults.
-    #[serde(default)]
-    pub preferred_provider: Option<String>,
-    /// Spotify Web API provider configuration.
-    #[serde(default)]
-    pub spotify: SpotifyConfig,
 }
 
 fn default_search_timeout_secs() -> u64 {
     10
-}
-
-/// Google Calendar OAuth + default-calendar settings.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct GoogleCalendarConfig {
-    #[serde(default)]
-    pub client_id: Option<String>,
-    #[serde(default)]
-    pub client_secret: Option<String>,
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-    #[serde(default)]
-    pub default_calendar_name: Option<String>,
-}
-
-/// Calendar feature settings.
-///
-/// `provider` selects how SkillCalendar is fulfilled: `"google"` runs server-side,
-/// `"apple"` is forwarded to the desktop runner via FrontendSkillIntent.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CalendarConfig {
-    #[serde(default = "default_calendar_provider")]
-    pub provider: String,
-    #[serde(default)]
-    pub google: GoogleCalendarConfig,
-}
-
-impl Default for CalendarConfig {
-    fn default() -> Self {
-        Self {
-            provider: default_calendar_provider(),
-            google: GoogleCalendarConfig::default(),
-        }
-    }
-}
-
-fn default_calendar_provider() -> String {
-    "google".to_string()
-}
-
-/// IMAP credentials for the email skill (used when provider = `"imap"`).
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ImapEmailConfig {
-    #[serde(default)]
-    pub host: Option<String>,
-    #[serde(default = "default_imap_port")]
-    pub port: u16,
-    #[serde(default = "default_imap_tls")]
-    pub tls: bool,
-    #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
-    pub password: Option<String>,
-    #[serde(default = "default_imap_mailbox")]
-    pub default_mailbox: String,
-}
-
-impl Default for ImapEmailConfig {
-    fn default() -> Self {
-        Self {
-            host: None,
-            port: default_imap_port(),
-            tls: default_imap_tls(),
-            username: None,
-            password: None,
-            default_mailbox: default_imap_mailbox(),
-        }
-    }
-}
-
-fn default_imap_port() -> u16 {
-    993
-}
-
-fn default_imap_tls() -> bool {
-    true
-}
-
-fn default_imap_mailbox() -> String {
-    "INBOX".to_string()
-}
-
-/// Email feature settings.
-///
-/// `provider` selects how SkillEmail is fulfilled: `"imap"` runs server-side,
-/// `"apple"` is forwarded to the desktop runner via FrontendSkillIntent.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EmailConfig {
-    #[serde(default = "default_email_provider")]
-    pub provider: String,
-    #[serde(default)]
-    pub imap: ImapEmailConfig,
-}
-
-impl Default for EmailConfig {
-    fn default() -> Self {
-        Self {
-            provider: default_email_provider(),
-            imap: ImapEmailConfig::default(),
-        }
-    }
-}
-
-fn default_email_provider() -> String {
-    "imap".to_string()
 }
 
 /// Personal journal feature settings (SQLite-backed).
@@ -258,14 +126,14 @@ fn default_journal_sqlite_path() -> String {
 }
 
 /// Daily briefing composition settings.
+///
+/// Only composes data the backend can produce on its own (weather + news).
+/// Calendar and email belong to the frontend (per-frontend providers), so they
+/// are not part of the backend briefing.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BriefingConfig {
     #[serde(default = "default_true")]
     pub include_weather: bool,
-    #[serde(default = "default_true")]
-    pub include_calendar: bool,
-    #[serde(default)]
-    pub include_email: bool,
     #[serde(default = "default_true")]
     pub include_news: bool,
     #[serde(default)]
@@ -278,8 +146,6 @@ impl Default for BriefingConfig {
     fn default() -> Self {
         Self {
             include_weather: true,
-            include_calendar: true,
-            include_email: false,
             include_news: true,
             news_topic: None,
             news_limit: default_briefing_news_limit(),
@@ -293,30 +159,6 @@ fn default_briefing_news_limit() -> usize {
 
 fn default_true() -> bool {
     true
-}
-
-/// Screen OCR settings — capture stays on the runtime, OCR engine is selected here.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ScreenOcrConfig {
-    /// `"tesseract"` (cross-platform) or `"apple_vision"` (macOS only).
-    #[serde(default = "default_ocr_engine")]
-    pub ocr_engine: String,
-    /// Optional explicit path to the `tesseract` binary. If `None`, look it up on `PATH`.
-    #[serde(default)]
-    pub tesseract_path: Option<String>,
-}
-
-impl Default for ScreenOcrConfig {
-    fn default() -> Self {
-        Self {
-            ocr_engine: default_ocr_engine(),
-            tesseract_path: None,
-        }
-    }
-}
-
-fn default_ocr_engine() -> String {
-    "tesseract".to_string()
 }
 
 /// News feature settings (in addition to per-call NewsHeadlinesQuery).
@@ -767,21 +609,12 @@ pub struct Config {
     /// Persistent memory store settings.
     #[serde(default)]
     pub memory: MemoryConfig,
-    /// Calendar provider settings.
-    #[serde(default)]
-    pub calendar: CalendarConfig,
-    /// Email provider settings.
-    #[serde(default)]
-    pub email: EmailConfig,
     /// Personal journal settings.
     #[serde(default)]
     pub journal: JournalConfig,
-    /// Daily briefing composition settings.
+    /// Daily briefing composition settings (weather + news).
     #[serde(default)]
     pub briefing: BriefingConfig,
-    /// Screen OCR engine selection.
-    #[serde(default)]
-    pub screen_ocr: ScreenOcrConfig,
     /// News skill behavior (e.g. opt-in summary streaming).
     #[serde(default)]
     pub news: NewsConfig,
@@ -816,11 +649,8 @@ impl Default for Config {
             smart_home: SmartHomeConfig::default(),
             media: MediaConfig::default(),
             memory: MemoryConfig::default(),
-            calendar: CalendarConfig::default(),
-            email: EmailConfig::default(),
             journal: JournalConfig::default(),
             briefing: BriefingConfig::default(),
-            screen_ocr: ScreenOcrConfig::default(),
             news: NewsConfig::default(),
         }
     }
@@ -1141,181 +971,48 @@ mod tests {
     #[test]
     fn defaults_include_new_skill_config_blocks() {
         let cfg = Config::default();
-        assert_eq!(cfg.calendar.provider, "google");
-        assert!(cfg.calendar.google.client_id.is_none());
-        assert_eq!(cfg.email.provider, "imap");
-        assert_eq!(cfg.email.imap.port, 993);
-        assert!(cfg.email.imap.tls);
-        assert_eq!(cfg.email.imap.default_mailbox, "INBOX");
         assert!(!cfg.journal.enabled);
         assert_eq!(cfg.journal.sqlite_path, "journal.sqlite");
         assert!(cfg.briefing.include_weather);
-        assert!(cfg.briefing.include_calendar);
-        assert!(!cfg.briefing.include_email);
         assert!(cfg.briefing.include_news);
         assert_eq!(cfg.briefing.news_limit, 3);
-        assert_eq!(cfg.screen_ocr.ocr_engine, "tesseract");
-        assert!(cfg.screen_ocr.tesseract_path.is_none());
         assert!(!cfg.news.enable_summary_streaming);
-        assert!(cfg.media.preferred_provider.is_none());
-        assert!(!cfg.media.spotify.enabled);
     }
 
     #[test]
-    fn load_parses_media_preferred_provider_spotify() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("aice_config_media_spotify.json");
-        let mut f = std::fs::File::create(&path).must();
-        f.write_all(
-            br#"{
-                "media": {
-                    "preferred_provider": "spotify",
-                    "spotify": {
-                        "enabled": true,
-                        "client_id": "abc",
-                        "client_secret": "def",
-                        "refresh_token": "rt-xyz",
-                        "default_device_name": "Living Room"
-                    }
-                }
-            }"#,
-        )
-        .must();
-        f.sync_all().must();
-        drop(f);
-
-        let config = Config::load(&path).must();
-        assert_eq!(config.media.preferred_provider.as_deref(), Some("spotify"));
-        assert!(config.media.spotify.enabled);
-        assert_eq!(config.media.spotify.client_id.as_deref(), Some("abc"));
-        assert_eq!(config.media.spotify.client_secret.as_deref(), Some("def"));
-        assert_eq!(
-            config.media.spotify.refresh_token.as_deref(),
-            Some("rt-xyz")
-        );
-        assert_eq!(
-            config.media.spotify.default_device_name.as_deref(),
-            Some("Living Room")
-        );
-
-        let _ = std::fs::remove_file(&path);
+    fn provider_specific_config_keys_are_not_in_core() {
+        let cfg = Config::default();
+        let value = serde_json::to_value(cfg).must();
+        let obj = value.as_object().must();
+        for key in ["calendar", "email", "screen_ocr"] {
+            assert!(
+                !obj.contains_key(key),
+                "core config must not expose `{key}` (per-frontend provider concern)"
+            );
+        }
+        let media = value.get("media").and_then(|v| v.as_object()).must();
+        for key in ["preferred_provider", "spotify"] {
+            assert!(
+                !media.contains_key(key),
+                "media.{key} is a per-frontend concern and must not be in core"
+            );
+        }
     }
 
     #[test]
-    fn load_parses_calendar_provider_apple() {
+    fn load_parses_journal_briefing_news() {
         let dir = std::env::temp_dir();
-        let path = dir.join("aice_config_calendar_apple.json");
-        let mut f = std::fs::File::create(&path).must();
-        f.write_all(
-            br#"{
-                "calendar": {
-                    "provider": "apple"
-                }
-            }"#,
-        )
-        .must();
-        f.sync_all().must();
-        drop(f);
-
-        let config = Config::load(&path).must();
-        assert_eq!(config.calendar.provider, "apple");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_parses_calendar_provider_google_with_credentials() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("aice_config_calendar_google.json");
-        let mut f = std::fs::File::create(&path).must();
-        f.write_all(
-            br#"{
-                "calendar": {
-                    "provider": "google",
-                    "google": {
-                        "client_id": "cid",
-                        "client_secret": "csec",
-                        "refresh_token": "rtok",
-                        "default_calendar_name": "Work"
-                    }
-                }
-            }"#,
-        )
-        .must();
-        f.sync_all().must();
-        drop(f);
-
-        let config = Config::load(&path).must();
-        assert_eq!(config.calendar.provider, "google");
-        assert_eq!(config.calendar.google.client_id.as_deref(), Some("cid"));
-        assert_eq!(
-            config.calendar.google.refresh_token.as_deref(),
-            Some("rtok")
-        );
-        assert_eq!(
-            config.calendar.google.default_calendar_name.as_deref(),
-            Some("Work")
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_parses_email_imap_settings() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("aice_config_email_imap.json");
-        let mut f = std::fs::File::create(&path).must();
-        f.write_all(
-            br#"{
-                "email": {
-                    "provider": "imap",
-                    "imap": {
-                        "host": "imap.example.com",
-                        "port": 143,
-                        "tls": false,
-                        "username": "me@example.com",
-                        "password": "secret",
-                        "default_mailbox": "Work"
-                    }
-                }
-            }"#,
-        )
-        .must();
-        f.sync_all().must();
-        drop(f);
-
-        let config = Config::load(&path).must();
-        assert_eq!(config.email.provider, "imap");
-        assert_eq!(config.email.imap.host.as_deref(), Some("imap.example.com"));
-        assert_eq!(config.email.imap.port, 143);
-        assert!(!config.email.imap.tls);
-        assert_eq!(
-            config.email.imap.username.as_deref(),
-            Some("me@example.com")
-        );
-        assert_eq!(config.email.imap.password.as_deref(), Some("secret"));
-        assert_eq!(config.email.imap.default_mailbox, "Work");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn load_parses_journal_briefing_screen_ocr_news() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("aice_config_journal_briefing_ocr_news.json");
+        let path = dir.join("aice_config_journal_briefing_news.json");
         let mut f = std::fs::File::create(&path).must();
         f.write_all(
             br#"{
                 "journal": { "enabled": true, "sqlite_path": "data/journal.sqlite" },
                 "briefing": {
                     "include_weather": false,
-                    "include_calendar": true,
-                    "include_email": true,
-                    "include_news": false,
+                    "include_news": true,
                     "news_topic": "technology",
                     "news_limit": 5
                 },
-                "screen_ocr": { "ocr_engine": "apple_vision", "tesseract_path": "/usr/local/bin/tesseract" },
                 "news": { "enable_summary_streaming": true }
             }"#,
         )
@@ -1327,16 +1024,9 @@ mod tests {
         assert!(config.journal.enabled);
         assert_eq!(config.journal.sqlite_path, "data/journal.sqlite");
         assert!(!config.briefing.include_weather);
-        assert!(config.briefing.include_calendar);
-        assert!(config.briefing.include_email);
-        assert!(!config.briefing.include_news);
+        assert!(config.briefing.include_news);
         assert_eq!(config.briefing.news_topic.as_deref(), Some("technology"));
         assert_eq!(config.briefing.news_limit, 5);
-        assert_eq!(config.screen_ocr.ocr_engine, "apple_vision");
-        assert_eq!(
-            config.screen_ocr.tesseract_path.as_deref(),
-            Some("/usr/local/bin/tesseract")
-        );
         assert!(config.news.enable_summary_streaming);
 
         let _ = std::fs::remove_file(&path);

@@ -767,6 +767,101 @@ pub fn record_volume_skill(result: &str) {
     counter!(VOICE_VOLUME_SKILL_TOTAL, 1, "result" => result.to_string());
 }
 
+/// Record calculator skill result (success or error).
+pub fn record_calculator_skill(result: &str) {
+    counter!(VOICE_CALCULATOR_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record unit conversion skill result (success or error).
+pub fn record_unit_conversion_skill(result: &str) {
+    counter!(
+        VOICE_UNIT_CONVERSION_SKILL_TOTAL,
+        1,
+        "result" => result.to_string()
+    );
+}
+
+/// Record currency skill result (success or error).
+pub fn record_currency_skill(result: &str) {
+    counter!(VOICE_CURRENCY_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record air quality skill result (success or error).
+pub fn record_air_quality_skill(result: &str) {
+    counter!(
+        VOICE_AIR_QUALITY_SKILL_TOTAL,
+        1,
+        "result" => result.to_string()
+    );
+}
+
+/// Record dictionary skill result (success or error).
+pub fn record_dictionary_skill(result: &str) {
+    counter!(VOICE_DICTIONARY_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record translate skill result (success or error).
+pub fn record_translate_skill(result: &str) {
+    counter!(VOICE_TRANSLATE_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record calendar skill outcome.
+///
+/// For frontend-dispatched skills, `result` is one of `dispatched`, `not_supported`,
+/// `result_ok`, `result_error`.
+pub fn record_calendar_skill(result: &str) {
+    counter!(VOICE_CALENDAR_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record meeting notes skill result (success or error).
+pub fn record_meeting_notes_skill(result: &str) {
+    counter!(
+        VOICE_MEETING_NOTES_SKILL_TOTAL,
+        1,
+        "result" => result.to_string()
+    );
+}
+
+/// Record email skill outcome.
+///
+/// For frontend-dispatched skills, `result` is one of `dispatched`, `not_supported`,
+/// `result_ok`, `result_error`.
+pub fn record_email_skill(result: &str) {
+    counter!(VOICE_EMAIL_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record briefing skill result (success or error).
+pub fn record_briefing_skill(result: &str) {
+    counter!(VOICE_BRIEFING_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record journal skill result (success or error).
+pub fn record_journal_skill(result: &str) {
+    counter!(VOICE_JOURNAL_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record screen OCR skill outcome.
+///
+/// `result` covers both the dispatch path (`dispatched`, `not_supported`) and the
+/// finalize path (`result_ok`, `result_error`, `parse_error`, `decode_error`).
+pub fn record_screen_ocr_skill(result: &str) {
+    counter!(VOICE_SCREEN_OCR_SKILL_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record one streamed news-summary chunk outcome (`ok` or `error`).
+pub fn record_news_summary_chunk(result: &str) {
+    counter!(
+        VOICE_NEWS_SUMMARY_CHUNK_TOTAL,
+        1,
+        "result" => result.to_string()
+    );
+}
+
+/// Record total wall-clock duration of a news summary stream.
+pub fn record_news_summary_duration(duration: Duration) {
+    histogram!(VOICE_NEWS_SUMMARY_DURATION_SECONDS, duration.as_secs_f64());
+}
+
 /// Record policy denial (reason: e.g. "emergency_stop", "budget_exhausted").
 pub fn record_policy_denied(reason: &str) {
     counter!(VOICE_POLICY_DENIED_TOTAL, 1, "reason" => reason.to_string());

@@ -58,6 +58,7 @@ impl BackendEngine for DeterministicEngine {
     async fn finalize_frontend_skill(
         &self,
         _turn_id: &str,
+        _intent_id: &str,
         _request: FrontendSkillResultRequest,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok("done from finalize".to_string())
@@ -119,6 +120,7 @@ impl BackendEngine for EchoEngine {
     async fn finalize_frontend_skill(
         &self,
         _turn_id: &str,
+        _intent_id: &str,
         _request: FrontendSkillResultRequest,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok("done".to_string())
@@ -145,6 +147,7 @@ impl BackendEngine for CountingEchoEngine {
     async fn finalize_frontend_skill(
         &self,
         _turn_id: &str,
+        _intent_id: &str,
         _request: FrontendSkillResultRequest,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok("done".to_string())
