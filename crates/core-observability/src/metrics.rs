@@ -718,19 +718,9 @@ pub fn record_smart_home_skill(result: &str) {
     counter!(VOICE_SMART_HOME_SKILL_TOTAL, 1, "result" => result.to_string());
 }
 
-/// Record assistant skill result (success or error).
-pub fn record_assistant_skill(result: &str) {
-    counter!(VOICE_ASSISTANT_SKILL_TOTAL, 1, "result" => result.to_string());
-}
-
 /// Record media skill result (success or error).
 pub fn record_media_skill(result: &str) {
     counter!(VOICE_MEDIA_SKILL_TOTAL, 1, "result" => result.to_string());
-}
-
-/// Record memory skill result (success or error).
-pub fn record_memory_skill(result: &str) {
-    counter!(VOICE_MEMORY_SKILL_TOTAL, 1, "result" => result.to_string());
 }
 
 /// Record computer skill result (success or error).
