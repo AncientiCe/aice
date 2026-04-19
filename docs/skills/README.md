@@ -6,23 +6,35 @@ All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aic
 
 | Skill | Crate | Status | Document |
 |-------|-------|--------|----------|
-| Assistant | `skill-assistant` | Frontend-owned (external macOS frontend repo); trait only currently | [assistant.md](assistant.md) |
+| Air Quality | `skill-air-quality` | Backend-owned (`aice-backend`), `HttpAirQualitySkill` | [air-quality.md](air-quality.md) |
 | App Switcher | `skill-app-switcher` | Frontend-owned (external macOS frontend repo), `MacOsAppSwitcherSkill` | [app-switcher.md](app-switcher.md) |
+| Briefing | `skill-briefing` | Backend-owned (`aice-backend`), `ComposedBriefingSkill` (weather + news) | [briefing.md](briefing.md) |
+| Calculator | `skill-calculator` | Backend-owned (`aice-backend`), `LocalCalculatorSkill` | [calculator.md](calculator.md) |
+| Calendar | `skill-calendar` | Frontend-owned (external macOS frontend repo); `GoogleCalendarSkill` and `AppleCalendarSkill` per frontend | [calendar.md](calendar.md) |
 | Computer | `skill-computer` | Frontend-owned (external macOS frontend repo), `MacOsComputerSkill` | [computer.md](computer.md) |
+| Currency | `skill-currency` | Backend-owned (`aice-backend`), `HttpCurrencySkill` (Frankfurter) | [currency.md](currency.md) |
+| Dictionary | `skill-dictionary` | Backend-owned (`aice-backend`), `HttpDictionarySkill` (dictionaryapi.dev) | [dictionary.md](dictionary.md) |
 | Distance | `skill-distance` | Backend-owned (`aice-backend`), `OpenMeteoDistanceSkill` | [distance.md](distance.md) |
+| Email | `skill-email` | Frontend-owned (external macOS frontend repo); `ImapEmailSkill` and `AppleMailEmailSkill` per frontend | [email.md](email.md) |
 | Fuel Price Lookup | `skill-fuel-price-lookup` | Backend-owned (`aice-backend`), `HttpFuelPriceLookupSkill` | [fuel-price-lookup.md](fuel-price-lookup.md) |
 | Holiday Lookup | `skill-holiday-lookup` | Backend-owned (`aice-backend`), `HttpHolidayLookupSkill` | [holiday-lookup.md](holiday-lookup.md) |
 | Horoscope Daily | `skill-horoscope-daily` | Backend-owned (`aice-backend`), `HttpHoroscopeDailySkill` | [horoscope-daily.md](horoscope-daily.md) |
-| Media | `skill-media` | Frontend-owned (external macOS frontend repo), `MacOsMusicSkill` | [media.md](media.md) |
+| Journal | `skill-journal` | Backend-owned (`aice-backend`), `LocalJournalSkill` (SQLite) | [journal.md](journal.md) |
+| Media | `skill-media` | Frontend-owned (external macOS frontend repo); Spotify and `MacOsMusicSkill` per frontend | [media.md](media.md) |
+| Meeting Notes | `skill-meeting-notes` | Backend-owned (`aice-backend`), `LlmMeetingNotesSkill` | [meeting-notes.md](meeting-notes.md) |
 | Message | `skill-message` | Frontend-owned (external macOS frontend repo), `MacOsMessagesSkill` | [message.md](message.md) |
 | News Headlines | `skill-news-headlines` | Backend-owned (`aice-backend`), `HttpNewsHeadlinesSkill` | [news-headlines.md](news-headlines.md) |
+| News Summary (opt-in) | `skill-news-headlines` | Backend-owned (`aice-backend`), `NewsSummaryLlm` adapter over `CradleLlmStream` | [news-summary.md](news-summary.md) |
 | Reminder | `skill-reminder` | Frontend-owned (external macOS frontend repo), `MacOsReminderSkill` | [reminder.md](reminder.md) |
+| Screen OCR | `skill-screen-ocr` | Hybrid: frontend captures + OCRs, backend answers via vision LLM | [screen-ocr.md](screen-ocr.md) |
 | Screenshot | `skill-screenshot` | Frontend-owned (external macOS frontend repo), `MacOsScreenshotSkill` | [screenshot.md](screenshot.md) |
 | Shopping List | `skill-shopping-list` | Frontend-owned (external macOS frontend repo), `MacOsNotesShoppingListSkill` | [shopping-list.md](shopping-list.md) |
 | Smart Home | `skill-smart-home` | Backend-owned (`aice-backend`), `HueSmartHomeSkill` | [smart-home.md](smart-home.md) |
 | Sports Live | `skill-sports-live` | Backend-owned (`aice-backend`), `HttpSportsLiveSkill` | [sports-live.md](sports-live.md) |
 | Time | `skill-time` | Backend-owned (`aice-backend`), `OpenMeteoTimeSkill` | [time.md](time.md) |
 | Timer | `skill-timer` | Frontend-owned (external macOS frontend repo), `MacOsClockTimerSkill` | [timer.md](timer.md) |
+| Translate | `skill-translate` | Backend-owned (`aice-backend`), `LlmTranslateSkill` | [translate.md](translate.md) |
+| Unit Conversion | `skill-unit-conversion` | Backend-owned (`aice-backend`), `LocalUnitConversionSkill` | [unit-conversion.md](unit-conversion.md) |
 | Volume | `skill-volume` | Frontend-owned (external macOS frontend repo), `MacOsVolumeSkill` | [volume.md](volume.md) |
 | Weather | `skill-weather` | Backend-owned (`aice-backend`), `OpenMeteoWeatherSkill` | [weather.md](weather.md) |
 

@@ -1,4 +1,5 @@
 pub mod discovery_broadcast;
+pub mod llm_adapters;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -6,14 +7,18 @@ use chrono::{Datelike, NaiveDate, Utc};
 use core_config::{Config, WakeWordConfig};
 use core_llm::CradleLlmStream;
 use core_observability::{
-    record_backend_audio_chunk, record_backend_dependency_request,
+    record_air_quality_skill, record_backend_audio_chunk, record_backend_dependency_request,
     record_backend_dependency_request_duration, record_backend_http_request,
     record_backend_llm_provider_duration, record_backend_skill_execute,
     record_backend_skill_execute_duration, record_backend_turn_cancellation,
     record_backend_turn_duration, record_backend_turn_first_token_duration,
     record_backend_turn_partial_transcript_duration, record_backend_turn_stage_duration,
-    record_backend_turn_total, record_model_preload, record_model_preload_duration,
-    record_palace_error, record_palace_ingest, record_palace_open, record_palace_wake_up,
+    record_backend_turn_total, record_briefing_skill, record_calculator_skill,
+    record_calendar_skill, record_currency_skill, record_dictionary_skill, record_email_skill,
+    record_journal_skill, record_meeting_notes_skill, record_model_preload,
+    record_model_preload_duration, record_palace_error, record_palace_ingest, record_palace_open,
+    record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
+    record_unit_conversion_skill,
 };
 use core_orchestrator::{
     intent_classifier_few_shots_for_skills, intent_classifier_json_schema_for_skills,
@@ -25,15 +30,25 @@ use core_runtime_protocol::{
     TurnStreamServerEvent,
 };
 use core_skills::{
+    collect_news_summaries, AirQualityError, AirQualityLocation, AirQualityResult, AirQualitySkill,
+    BriefingError, BriefingQuery, BriefingResult, BriefingSkill, CalculatorResult, CalculatorSkill,
+    CalculatorSkillError, ComposedBriefingSkill, ConversionResult, CurrencyError, CurrencyQuery,
+    CurrencyResult, CurrencySkill, DictionaryError, DictionaryResult, DictionarySkill,
     DistanceResult, DistanceSkill, FuelPriceLookupError, FuelPriceLookupQuery,
     FuelPriceLookupResult, FuelPriceLookupSkill, HolidayLookupError, HolidayLookupResult,
     HolidayLookupSkill, HolidayQuery, HoroscopeDailyError, HoroscopeDailyQuery,
-    HoroscopeDailyResult, HoroscopeDailySkill, HttpFuelPriceLookupSkill, HttpHolidayLookupSkill,
-    HttpHoroscopeDailySkill, HttpNewsHeadlinesSkill, HttpSportsLiveSkill, NewsHeadlinesError,
-    NewsHeadlinesQuery, NewsHeadlinesResult, NewsHeadlinesSkill, OpenMeteoDistanceSkill,
-    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, ResolvedLocation, SportsLiveError, SportsLiveQuery,
-    SportsLiveResult, SportsLiveSkill, TimeResult, TimeSkill, WeatherResult, WeatherSkill,
-    ENABLED_SKILL_IDS,
+    HoroscopeDailyResult, HoroscopeDailySkill, HttpAirQualitySkill, HttpCurrencySkill,
+    HttpDictionarySkill, HttpFuelPriceLookupSkill, HttpHolidayLookupSkill, HttpHoroscopeDailySkill,
+    HttpNewsHeadlinesSkill, HttpSportsLiveSkill, JournalAction, JournalError, JournalResult,
+    JournalSkill, LlmMeetingNotesSkill, LlmTranslateSkill, LocalCalculatorSkill, LocalJournalSkill,
+    LocalUnitConversionSkill, MeetingNotesError, MeetingNotesLlm, MeetingNotesQuery,
+    MeetingNotesResult, MeetingNotesSkill, NewsHeadlinesError, NewsHeadlinesQuery,
+    NewsHeadlinesResult, NewsHeadlinesSkill, NewsSummaryLlm, OpenMeteoDistanceSkill,
+    OpenMeteoTimeSkill, OpenMeteoWeatherSkill, ResolvedLocation, ScreenOcrLlm, Sentiment,
+    SportsLiveError, SportsLiveQuery, SportsLiveResult, SportsLiveSkill, SqliteJournalStore,
+    SummarizedHeadline, TimeResult, TimeSkill, TranslateError, TranslateQuery, TranslateResult,
+    TranslateSkill, TranslationLlm, UnitConversionError, UnitConversionSkill, WeatherResult,
+    WeatherSkill, ENABLED_SKILL_IDS,
 };
 use core_stt::WhisperSttStream;
 use futures_util::{SinkExt, StreamExt};
@@ -73,7 +88,16 @@ const STT_DEBOUNCE_SAMPLES: usize = 1_600;
 /// Minimum wall-clock gap between incremental STT runs to avoid repeatedly
 /// re-transcribing the full turn buffer under sustained audio chunk ingress.
 const STT_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(1_200);
-const FRONTEND_CLASSIFIER_SKILLS: [&str; 10] = [
+/// Intents the backend dispatches to a connected frontend (e.g. `aice-macos`)
+/// rather than executing in-process.
+///
+/// Frontends advertise their actually-supported subset per session via
+/// `TurnStreamClientMessage::TurnStart::supported_frontend_intents`; the
+/// backend then gates outbound `FrontendSkillIntent` events with
+/// `frontend_intent_allowed`. This list only constrains *which* intent names
+/// the classifier may target as frontend skills, regardless of which
+/// frontend(s) happen to be connected.
+const FRONTEND_CLASSIFIER_SKILLS: [&str; 13] = [
     "skill_smart_home",
     "skill_media",
     "skill_computer",
@@ -84,6 +108,9 @@ const FRONTEND_CLASSIFIER_SKILLS: [&str; 10] = [
     "skill_shopping_list",
     "skill_message",
     "skill_volume",
+    "skill_calendar",
+    "skill_email",
+    "skill_screen_ocr",
 ];
 
 #[derive(Clone, Debug)]
@@ -135,6 +162,7 @@ pub trait BackendEngine: Send + Sync {
     async fn finalize_frontend_skill(
         &self,
         turn_id: &str,
+        intent_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError>;
 }
@@ -990,7 +1018,7 @@ async fn handle_turn_stream_socket(
                                 }
                                 TurnStreamClientMessage::FrontendSkillResult {
                                     turn_id,
-                                    intent_id: _,
+                                    intent_id,
                                     result,
                                 } => {
                                     let since_turn_start_ms = turn
@@ -1008,7 +1036,7 @@ async fn handle_turn_stream_socket(
                                     }
                                     let skill_started = Instant::now();
                                     let finalize_result = engine
-                                        .finalize_frontend_skill(&turn_id, result)
+                                        .finalize_frontend_skill(&turn_id, &intent_id, result)
                                         .await;
                                     let finalize_elapsed = skill_started.elapsed();
                                     record_backend_turn_duration("frontend_skill_finalize", finalize_elapsed);
@@ -1308,14 +1336,26 @@ async fn handle_request(
 
 pub struct AiceBackendEngine {
     llm: Arc<CradleLlmStream>,
-    weather_skill: OpenMeteoWeatherSkill,
+    weather_skill: Arc<OpenMeteoWeatherSkill>,
     time_skill: OpenMeteoTimeSkill,
     distance_skill: OpenMeteoDistanceSkill,
     sports_live_skill: HttpSportsLiveSkill,
     holiday_lookup_skill: HttpHolidayLookupSkill,
     fuel_price_lookup_skill: HttpFuelPriceLookupSkill,
     horoscope_daily_skill: HttpHoroscopeDailySkill,
-    news_headlines_skill: HttpNewsHeadlinesSkill,
+    news_headlines_skill: Arc<HttpNewsHeadlinesSkill>,
+    calculator_skill: LocalCalculatorSkill,
+    unit_conversion_skill: LocalUnitConversionSkill,
+    currency_skill: HttpCurrencySkill,
+    air_quality_skill: HttpAirQualitySkill,
+    air_quality_default_location: Option<AirQualityLocation>,
+    dictionary_skill: HttpDictionarySkill,
+    translate_skill: LlmTranslateSkill,
+    meeting_notes_skill: LlmMeetingNotesSkill,
+    journal_skill: Option<Arc<LocalJournalSkill>>,
+    screen_ocr_llm: Arc<llm_adapters::ScreenOcrLlmAdapter>,
+    news_summary_llm: Arc<llm_adapters::NewsSummaryLlmAdapter>,
+    news_summary_streaming_enabled: bool,
     palace: PalaceHandle,
     turn_counter: Arc<std::sync::atomic::AtomicU64>,
     resolved_location: Option<ResolvedLocation>,
@@ -1396,8 +1436,8 @@ impl AiceBackendEngine {
                 }
             }
         }
-        let weather_skill = OpenMeteoWeatherSkill::new();
-        let resolved_location = resolve_startup_location(config, &weather_skill).await;
+        let weather_skill = Arc::new(OpenMeteoWeatherSkill::new());
+        let resolved_location = resolve_startup_location(config, weather_skill.as_ref()).await;
 
         let palace = if config.memory.enabled {
             let db_path = config.memory.palace_db_path.clone();
@@ -1467,6 +1507,47 @@ impl AiceBackendEngine {
             Arc::clone(&llm_arc)
         };
 
+        let translation_llm: Arc<dyn TranslationLlm> = Arc::new(
+            llm_adapters::TranslationLlmAdapter::new(Arc::clone(&llm_arc)),
+        );
+        let translate_skill = LlmTranslateSkill::new(translation_llm);
+
+        let meeting_llm: Arc<dyn MeetingNotesLlm> = Arc::new(
+            llm_adapters::MeetingNotesLlmAdapter::new(Arc::clone(&llm_arc)),
+        );
+        let meeting_notes_skill = LlmMeetingNotesSkill::new(meeting_llm);
+
+        let air_quality_default_location =
+            resolved_location.as_ref().map(|loc| AirQualityLocation {
+                display_name: loc.display_name.clone(),
+                lat: loc.lat,
+                lon: loc.lon,
+            });
+
+        let journal_skill = if config.journal.enabled {
+            match SqliteJournalStore::open(&config.journal.sqlite_path) {
+                Ok(store) => {
+                    info!(
+                        journal_db = %config.journal.sqlite_path,
+                        "journal store opened"
+                    );
+                    Some(Arc::new(LocalJournalSkill::new(Arc::new(store))))
+                }
+                Err(error) => {
+                    warn!(%error, journal_db = %config.journal.sqlite_path, "failed to open journal store; journal skill disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let news_headlines_skill = Arc::new(HttpNewsHeadlinesSkill::new());
+        let screen_ocr_llm = Arc::new(llm_adapters::ScreenOcrLlmAdapter::new(Arc::clone(&llm_arc)));
+        let news_summary_llm = Arc::new(llm_adapters::NewsSummaryLlmAdapter::new(Arc::clone(
+            &llm_arc,
+        )));
+
         Ok(Self {
             llm: llm_arc,
             weather_skill,
@@ -1476,7 +1557,19 @@ impl AiceBackendEngine {
             holiday_lookup_skill: HttpHolidayLookupSkill::new(),
             fuel_price_lookup_skill: HttpFuelPriceLookupSkill::new(),
             horoscope_daily_skill: HttpHoroscopeDailySkill::new(),
-            news_headlines_skill: HttpNewsHeadlinesSkill::new(),
+            news_headlines_skill,
+            calculator_skill: LocalCalculatorSkill::new(),
+            unit_conversion_skill: LocalUnitConversionSkill::new(),
+            currency_skill: HttpCurrencySkill::new(),
+            air_quality_skill: HttpAirQualitySkill::new(),
+            air_quality_default_location,
+            dictionary_skill: HttpDictionarySkill::new(),
+            translate_skill,
+            meeting_notes_skill,
+            journal_skill,
+            screen_ocr_llm,
+            news_summary_llm,
+            news_summary_streaming_enabled: config.news.enable_summary_streaming,
             palace,
             turn_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             resolved_location,
@@ -1672,6 +1765,58 @@ fn compose_news_headlines_answer(result: &NewsHeadlinesResult) -> String {
     result.to_prompt_context()
 }
 
+fn compose_news_summary_answer(items: &[SummarizedHeadline]) -> String {
+    if items.is_empty() {
+        return "No headlines found.".to_string();
+    }
+    let lines: Vec<String> = items
+        .iter()
+        .map(|item| match item.summary.as_deref() {
+            Some(text) if !text.trim().is_empty() => {
+                format!("{}: {}", item.headline.title, text.trim())
+            }
+            _ => item.headline.title.clone(),
+        })
+        .collect();
+    format!("Top headlines:\n- {}", lines.join("\n- "))
+}
+
+fn compose_calculator_answer(result: &CalculatorResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_unit_conversion_answer(result: &ConversionResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_currency_answer(result: &CurrencyResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_air_quality_answer(result: &AirQualityResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_dictionary_answer(result: &DictionaryResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_translate_answer(result: &TranslateResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_meeting_notes_answer(result: &MeetingNotesResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_briefing_answer(result: &BriefingResult) -> String {
+    result.to_prompt_context()
+}
+
+fn compose_journal_answer(result: &JournalResult) -> String {
+    result.to_prompt_context()
+}
+
 fn parse_naive_date(input: Option<String>) -> Option<NaiveDate> {
     input
         .and_then(|value| NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok())
@@ -1750,6 +1895,85 @@ fn news_headlines_error_kind(error: &NewsHeadlinesError) -> &'static str {
         NewsHeadlinesError::ProviderUnavailable(_) => "provider_unavailable",
         NewsHeadlinesError::UpstreamTimeout => "upstream_timeout",
         NewsHeadlinesError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn calculator_error_kind(error: &CalculatorSkillError) -> &'static str {
+    match error {
+        CalculatorSkillError::EmptyExpression => "empty_expression",
+        CalculatorSkillError::ParseError(_) => "parse_error",
+        CalculatorSkillError::NonFinite => "non_finite",
+    }
+}
+
+fn unit_conversion_error_kind(error: &UnitConversionError) -> &'static str {
+    match error {
+        UnitConversionError::UnknownUnit(_) => "unknown_unit",
+        UnitConversionError::DimensionMismatch { .. } => "dimension_mismatch",
+        UnitConversionError::InvalidValue(_) => "invalid_value",
+        UnitConversionError::ParseError(_) => "parse_error",
+    }
+}
+
+fn currency_error_kind(error: &CurrencyError) -> &'static str {
+    match error {
+        CurrencyError::InvalidQuery(_) => "invalid_query",
+        CurrencyError::UnsupportedCurrency(_) => "unsupported_currency",
+        CurrencyError::ProviderUnavailable(_) => "provider_unavailable",
+        CurrencyError::UpstreamTimeout => "upstream_timeout",
+        CurrencyError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn air_quality_error_kind(error: &AirQualityError) -> &'static str {
+    match error {
+        AirQualityError::InvalidQuery(_) => "invalid_query",
+        AirQualityError::Geocoding(_) => "geocoding",
+        AirQualityError::ProviderUnavailable(_) => "provider_unavailable",
+        AirQualityError::UpstreamTimeout => "upstream_timeout",
+        AirQualityError::UpstreamParse(_) => "upstream_parse",
+        AirQualityError::NoDefaultLocation => "no_default_location",
+    }
+}
+
+fn dictionary_error_kind(error: &DictionaryError) -> &'static str {
+    match error {
+        DictionaryError::InvalidQuery(_) => "invalid_query",
+        DictionaryError::NotFound(_) => "not_found",
+        DictionaryError::ProviderUnavailable(_) => "provider_unavailable",
+        DictionaryError::UpstreamTimeout => "upstream_timeout",
+        DictionaryError::UpstreamParse(_) => "upstream_parse",
+    }
+}
+
+fn translate_error_kind(error: &TranslateError) -> &'static str {
+    match error {
+        TranslateError::InvalidQuery(_) => "invalid_query",
+        TranslateError::LlmUnavailable(_) => "llm_unavailable",
+        TranslateError::EmptyTranslation => "empty_translation",
+    }
+}
+
+fn meeting_notes_error_kind(error: &MeetingNotesError) -> &'static str {
+    match error {
+        MeetingNotesError::InvalidQuery(_) => "invalid_query",
+        MeetingNotesError::LlmUnavailable(_) => "llm_unavailable",
+        MeetingNotesError::InvalidLlmOutput(_) => "invalid_llm_output",
+        MeetingNotesError::Reminders(_) => "reminders",
+    }
+}
+
+fn briefing_error_kind(error: &BriefingError) -> &'static str {
+    match error {
+        BriefingError::NoSectionsEnabled => "no_sections_enabled",
+    }
+}
+
+fn journal_error_kind(error: &JournalError) -> &'static str {
+    match error {
+        JournalError::InvalidQuery(_) => "invalid_query",
+        JournalError::Storage(_) => "storage",
+        JournalError::NotFound(_) => "not_found",
     }
 }
 
@@ -2020,9 +2244,17 @@ impl BackendEngine for AiceBackendEngine {
                     skill_started.elapsed(),
                 );
                 record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                Ok(BackendEngineDecision::BackendSkill(
-                    compose_news_headlines_answer(&result),
-                ))
+                let answer = if self.news_summary_streaming_enabled && !result.headlines.is_empty()
+                {
+                    let summary_llm: Arc<dyn NewsSummaryLlm> =
+                        Arc::clone(&self.news_summary_llm) as Arc<dyn NewsSummaryLlm>;
+                    let summarized =
+                        collect_news_summaries(result.headlines.clone(), summary_llm).await;
+                    compose_news_summary_answer(&summarized)
+                } else {
+                    compose_news_headlines_answer(&result)
+                };
+                Ok(BackendEngineDecision::BackendSkill(answer))
             }
             IntentDecision::SkillSmartHome { target, action } => Ok(build_frontend_intent(
                 "skill_smart_home",
@@ -2072,56 +2304,216 @@ impl BackendEngine for AiceBackendEngine {
                 "skill_screenshot",
                 json!({"screenshot_filename": filename}),
             )),
-            IntentDecision::SkillCalculator { expression } => Ok(build_frontend_intent(
-                "skill_calculator",
-                json!({"calculator_expression": expression}),
-            )),
+            IntentDecision::SkillCalculator { expression } => {
+                let Some(expr) = expression.filter(|s| !s.trim().is_empty()) else {
+                    record_calculator_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "What expression should I calculate?".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let result = match self.calculator_skill.execute(&expr).await {
+                    Ok(value) => {
+                        record_calculator_skill("success");
+                        record_backend_skill_execute("skill_calculator", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = calculator_error_kind(&error);
+                        record_calculator_skill("error");
+                        record_backend_skill_execute("skill_calculator", "error", Some(kind));
+                        return Err(format!("calculator skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_calculator", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_calculator_answer(&result),
+                ))
+            }
             IntentDecision::SkillUnitConversion {
                 query,
                 value,
                 from_unit,
                 to_unit,
-            } => Ok(build_frontend_intent(
-                "skill_unit_conversion",
-                json!({
-                    "unit_query": query,
-                    "unit_value": value,
-                    "unit_from": from_unit,
-                    "unit_to": to_unit,
-                }),
-            )),
+            } => {
+                let skill_started = Instant::now();
+                let result = match (value, from_unit.as_deref(), to_unit.as_deref()) {
+                    (Some(v), Some(from), Some(to)) => {
+                        self.unit_conversion_skill.execute(v, from, to).await
+                    }
+                    _ => {
+                        let Some(q) = query.as_deref().filter(|s| !s.trim().is_empty()) else {
+                            record_unit_conversion_skill("error");
+                            return Ok(BackendEngineDecision::Chat(
+                                "Tell me which units to convert (e.g. \"5 km to miles\")."
+                                    .to_string(),
+                            ));
+                        };
+                        self.unit_conversion_skill.execute_query(q).await
+                    }
+                };
+                let result = match result {
+                    Ok(value) => {
+                        record_unit_conversion_skill("success");
+                        record_backend_skill_execute("skill_unit_conversion", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = unit_conversion_error_kind(&error);
+                        record_unit_conversion_skill("error");
+                        record_backend_skill_execute("skill_unit_conversion", "error", Some(kind));
+                        return Err(format!("unit-conversion skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration(
+                    "skill_unit_conversion",
+                    skill_started.elapsed(),
+                );
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_unit_conversion_answer(&result),
+                ))
+            }
             IntentDecision::SkillCurrency {
                 amount,
                 from_currency,
                 to_currency,
-            } => Ok(build_frontend_intent(
-                "skill_currency",
-                json!({
-                    "currency_amount": amount,
-                    "currency_from": from_currency,
-                    "currency_to": to_currency,
-                }),
-            )),
-            IntentDecision::SkillAirQuality { location } => Ok(build_frontend_intent(
-                "skill_air_quality",
-                json!({"air_quality_location": location}),
-            )),
-            IntentDecision::SkillDictionary { word } => Ok(build_frontend_intent(
-                "skill_dictionary",
-                json!({"dictionary_word": word}),
-            )),
+            } => {
+                let Some(from_currency) = from_currency.filter(|s| !s.trim().is_empty()) else {
+                    record_currency_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "Which currency are we converting from?".to_string(),
+                    ));
+                };
+                let Some(to_currency) = to_currency.filter(|s| !s.trim().is_empty()) else {
+                    record_currency_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "Which currency are we converting to?".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let skill_query = CurrencyQuery {
+                    amount: amount.unwrap_or(1.0),
+                    from_currency,
+                    to_currency,
+                };
+                let result = match self.currency_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_currency_skill("success");
+                        record_backend_skill_execute("skill_currency", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = currency_error_kind(&error);
+                        record_currency_skill("error");
+                        record_backend_skill_execute("skill_currency", "error", Some(kind));
+                        return Err(format!("currency skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_currency", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_currency_answer(&result),
+                ))
+            }
+            IntentDecision::SkillAirQuality { location } => {
+                let skill_started = Instant::now();
+                let result = match self
+                    .air_quality_skill
+                    .execute(
+                        location.as_deref(),
+                        self.air_quality_default_location.as_ref(),
+                    )
+                    .await
+                {
+                    Ok(value) => {
+                        record_air_quality_skill("success");
+                        record_backend_skill_execute("skill_air_quality", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = air_quality_error_kind(&error);
+                        record_air_quality_skill("error");
+                        record_backend_skill_execute("skill_air_quality", "error", Some(kind));
+                        return Err(format!("air-quality skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_air_quality", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_air_quality_answer(&result),
+                ))
+            }
+            IntentDecision::SkillDictionary { word } => {
+                let Some(word) = word.filter(|s| !s.trim().is_empty()) else {
+                    record_dictionary_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "Which word should I look up?".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let result = match self.dictionary_skill.execute(&word).await {
+                    Ok(value) => {
+                        record_dictionary_skill("success");
+                        record_backend_skill_execute("skill_dictionary", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = dictionary_error_kind(&error);
+                        record_dictionary_skill("error");
+                        record_backend_skill_execute("skill_dictionary", "error", Some(kind));
+                        return Err(format!("dictionary skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_dictionary", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_dictionary_answer(&result),
+                ))
+            }
             IntentDecision::SkillTranslate {
                 text,
                 source_language,
                 target_language,
-            } => Ok(build_frontend_intent(
-                "skill_translate",
-                json!({
-                    "translate_text": text,
-                    "translate_source_language": source_language,
-                    "translate_target_language": target_language,
-                }),
-            )),
+            } => {
+                let Some(text) = text.filter(|s| !s.trim().is_empty()) else {
+                    record_translate_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "What text should I translate?".to_string(),
+                    ));
+                };
+                let Some(target_language) = target_language.filter(|s| !s.trim().is_empty()) else {
+                    record_translate_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "Which language should I translate to?".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let skill_query = TranslateQuery {
+                    text,
+                    source_language,
+                    target_language,
+                };
+                let result = match self.translate_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_translate_skill("success");
+                        record_backend_skill_execute("skill_translate", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = translate_error_kind(&error);
+                        record_translate_skill("error");
+                        record_backend_skill_execute("skill_translate", "error", Some(kind));
+                        return Err(format!("translate skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_translate", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_translate_answer(&result),
+                ))
+            }
             IntentDecision::SkillCalendar {
                 action,
                 title,
@@ -2129,55 +2521,129 @@ impl BackendEngine for AiceBackendEngine {
                 days,
                 location,
                 calendar_name,
-            } => Ok(build_frontend_intent(
-                "skill_calendar",
-                json!({
-                    "calendar_action": action,
-                    "calendar_title": title,
-                    "calendar_when": when,
-                    "calendar_days": days,
-                    "calendar_location": location,
-                    "calendar_name": calendar_name,
-                }),
-            )),
+            } => {
+                record_calendar_skill("dispatched");
+                Ok(build_frontend_intent(
+                    "skill_calendar",
+                    json!({
+                        "calendar_action": action,
+                        "calendar_title": title,
+                        "calendar_when": when,
+                        "calendar_days": days,
+                        "calendar_location": location,
+                        "calendar_name": calendar_name,
+                    }),
+                ))
+            }
             IntentDecision::SkillMeetingNotes {
                 transcript,
                 title,
                 create_reminders,
-            } => Ok(build_frontend_intent(
-                "skill_meeting_notes",
-                json!({
-                    "meeting_transcript": transcript,
-                    "meeting_title": title,
-                    "meeting_create_reminders": create_reminders,
-                }),
-            )),
+            } => {
+                let Some(transcript) = transcript.filter(|s| !s.trim().is_empty()) else {
+                    record_meeting_notes_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "Share the meeting transcript and I'll summarize it.".to_string(),
+                    ));
+                };
+                let skill_started = Instant::now();
+                let skill_query = MeetingNotesQuery {
+                    transcript,
+                    title,
+                    create_reminders: create_reminders.unwrap_or(false),
+                };
+                let result = match self.meeting_notes_skill.execute(&skill_query).await {
+                    Ok(value) => {
+                        record_meeting_notes_skill("success");
+                        record_backend_skill_execute("skill_meeting_notes", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = meeting_notes_error_kind(&error);
+                        record_meeting_notes_skill("error");
+                        record_backend_skill_execute("skill_meeting_notes", "error", Some(kind));
+                        return Err(format!("meeting-notes skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration(
+                    "skill_meeting_notes",
+                    skill_started.elapsed(),
+                );
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_meeting_notes_answer(&result),
+                ))
+            }
             IntentDecision::SkillEmail {
                 action,
                 query,
                 limit,
                 mailbox,
-            } => Ok(build_frontend_intent(
-                "skill_email",
-                json!({
-                    "email_action": action,
-                    "email_query": query,
-                    "email_limit": limit,
-                    "email_mailbox": mailbox,
-                }),
-            )),
+            } => {
+                record_email_skill("dispatched");
+                Ok(build_frontend_intent(
+                    "skill_email",
+                    json!({
+                        "email_action": action,
+                        "email_query": query,
+                        "email_limit": limit,
+                        "email_mailbox": mailbox,
+                    }),
+                ))
+            }
             IntentDecision::SkillBriefing {
                 include,
                 news_topic,
                 news_country,
-            } => Ok(build_frontend_intent(
-                "skill_briefing",
-                json!({
-                    "briefing_include": include,
-                    "briefing_news_topic": news_topic,
-                    "briefing_news_country": news_country,
-                }),
-            )),
+            } => {
+                let (include_weather, include_news) = match include.as_deref() {
+                    Some(parts) if !parts.is_empty() => (
+                        parts.iter().any(|p| p.eq_ignore_ascii_case("weather")),
+                        parts.iter().any(|p| p.eq_ignore_ascii_case("news")),
+                    ),
+                    _ => (true, true),
+                };
+                let briefing_query = BriefingQuery {
+                    greeting: None,
+                    include_weather,
+                    include_calendar: false,
+                    include_email: false,
+                    include_news,
+                    weather_location: None,
+                    email_limit: 0,
+                    news_topic: news_topic.unwrap_or_else(|| "top".to_string()),
+                    news_country: news_country
+                        .or_else(|| infer_country_code(self.resolved_location.as_ref())),
+                    news_limit: 5,
+                };
+                let briefing_skill = ComposedBriefingSkill::new()
+                    .with_weather(
+                        Arc::clone(&self.weather_skill) as Arc<dyn WeatherSkill>,
+                        self.resolved_location.clone(),
+                    )
+                    .with_news(
+                        Arc::clone(&self.news_headlines_skill) as Arc<dyn NewsHeadlinesSkill>
+                    );
+                let skill_started = Instant::now();
+                let result = match briefing_skill.execute(&briefing_query).await {
+                    Ok(value) => {
+                        record_briefing_skill("success");
+                        record_backend_skill_execute("skill_briefing", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = briefing_error_kind(&error);
+                        record_briefing_skill("error");
+                        record_backend_skill_execute("skill_briefing", "error", Some(kind));
+                        return Err(format!("briefing skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_briefing", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(
+                    compose_briefing_answer(&result),
+                ))
+            }
             IntentDecision::SkillJournal {
                 action,
                 text,
@@ -2185,24 +2651,75 @@ impl BackendEngine for AiceBackendEngine {
                 tags,
                 query,
                 limit,
-            } => Ok(build_frontend_intent(
-                "skill_journal",
-                json!({
-                    "journal_action": action,
-                    "journal_text": text,
-                    "journal_sentiment": sentiment,
-                    "journal_tags": tags,
-                    "journal_query": query,
-                    "journal_limit": limit,
-                }),
-            )),
-            IntentDecision::SkillScreenOcr { question, filename } => Ok(build_frontend_intent(
-                "skill_screen_ocr",
-                json!({
-                    "ocr_question": question,
-                    "ocr_filename": filename,
-                }),
-            )),
+            } => {
+                let Some(journal_skill) = self.journal_skill.as_ref() else {
+                    record_journal_skill("error");
+                    return Ok(BackendEngineDecision::Chat(
+                        "Journal is not enabled in the backend configuration.".to_string(),
+                    ));
+                };
+                let action_str = action.as_deref().unwrap_or("add");
+                let journal_action = match action_str.trim().to_lowercase().as_str() {
+                    "add" => {
+                        let Some(text) = text.filter(|s| !s.trim().is_empty()) else {
+                            record_journal_skill("error");
+                            return Ok(BackendEngineDecision::Chat(
+                                "What would you like me to journal?".to_string(),
+                            ));
+                        };
+                        JournalAction::Add {
+                            text,
+                            sentiment: sentiment.as_deref().and_then(Sentiment::parse),
+                            tags: tags.unwrap_or_default(),
+                        }
+                    }
+                    "recall" => JournalAction::Recall {
+                        from: None,
+                        to: None,
+                        contains: query.filter(|s| !s.trim().is_empty()),
+                        limit: limit.unwrap_or(10),
+                    },
+                    "stats" => JournalAction::Stats {
+                        from: None,
+                        to: None,
+                    },
+                    other => {
+                        record_journal_skill("error");
+                        return Ok(BackendEngineDecision::Chat(format!(
+                            "Unsupported journal action: {other}"
+                        )));
+                    }
+                };
+                let skill_started = Instant::now();
+                let result = match journal_skill.execute(&journal_action).await {
+                    Ok(value) => {
+                        record_journal_skill("success");
+                        record_backend_skill_execute("skill_journal", "success", None);
+                        value
+                    }
+                    Err(error) => {
+                        let kind = journal_error_kind(&error);
+                        record_journal_skill("error");
+                        record_backend_skill_execute("skill_journal", "error", Some(kind));
+                        return Err(format!("journal skill failed: {error}").into());
+                    }
+                };
+                record_backend_skill_execute_duration("skill_journal", skill_started.elapsed());
+                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                Ok(BackendEngineDecision::BackendSkill(compose_journal_answer(
+                    &result,
+                )))
+            }
+            IntentDecision::SkillScreenOcr { question, filename } => {
+                record_screen_ocr_skill("dispatched");
+                Ok(build_frontend_intent(
+                    "skill_screen_ocr",
+                    json!({
+                        "ocr_question": question,
+                        "ocr_filename": filename,
+                    }),
+                ))
+            }
             IntentDecision::Chat => {
                 let wake_up_started = Instant::now();
                 let palace_for_wakeup = self.palace.clone();
@@ -2269,10 +2786,18 @@ impl BackendEngine for AiceBackendEngine {
     async fn finalize_frontend_skill(
         &self,
         _turn_id: &str,
+        intent_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError> {
         if request.status.eq_ignore_ascii_case("error") {
+            if intent_id == "skill_screen_ocr" {
+                record_screen_ocr_skill("result_error");
+            }
             return Ok(compose_frontend_skill_error_outcome(&request));
+        }
+
+        if intent_id == "skill_screen_ocr" {
+            return self.finalize_screen_ocr(&request).await;
         }
 
         // Skill-agnostic: any non-empty structured context from the frontend is composed like backend skills.
@@ -2298,6 +2823,76 @@ impl BackendEngine for AiceBackendEngine {
         }
 
         Ok(compose_frontend_skill_success_echo(&request))
+    }
+}
+
+impl AiceBackendEngine {
+    /// Finalize a screen-OCR turn. The frontend captures pixels and sends OCR
+    /// text via `structured_result_context` (JSON: `{"ocr_text": "...",
+    /// "question": "..."?}`). The backend uses its vision-capable LLM adapter
+    /// to compose the spoken answer.
+    async fn finalize_screen_ocr(
+        &self,
+        request: &FrontendSkillResultRequest,
+    ) -> Result<String, DynError> {
+        let Some(raw) = request
+            .structured_result_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            record_screen_ocr_skill("parse_error");
+            return Ok("I did not receive any captured screen content.".to_string());
+        };
+
+        let payload: serde_json::Value = match serde_json::from_str(raw) {
+            Ok(value) => value,
+            Err(_) => {
+                record_screen_ocr_skill("parse_error");
+                return Ok("I could not parse the screen capture payload.".to_string());
+            }
+        };
+
+        let ocr_text = payload
+            .get("ocr_text")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let Some(ocr_text) = ocr_text else {
+            record_screen_ocr_skill("parse_error");
+            return Ok("The screen capture did not contain readable text.".to_string());
+        };
+
+        let question = payload
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                if !request.user_text.trim().is_empty() {
+                    request.user_text.trim().to_string()
+                } else {
+                    "Summarize the visible content.".to_string()
+                }
+            });
+
+        let compose_started = Instant::now();
+        let answer = match self.screen_ocr_llm.answer(&question, ocr_text).await {
+            Ok(text) => text,
+            Err(error) => {
+                record_screen_ocr_skill("result_error");
+                return Err(format!("screen-ocr llm failed: {error}").into());
+            }
+        };
+        record_backend_skill_execute_duration("skill_screen_ocr", compose_started.elapsed());
+        record_backend_turn_stage_duration(
+            "frontend_skill_answer_compose",
+            compose_started.elapsed(),
+        );
+        record_screen_ocr_skill("result_ok");
+        record_backend_skill_execute("skill_screen_ocr", "success", None);
+        Ok(answer)
     }
 }
 
@@ -2428,6 +3023,8 @@ mod tests {
             humidity_pct: Some(55),
             weather_code: 3,
             description: "Partly cloudy".to_string(),
+            daily_forecast: Vec::new(),
+            alerts: Vec::new(),
         };
         let spoken = compose_weather_answer(&result);
         assert_eq!(
