@@ -98,24 +98,19 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
-      - name: Audit (without desktop-runner)
-        run: |
-          cp Cargo.toml Cargo.toml.bak
-          trap 'mv Cargo.toml.bak Cargo.toml' EXIT
-          sed '/"apps\/desktop-runner"/d' Cargo.toml.bak > Cargo.toml
-          cargo generate-lockfile
-          cargo audit --deny warnings
+      - name: Audit
+        run: cargo audit --deny warnings
 
       - name: Quality gates (debug)
         run: |
           cargo fmt --all -- --check
-          cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
-          cargo test --workspace --exclude desktop-runner
+          cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+          cargo test --workspace
 
       - name: Quality gates (release mode)
         run: |
-          cargo clippy --workspace --exclude desktop-runner --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
-          cargo test --workspace --exclude desktop-runner --release
+          cargo clippy --workspace --all-targets --release -- -D warnings -D clippy::unwrap_used -D clippy::expect_used
+          cargo test --workspace --release
 
       - name: Build release binaries
         run: |

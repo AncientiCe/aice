@@ -96,11 +96,11 @@ Defined in `.cargo/config.toml`:
 
 - `cargo aice-backend` &rarr; run the cross-platform core backend service.
 - `cargo aice-fmt` &rarr; `cargo fmt --all -- --check`.
-- `cargo aice-clippy` &rarr; `cargo clippy --workspace --exclude desktop-runner --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`.
+- `cargo aice-clippy` &rarr; `cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`.
 - `cargo aice-audit` &rarr; dependency audit.
-- `cargo aice-test` &rarr; workspace tests excluding the deprecated `desktop-runner` app.
+- `cargo aice-test` &rarr; full workspace test suite.
 
-Legacy runtimes (`cargo aice-pod-voice`, `cargo aice-gateway`) are documented under [Legacy / experimental](#legacy--experimental).
+The standalone pod transport (`cargo aice-gateway`) is documented under [Legacy / experimental](#legacy--experimental).
 
 ## Skills
 
@@ -113,7 +113,7 @@ Skills are defined and implemented in the external [`aice-skills`](https://githu
 
 - `apps/aice-backend`: cross-platform core backend service (primary).
 - `crates/core-*`: runtime building blocks (`core-config`, `core-llm`, `core-stt`, `core-orchestrator`, `core-observability`, `core-runtime-protocol`).
-- `apps/desktop-runner`, `apps/pod-gateway`, `pod-firmware`: legacy / experimental components — see below.
+- `apps/pod-gateway`, `pod-firmware`: legacy / experimental components — see below.
 
 ## Public repository safety
 
@@ -154,7 +154,6 @@ Runbook: [docs/runbooks/local-observability.md](docs/runbooks/local-observabilit
 
 These components predate the split-runtime design and are retained for continuity. New deployments should use `aice-backend` with a platform frontend.
 
-- **`apps/desktop-runner` (`pod-voice`)**: deprecated single-process macOS runtime that bundled voice loop and pod transport into one binary. Prefer `aice-backend` + [`aice-macos`](https://github.com/AncientiCe/aice-macos). Invoke via `cargo aice-pod-voice` if needed.
 - **`apps/pod-gateway`**: standalone WebSocket ingest/egress transport for advanced/internal deployments. Invoke via `cargo aice-gateway`.
 - **`pod-firmware` + M5Stack ATOM Echo**: experimental hardware path, not covered by binary release guarantees. See [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md) and [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md).
 

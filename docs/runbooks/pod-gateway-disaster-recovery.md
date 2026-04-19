@@ -12,8 +12,7 @@
 1. Check health endpoint:
    - `curl -fsS http://127.0.0.1:8780/healthz`
 2. Restart runtime process:
-   - if using primary mode, restart `cargo aice-pod-voice`
-   - if using split mode, restart `cargo aice-gateway` (and `cargo aice-desktop` if needed)
+   - restart `cargo aice-gateway` (and `cargo aice-backend` if the paired backend was affected)
 
 ## Rollback strategy
 

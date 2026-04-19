@@ -48,8 +48,66 @@ where
     }
 }
 
+fn deserialize_optional_string_vec<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let collected: Vec<String> = match value {
+        serde_json::Value::String(s) => s
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect(),
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                serde_json::Value::String(s) => {
+                    let t = s.trim().to_string();
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                }
+                serde_json::Value::Null => None,
+                other => {
+                    let t = other.to_string();
+                    if t.trim().is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                }
+            })
+            .collect(),
+        serde_json::Value::Null => Vec::new(),
+        other => {
+            let t = other.to_string();
+            if t.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![t]
+            }
+        }
+    };
+    if collected.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(collected))
+    }
+}
+
 /// Result of classifying user input (from LLM, parsed from JSON).
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Note: `PartialEq` (without `Eq`) because `SkillUnitConversion` and `SkillCurrency`
+/// carry `Option<f64>` payloads and `f64` does not implement `Eq` (NaN inequality).
+#[derive(Clone, Debug, PartialEq)]
 pub enum IntentDecision {
     /// Normal chat / question / unknown; use main chat flow.
     Chat,
@@ -97,17 +155,77 @@ pub enum IntentDecision {
         target: Option<String>,
         action: Option<String>,
     },
-    /// Personal assistant: calendar, reminders, messages.
-    SkillAssistant { kind: Option<String> },
     /// Media: playback, multi-room, source selection.
     SkillMedia {
         action: Option<String>,
         target: Option<String>,
     },
-    /// Knowledge/memory: remember, recall, personal knowledge.
-    SkillMemory {
+    /// Calculator: arithmetic / mathematical expression evaluation.
+    SkillCalculator { expression: Option<String> },
+    /// Unit conversion: free-form query plus optional structured value/units.
+    SkillUnitConversion {
         query: Option<String>,
-        store: Option<bool>,
+        value: Option<f64>,
+        from_unit: Option<String>,
+        to_unit: Option<String>,
+    },
+    /// Currency conversion: optional amount, source and target ISO 4217 codes.
+    SkillCurrency {
+        amount: Option<f64>,
+        from_currency: Option<String>,
+        to_currency: Option<String>,
+    },
+    /// Air quality lookup at an optional location (defaults to current location).
+    SkillAirQuality { location: Option<String> },
+    /// Dictionary lookup of an English word.
+    SkillDictionary { word: Option<String> },
+    /// Translate a piece of text from an optional source language to a required target language.
+    SkillTranslate {
+        text: Option<String>,
+        source_language: Option<String>,
+        target_language: Option<String>,
+    },
+    /// Calendar (Google or Apple): list events or create a new event.
+    SkillCalendar {
+        action: Option<String>,
+        title: Option<String>,
+        when: Option<String>,
+        days: Option<u32>,
+        location: Option<String>,
+        calendar_name: Option<String>,
+    },
+    /// Meeting notes: summarize/extract action items from a transcript.
+    SkillMeetingNotes {
+        transcript: Option<String>,
+        title: Option<String>,
+        create_reminders: Option<bool>,
+    },
+    /// Email (IMAP or Apple Mail): list unread/inbox, search, or triage.
+    SkillEmail {
+        action: Option<String>,
+        query: Option<String>,
+        limit: Option<usize>,
+        mailbox: Option<String>,
+    },
+    /// Daily briefing: composed weather + calendar + email + news section opt-ins.
+    SkillBriefing {
+        include: Option<Vec<String>>,
+        news_topic: Option<String>,
+        news_country: Option<String>,
+    },
+    /// Personal journal: add an entry, recall entries by query, or get stats.
+    SkillJournal {
+        action: Option<String>,
+        text: Option<String>,
+        sentiment: Option<String>,
+        tags: Option<Vec<String>>,
+        query: Option<String>,
+        limit: Option<usize>,
+    },
+    /// Screen OCR + LLM Q&A: capture (frontend) → OCR (frontend) → answer (backend).
+    SkillScreenOcr {
+        question: Option<String>,
+        filename: Option<String>,
     },
     /// Computer-use: browser, apps, files.
     SkillComputer {
@@ -208,15 +326,84 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         #[serde(default)]
         smart_home_action: Option<String>,
         #[serde(default)]
-        assistant_kind: Option<String>,
-        #[serde(default)]
         media_action: Option<String>,
         #[serde(default)]
         media_target: Option<String>,
+        // --- new skill payload long-form fields ---
         #[serde(default)]
-        memory_query: Option<String>,
+        expression: Option<String>,
         #[serde(default)]
-        memory_store: Option<bool>,
+        unit_query: Option<String>,
+        #[serde(default)]
+        unit_value: Option<f64>,
+        #[serde(default)]
+        unit_from: Option<String>,
+        #[serde(default)]
+        unit_to: Option<String>,
+        #[serde(default)]
+        currency_amount: Option<f64>,
+        #[serde(default)]
+        currency_from: Option<String>,
+        #[serde(default)]
+        currency_to: Option<String>,
+        #[serde(default)]
+        air_quality_location: Option<String>,
+        #[serde(default)]
+        dictionary_word: Option<String>,
+        #[serde(default)]
+        translate_text: Option<String>,
+        #[serde(default)]
+        translate_source_language: Option<String>,
+        #[serde(default)]
+        translate_target_language: Option<String>,
+        #[serde(default)]
+        calendar_action: Option<String>,
+        #[serde(default)]
+        calendar_title: Option<String>,
+        #[serde(default)]
+        calendar_when: Option<String>,
+        #[serde(default)]
+        calendar_days: Option<u32>,
+        #[serde(default)]
+        calendar_location: Option<String>,
+        #[serde(default)]
+        calendar_name: Option<String>,
+        #[serde(default)]
+        meeting_transcript: Option<String>,
+        #[serde(default)]
+        meeting_title: Option<String>,
+        #[serde(default)]
+        meeting_create_reminders: Option<bool>,
+        #[serde(default)]
+        email_action: Option<String>,
+        #[serde(default)]
+        email_query: Option<String>,
+        #[serde(default)]
+        email_limit: Option<usize>,
+        #[serde(default)]
+        email_mailbox: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_optional_string_vec")]
+        briefing_include: Option<Vec<String>>,
+        #[serde(default)]
+        briefing_news_topic: Option<String>,
+        #[serde(default)]
+        briefing_news_country: Option<String>,
+        #[serde(default)]
+        journal_action: Option<String>,
+        #[serde(default)]
+        journal_text: Option<String>,
+        #[serde(default)]
+        journal_sentiment: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_optional_string_vec")]
+        journal_tags: Option<Vec<String>>,
+        #[serde(default)]
+        journal_query: Option<String>,
+        #[serde(default)]
+        journal_limit: Option<usize>,
+        #[serde(default)]
+        ocr_question: Option<String>,
+        #[serde(default)]
+        ocr_filename: Option<String>,
         #[serde(default)]
         computer_action: Option<String>,
         #[serde(default)]
@@ -265,10 +452,6 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         #[serde(default)]
         vl: Option<u8>,
         #[serde(default)]
-        ak: Option<String>,
-        #[serde(default)]
-        ms: Option<bool>,
-        #[serde(default)]
         sf: Option<String>,
         #[serde(default)]
         hs: Option<String>,
@@ -288,6 +471,45 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         ncc: Option<String>,
         #[serde(default)]
         nl: Option<usize>,
+        // --- new skill payload short keys ---
+        #[serde(default)]
+        uv: Option<f64>,
+        #[serde(default)]
+        uf: Option<String>,
+        #[serde(default)]
+        ut: Option<String>,
+        #[serde(default)]
+        cam: Option<f64>,
+        #[serde(default)]
+        cf: Option<String>,
+        #[serde(default)]
+        ct: Option<String>,
+        #[serde(default)]
+        tsl: Option<String>,
+        #[serde(default)]
+        ttl: Option<String>,
+        #[serde(default)]
+        cdy: Option<u32>,
+        #[serde(default)]
+        ccn: Option<String>,
+        #[serde(default)]
+        mr: Option<bool>,
+        #[serde(default)]
+        el: Option<usize>,
+        #[serde(default)]
+        em: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_optional_string_vec")]
+        bi: Option<Vec<String>>,
+        #[serde(default)]
+        bnt: Option<String>,
+        #[serde(default)]
+        bnc: Option<String>,
+        #[serde(default)]
+        js: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_optional_string_vec")]
+        jt: Option<Vec<String>>,
+        #[serde(default)]
+        jl: Option<usize>,
     }
     let p: Payload = serde_json::from_str(s).map_err(ParseIntentError::Json)?;
     let intent = p.intent.to_lowercase().trim().to_string();
@@ -352,16 +574,72 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             target: or_opt(p.smart_home_target, generic_t.clone()),
             action: action_from(p.smart_home_action, &command),
         }),
-        "skill_assistant" | "assistant" | "assist" => Ok(IntentDecision::SkillAssistant {
-            kind: or_opt(p.assistant_kind, opt_str(p.ak)),
-        }),
         "skill_media" | "media" => Ok(IntentDecision::SkillMedia {
             action: action_from(p.media_action, &command),
             target: or_opt(p.media_target, generic_t.clone()),
         }),
-        "skill_memory" | "memory" | "mem" => Ok(IntentDecision::SkillMemory {
-            query: or_opt(p.memory_query, generic_q.clone()),
-            store: p.memory_store.or(p.ms),
+        "skill_calculator" | "calculator" | "calc" => Ok(IntentDecision::SkillCalculator {
+            expression: or_opt(p.expression, generic_q.clone()),
+        }),
+        "skill_unit_conversion" | "unit_conversion" | "unit" => {
+            Ok(IntentDecision::SkillUnitConversion {
+                query: or_opt(p.unit_query, generic_q.clone()),
+                value: p.unit_value.or(p.uv),
+                from_unit: or_opt(p.unit_from, opt_str(p.uf)),
+                to_unit: or_opt(p.unit_to, opt_str(p.ut)),
+            })
+        }
+        "skill_currency" | "currency" | "fx" => Ok(IntentDecision::SkillCurrency {
+            amount: p.currency_amount.or(p.cam),
+            from_currency: or_opt(p.currency_from, opt_str(p.cf)),
+            to_currency: or_opt(p.currency_to, opt_str(p.ct)),
+        }),
+        "skill_air_quality" | "air_quality" | "air" => Ok(IntentDecision::SkillAirQuality {
+            location: or_opt(p.air_quality_location, or_opt(p.location, generic_t.clone())),
+        }),
+        "skill_dictionary" | "dictionary" | "dict" => Ok(IntentDecision::SkillDictionary {
+            word: or_opt(p.dictionary_word, generic_q.clone()),
+        }),
+        "skill_translate" | "translate" | "tx" => Ok(IntentDecision::SkillTranslate {
+            text: or_opt(p.translate_text, generic_q.clone()),
+            source_language: or_opt(p.translate_source_language, opt_str(p.tsl)),
+            target_language: or_opt(p.translate_target_language, opt_str(p.ttl)),
+        }),
+        "skill_calendar" | "calendar" | "cal" => Ok(IntentDecision::SkillCalendar {
+            action: action_from(p.calendar_action, &command),
+            title: or_opt(p.calendar_title, generic_n.clone()),
+            when: or_opt(p.calendar_when, generic_w.clone()),
+            days: p.calendar_days.or(p.cdy),
+            location: or_opt(p.calendar_location.clone(), p.location.clone()),
+            calendar_name: or_opt(p.calendar_name, opt_str(p.ccn)),
+        }),
+        "skill_meeting_notes" | "meeting_notes" | "mtg" => Ok(IntentDecision::SkillMeetingNotes {
+            transcript: or_opt(p.meeting_transcript, generic_q.clone()),
+            title: or_opt(p.meeting_title, generic_n.clone()),
+            create_reminders: p.meeting_create_reminders.or(p.mr),
+        }),
+        "skill_email" | "email" | "mail" => Ok(IntentDecision::SkillEmail {
+            action: action_from(p.email_action, &command),
+            query: or_opt(p.email_query, generic_q.clone()),
+            limit: p.email_limit.or(p.el),
+            mailbox: or_opt(p.email_mailbox, opt_str(p.em)),
+        }),
+        "skill_briefing" | "briefing" | "brief" => Ok(IntentDecision::SkillBriefing {
+            include: p.briefing_include.or(p.bi),
+            news_topic: or_opt(p.briefing_news_topic, opt_str(p.bnt)),
+            news_country: or_opt(p.briefing_news_country, opt_str(p.bnc)),
+        }),
+        "skill_journal" | "journal" | "jrnl" => Ok(IntentDecision::SkillJournal {
+            action: action_from(p.journal_action, &command),
+            text: or_opt(p.journal_text, generic_v.clone()),
+            sentiment: or_opt(p.journal_sentiment, opt_str(p.js)),
+            tags: p.journal_tags.or(p.jt),
+            query: or_opt(p.journal_query, generic_q.clone()),
+            limit: p.journal_limit.or(p.jl),
+        }),
+        "skill_screen_ocr" | "screen_ocr" | "ocr" => Ok(IntentDecision::SkillScreenOcr {
+            question: or_opt(p.ocr_question, generic_q.clone()),
+            filename: or_opt(p.ocr_filename, opt_str(p.sf)),
         }),
         "skill_computer" | "computer" => Ok(IntentDecision::SkillComputer {
             action: action_from(p.computer_action, &command),
@@ -440,6 +718,10 @@ const COMPUTER_ACTIONS: &[&str] = &["open", "launch", "browse", "run"];
 const VOLUME_ACTIONS: &[&str] = &["set", "up", "down", "mute", "unmute", "get"];
 const SHOPPING_LIST_ACTIONS: &[&str] = &["add", "remove"];
 const MESSAGE_COMMANDS: &[&str] = &["send"];
+const CALENDAR_ACTIONS: &[&str] =
+    &["list_today", "list_tomorrow", "list_upcoming", "create"];
+const EMAIL_ACTIONS: &[&str] = &["list_unread", "list_inbox", "search", "triage"];
+const JOURNAL_ACTIONS: &[&str] = &["add", "recall", "stats"];
 
 fn action_allowed(action: &Option<String>, allowlist: &[&str]) -> bool {
     match action.as_deref() {
@@ -469,6 +751,9 @@ pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
             !action_allowed(action, SHOPPING_LIST_ACTIONS)
         }
         IntentDecision::SkillMessage { command, .. } => !action_allowed(command, MESSAGE_COMMANDS),
+        IntentDecision::SkillCalendar { action, .. } => !action_allowed(action, CALENDAR_ACTIONS),
+        IntentDecision::SkillEmail { action, .. } => !action_allowed(action, EMAIL_ACTIONS),
+        IntentDecision::SkillJournal { action, .. } => !action_allowed(action, JOURNAL_ACTIONS),
         _ => false,
     };
     if invalid {
@@ -491,6 +776,15 @@ pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
             }
             IntentDecision::SkillMessage { command, .. } => {
                 format!("skill_message command={:?}", command)
+            }
+            IntentDecision::SkillCalendar { action, .. } => {
+                format!("skill_calendar action={:?}", action)
+            }
+            IntentDecision::SkillEmail { action, .. } => {
+                format!("skill_email action={:?}", action)
+            }
+            IntentDecision::SkillJournal { action, .. } => {
+                format!("skill_journal action={:?}", action)
             }
             other => format!("{:?}", other),
         };
@@ -535,18 +829,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_intent_assistant() {
-        let raw = r#"{"intent": "skill_assistant", "assistant_kind": "calendar"}"#;
-        let d = parse_intent(raw).must();
-        match &d {
-            IntentDecision::SkillAssistant { kind } => {
-                assert_eq!(kind.as_deref(), Some("calendar"));
-            }
-            _ => panic!("expected SkillAssistant"),
-        }
-    }
-
-    #[test]
     fn parse_intent_media() {
         let raw = r#"{"intent": "skill_media", "media_action": "play", "media_target": "kitchen"}"#;
         let d = parse_intent(raw).must();
@@ -556,19 +838,6 @@ mod tests {
                 assert_eq!(target.as_deref(), Some("kitchen"));
             }
             _ => panic!("expected SkillMedia"),
-        }
-    }
-
-    #[test]
-    fn parse_intent_memory() {
-        let raw = r#"{"intent": "skill_memory", "memory_query": "where did I leave keys", "memory_store": true}"#;
-        let d = parse_intent(raw).must();
-        match &d {
-            IntentDecision::SkillMemory { query, store } => {
-                assert_eq!(query.as_deref(), Some("where did I leave keys"));
-                assert_eq!(*store, Some(true));
-            }
-            _ => panic!("expected SkillMemory"),
         }
     }
 
@@ -870,6 +1139,368 @@ mod tests {
         }
     }
 
+    // --- new skill parse tests ---
+
+    #[test]
+    fn parse_intent_calculator() {
+        let raw = r#"{"intent":"skill_calculator","expression":"2 + 2 * 5"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCalculator { expression } => {
+                assert_eq!(expression.as_deref(), Some("2 + 2 * 5"));
+            }
+            _ => panic!("expected SkillCalculator"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_calculator_compact_uses_q() {
+        let raw = r#"{"i":"calc","q":"3 * (4 + 1)"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCalculator { expression } => {
+                assert_eq!(expression.as_deref(), Some("3 * (4 + 1)"));
+            }
+            _ => panic!("expected SkillCalculator"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_unit_conversion() {
+        let raw = r#"{"intent":"skill_unit_conversion","unit_value":10,"unit_from":"kg","unit_to":"lb"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillUnitConversion {
+                query,
+                value,
+                from_unit,
+                to_unit,
+            } => {
+                assert!(query.is_none());
+                assert_eq!(*value, Some(10.0));
+                assert_eq!(from_unit.as_deref(), Some("kg"));
+                assert_eq!(to_unit.as_deref(), Some("lb"));
+            }
+            _ => panic!("expected SkillUnitConversion"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_unit_conversion_compact() {
+        let raw = r#"{"i":"unit","uv":3.5,"uf":"miles","ut":"km"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillUnitConversion {
+                value,
+                from_unit,
+                to_unit,
+                ..
+            } => {
+                assert_eq!(*value, Some(3.5));
+                assert_eq!(from_unit.as_deref(), Some("miles"));
+                assert_eq!(to_unit.as_deref(), Some("km"));
+            }
+            _ => panic!("expected SkillUnitConversion"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_currency_with_amount() {
+        let raw = r#"{"intent":"skill_currency","currency_amount":100,"currency_from":"USD","currency_to":"EUR"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCurrency {
+                amount,
+                from_currency,
+                to_currency,
+            } => {
+                assert_eq!(*amount, Some(100.0));
+                assert_eq!(from_currency.as_deref(), Some("USD"));
+                assert_eq!(to_currency.as_deref(), Some("EUR"));
+            }
+            _ => panic!("expected SkillCurrency"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_currency_compact() {
+        let raw = r#"{"i":"fx","cam":42.5,"cf":"GBP","ct":"JPY"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCurrency {
+                amount,
+                from_currency,
+                to_currency,
+            } => {
+                assert_eq!(*amount, Some(42.5));
+                assert_eq!(from_currency.as_deref(), Some("GBP"));
+                assert_eq!(to_currency.as_deref(), Some("JPY"));
+            }
+            _ => panic!("expected SkillCurrency"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_air_quality_with_location() {
+        let raw = r#"{"intent":"skill_air_quality","air_quality_location":"Milan"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillAirQuality { location } => {
+                assert_eq!(location.as_deref(), Some("Milan"));
+            }
+            _ => panic!("expected SkillAirQuality"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_air_quality_falls_back_to_generic_l() {
+        let raw = r#"{"i":"air","l":"Berlin"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillAirQuality { location } => {
+                assert_eq!(location.as_deref(), Some("Berlin"));
+            }
+            _ => panic!("expected SkillAirQuality"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_dictionary() {
+        let raw = r#"{"intent":"skill_dictionary","dictionary_word":"serendipity"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillDictionary { word } => {
+                assert_eq!(word.as_deref(), Some("serendipity"));
+            }
+            _ => panic!("expected SkillDictionary"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_translate_short_keys() {
+        let raw = r#"{"i":"tx","q":"good morning","tsl":"en","ttl":"it"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillTranslate {
+                text,
+                source_language,
+                target_language,
+            } => {
+                assert_eq!(text.as_deref(), Some("good morning"));
+                assert_eq!(source_language.as_deref(), Some("en"));
+                assert_eq!(target_language.as_deref(), Some("it"));
+            }
+            _ => panic!("expected SkillTranslate"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_calendar_list_today() {
+        let raw = r#"{"intent":"skill_calendar","calendar_action":"list_today"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCalendar { action, .. } => {
+                assert_eq!(action.as_deref(), Some("list_today"));
+            }
+            _ => panic!("expected SkillCalendar"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_calendar_create_event() {
+        let raw = r#"{"intent":"skill_calendar","calendar_action":"create","calendar_title":"Standup","calendar_when":"2026-04-20T10:00","calendar_location":"Office","calendar_name":"Work"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCalendar {
+                action,
+                title,
+                when,
+                location,
+                calendar_name,
+                ..
+            } => {
+                assert_eq!(action.as_deref(), Some("create"));
+                assert_eq!(title.as_deref(), Some("Standup"));
+                assert_eq!(when.as_deref(), Some("2026-04-20T10:00"));
+                assert_eq!(location.as_deref(), Some("Office"));
+                assert_eq!(calendar_name.as_deref(), Some("Work"));
+            }
+            _ => panic!("expected SkillCalendar"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_calendar_compact_with_days() {
+        let raw = r#"{"i":"cal","c":"list_upcoming","cdy":7}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillCalendar { action, days, .. } => {
+                assert_eq!(action.as_deref(), Some("list_upcoming"));
+                assert_eq!(*days, Some(7));
+            }
+            _ => panic!("expected SkillCalendar"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_meeting_notes_with_transcript() {
+        let raw = r#"{"intent":"skill_meeting_notes","meeting_transcript":"Alice: ship by Friday. Bob: ok.","meeting_title":"sync"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillMeetingNotes {
+                transcript,
+                title,
+                create_reminders,
+            } => {
+                assert_eq!(
+                    transcript.as_deref(),
+                    Some("Alice: ship by Friday. Bob: ok.")
+                );
+                assert_eq!(title.as_deref(), Some("sync"));
+                assert!(create_reminders.is_none());
+            }
+            _ => panic!("expected SkillMeetingNotes"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_email_list_unread() {
+        let raw = r#"{"intent":"skill_email","email_action":"list_unread","email_limit":5}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillEmail {
+                action,
+                limit,
+                query,
+                mailbox,
+            } => {
+                assert_eq!(action.as_deref(), Some("list_unread"));
+                assert_eq!(*limit, Some(5));
+                assert!(query.is_none());
+                assert!(mailbox.is_none());
+            }
+            _ => panic!("expected SkillEmail"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_email_search_short_keys() {
+        let raw = r#"{"i":"email","c":"search","q":"invoice","el":3,"em":"INBOX"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillEmail {
+                action,
+                query,
+                limit,
+                mailbox,
+            } => {
+                assert_eq!(action.as_deref(), Some("search"));
+                assert_eq!(query.as_deref(), Some("invoice"));
+                assert_eq!(*limit, Some(3));
+                assert_eq!(mailbox.as_deref(), Some("INBOX"));
+            }
+            _ => panic!("expected SkillEmail"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_briefing_with_include_array() {
+        let raw = r#"{"intent":"skill_briefing","briefing_include":["weather","calendar","news"],"briefing_news_topic":"technology"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillBriefing {
+                include,
+                news_topic,
+                ..
+            } => {
+                let inc = include.as_deref().expect("include present");
+                assert_eq!(inc, &["weather", "calendar", "news"]);
+                assert_eq!(news_topic.as_deref(), Some("technology"));
+            }
+            _ => panic!("expected SkillBriefing"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_briefing_compact_with_csv_string() {
+        let raw = r#"{"i":"brief","bi":"weather, email"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillBriefing { include, .. } => {
+                let inc = include.as_deref().expect("include present");
+                assert_eq!(inc, &["weather", "email"]);
+            }
+            _ => panic!("expected SkillBriefing"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_journal_add_with_tags() {
+        let raw = r#"{"intent":"skill_journal","journal_action":"add","journal_text":"Great run today","journal_sentiment":"positive","journal_tags":["fitness","morning"]}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillJournal {
+                action,
+                text,
+                sentiment,
+                tags,
+                ..
+            } => {
+                assert_eq!(action.as_deref(), Some("add"));
+                assert_eq!(text.as_deref(), Some("Great run today"));
+                assert_eq!(sentiment.as_deref(), Some("positive"));
+                let tg = tags.as_deref().expect("tags present");
+                assert_eq!(tg, &["fitness", "morning"]);
+            }
+            _ => panic!("expected SkillJournal"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_journal_recall_compact() {
+        let raw = r#"{"i":"jrnl","c":"recall","q":"vacation","jl":3}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillJournal {
+                action,
+                query,
+                limit,
+                ..
+            } => {
+                assert_eq!(action.as_deref(), Some("recall"));
+                assert_eq!(query.as_deref(), Some("vacation"));
+                assert_eq!(*limit, Some(3));
+            }
+            _ => panic!("expected SkillJournal"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_screen_ocr_with_question() {
+        let raw = r#"{"intent":"skill_screen_ocr","ocr_question":"What does the modal say?","ocr_filename":"shot.png"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillScreenOcr { question, filename } => {
+                assert_eq!(question.as_deref(), Some("What does the modal say?"));
+                assert_eq!(filename.as_deref(), Some("shot.png"));
+            }
+            _ => panic!("expected SkillScreenOcr"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_screen_ocr_compact() {
+        let raw = r#"{"i":"ocr","q":"summarize","sf":"capture.png"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillScreenOcr { question, filename } => {
+                assert_eq!(question.as_deref(), Some("summarize"));
+                assert_eq!(filename.as_deref(), Some("capture.png"));
+            }
+            _ => panic!("expected SkillScreenOcr"),
+        }
+    }
+
     // --- validate_intent_decision tests ---
 
     #[test]
@@ -979,10 +1610,100 @@ mod tests {
             IntentDecision::SkillWeather { location: None },
             IntentDecision::SkillTime { location: None },
             IntentDecision::SkillScreenshot { filename: None },
+            IntentDecision::SkillCalculator { expression: None },
+            IntentDecision::SkillDictionary { word: None },
+            IntentDecision::SkillScreenOcr {
+                question: None,
+                filename: None,
+            },
         ];
         for d in cases {
             assert_eq!(validate_intent_decision(d.clone()), d);
         }
+    }
+
+    #[test]
+    fn validation_passes_valid_calendar_actions() {
+        for action in ["list_today", "list_tomorrow", "list_upcoming", "create"] {
+            let d = IntentDecision::SkillCalendar {
+                action: Some(action.to_string()),
+                title: None,
+                when: None,
+                days: None,
+                location: None,
+                calendar_name: None,
+            };
+            assert_eq!(
+                validate_intent_decision(d.clone()),
+                d,
+                "expected valid calendar action '{action}' to pass"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_calendar_action() {
+        let d = IntentDecision::SkillCalendar {
+            action: Some("delete_event".to_string()),
+            title: None,
+            when: None,
+            days: None,
+            location: None,
+            calendar_name: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_passes_valid_email_actions() {
+        for action in ["list_unread", "list_inbox", "search", "triage"] {
+            let d = IntentDecision::SkillEmail {
+                action: Some(action.to_string()),
+                query: None,
+                limit: None,
+                mailbox: None,
+            };
+            assert_eq!(validate_intent_decision(d.clone()), d);
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_email_action() {
+        let d = IntentDecision::SkillEmail {
+            action: Some("send".to_string()),
+            query: None,
+            limit: None,
+            mailbox: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_passes_valid_journal_actions() {
+        for action in ["add", "recall", "stats"] {
+            let d = IntentDecision::SkillJournal {
+                action: Some(action.to_string()),
+                text: None,
+                sentiment: None,
+                tags: None,
+                query: None,
+                limit: None,
+            };
+            assert_eq!(validate_intent_decision(d.clone()), d);
+        }
+    }
+
+    #[test]
+    fn validation_rejects_invalid_journal_action() {
+        let d = IntentDecision::SkillJournal {
+            action: Some("delete".to_string()),
+            text: None,
+            sentiment: None,
+            tags: None,
+            query: None,
+            limit: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
     }
 
     // --- compact format tests (short keys + short intent names) ---

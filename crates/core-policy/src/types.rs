@@ -20,9 +20,7 @@ pub enum SkillId {
     Time,
     Distance,
     SmartHome,
-    Assistant,
     Media,
-    Memory,
     Computer,
     AppSwitcher,
     Reminder,
@@ -30,6 +28,19 @@ pub enum SkillId {
     Timer,
     ShoppingList,
     Volume,
+    // --- new skills ---
+    Calculator,
+    UnitConversion,
+    Currency,
+    AirQuality,
+    Dictionary,
+    Translate,
+    Calendar,
+    MeetingNotes,
+    Email,
+    Briefing,
+    Journal,
+    ScreenOcr,
 }
 
 /// Request to perform an action; passed to the policy engine.
