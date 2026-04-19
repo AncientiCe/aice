@@ -218,7 +218,10 @@ fn render_compact_rules(available_skills: &[&str]) -> String {
             "c=list_today|list_tomorrow|list_upcoming|create n? w? cdy? l? ccn?",
         ),
         ("skill_meeting_notes", "c=summarize q! n? mr?"),
-        ("skill_email", "c=list_unread|list_inbox|search|triage q? el? em?"),
+        (
+            "skill_email",
+            "c=list_unread|list_inbox|search|triage q? el? em?",
+        ),
         ("skill_briefing", "c=get bi? bnt? bnc?"),
         ("skill_journal", "c=add|recall|stats v? js? jt? q? jl?"),
         ("skill_screen_ocr", "c=ask q? sf?"),
@@ -279,8 +282,7 @@ fn render_disambiguation(available_skills: &[&str]) -> String {
     if has_skill(available_skills, "skill_meeting_notes") {
         lines.push("mtg requires q (transcript text). Without it use chat.");
     }
-    if has_skill(available_skills, "skill_journal")
-        && has_skill(available_skills, "skill_reminder")
+    if has_skill(available_skills, "skill_journal") && has_skill(available_skills, "skill_reminder")
     {
         lines.push("jrnl=personal log entry. reminder=task with due time.");
     }
@@ -288,9 +290,8 @@ fn render_disambiguation(available_skills: &[&str]) -> String {
         lines.push("email=mailbox/inbox/unread. msg=iMessage/SMS to a contact.");
     }
     if has_skill(available_skills, "skill_calendar") {
-        lines.push(
-            "cal action: today/tomorrow/upcoming list events; create needs n (title) and w.",
-        );
+        lines
+            .push("cal action: today/tomorrow/upcoming list events; create needs n (title) and w.");
     }
     lines.join("\n")
 }
@@ -390,7 +391,8 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
         ),
         (
             "how much is 100 USD in EUR".to_string(),
-            "{\"i\":\"fx\",\"c\":\"convert\",\"cam\":100,\"cf\":\"USD\",\"ct\":\"EUR\"}".to_string(),
+            "{\"i\":\"fx\",\"c\":\"convert\",\"cam\":100,\"cf\":\"USD\",\"ct\":\"EUR\"}"
+                .to_string(),
         ),
         (
             "is the air quality bad in Milan".to_string(),
@@ -739,8 +741,10 @@ mod tests {
     #[test]
     fn few_shots_cover_new_skill_boundaries() {
         let few_shots = intent_classifier_few_shots();
-        for short in ["calc", "unit", "fx", "air", "dict", "tx", "cal", "mtg", "email", "brief", "jrnl", "ocr"]
-        {
+        for short in [
+            "calc", "unit", "fx", "air", "dict", "tx", "cal", "mtg", "email", "brief", "jrnl",
+            "ocr",
+        ] {
             let needle = format!("\"i\":\"{short}\"");
             assert!(
                 few_shots.iter().any(|(_, a)| a.contains(&needle)),

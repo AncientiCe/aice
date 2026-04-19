@@ -48,9 +48,7 @@ where
     }
 }
 
-fn deserialize_optional_string_vec<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error>
+fn deserialize_optional_string_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -595,7 +593,10 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             to_currency: or_opt(p.currency_to, opt_str(p.ct)),
         }),
         "skill_air_quality" | "air_quality" | "air" => Ok(IntentDecision::SkillAirQuality {
-            location: or_opt(p.air_quality_location, or_opt(p.location, generic_t.clone())),
+            location: or_opt(
+                p.air_quality_location,
+                or_opt(p.location, generic_t.clone()),
+            ),
         }),
         "skill_dictionary" | "dictionary" | "dict" => Ok(IntentDecision::SkillDictionary {
             word: or_opt(p.dictionary_word, generic_q.clone()),
@@ -718,8 +719,7 @@ const COMPUTER_ACTIONS: &[&str] = &["open", "launch", "browse", "run"];
 const VOLUME_ACTIONS: &[&str] = &["set", "up", "down", "mute", "unmute", "get"];
 const SHOPPING_LIST_ACTIONS: &[&str] = &["add", "remove"];
 const MESSAGE_COMMANDS: &[&str] = &["send"];
-const CALENDAR_ACTIONS: &[&str] =
-    &["list_today", "list_tomorrow", "list_upcoming", "create"];
+const CALENDAR_ACTIONS: &[&str] = &["list_today", "list_tomorrow", "list_upcoming", "create"];
 const EMAIL_ACTIONS: &[&str] = &["list_unread", "list_inbox", "search", "triage"];
 const JOURNAL_ACTIONS: &[&str] = &["add", "recall", "stats"];
 
@@ -813,7 +813,22 @@ mod tests {
             }
         }
     }
+
+    pub trait TestOptionExt<T> {
+        fn must_some(self, message: &str) -> T;
+    }
+
+    impl<T> TestOptionExt<T> for Option<T> {
+        fn must_some(self, message: &str) -> T {
+            match self {
+                Some(value) => value,
+                None => panic!("expected Some(..) in test: {message}"),
+            }
+        }
+    }
     use super::{parse_intent, validate_intent_decision, IntentDecision};
+    #[allow(unused_imports)]
+    use TestOptionExt as _;
 
     #[test]
     fn parse_intent_smart_home() {
@@ -1167,7 +1182,8 @@ mod tests {
 
     #[test]
     fn parse_intent_unit_conversion() {
-        let raw = r#"{"intent":"skill_unit_conversion","unit_value":10,"unit_from":"kg","unit_to":"lb"}"#;
+        let raw =
+            r#"{"intent":"skill_unit_conversion","unit_value":10,"unit_from":"kg","unit_to":"lb"}"#;
         let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillUnitConversion {
@@ -1413,7 +1429,7 @@ mod tests {
                 news_topic,
                 ..
             } => {
-                let inc = include.as_deref().expect("include present");
+                let inc = include.as_deref().must_some("include present");
                 assert_eq!(inc, &["weather", "calendar", "news"]);
                 assert_eq!(news_topic.as_deref(), Some("technology"));
             }
@@ -1427,7 +1443,7 @@ mod tests {
         let d = parse_intent(raw).must();
         match &d {
             IntentDecision::SkillBriefing { include, .. } => {
-                let inc = include.as_deref().expect("include present");
+                let inc = include.as_deref().must_some("include present");
                 assert_eq!(inc, &["weather", "email"]);
             }
             _ => panic!("expected SkillBriefing"),
@@ -1449,7 +1465,7 @@ mod tests {
                 assert_eq!(action.as_deref(), Some("add"));
                 assert_eq!(text.as_deref(), Some("Great run today"));
                 assert_eq!(sentiment.as_deref(), Some("positive"));
-                let tg = tags.as_deref().expect("tags present");
+                let tg = tags.as_deref().must_some("tags present");
                 assert_eq!(tg, &["fitness", "morning"]);
             }
             _ => panic!("expected SkillJournal"),

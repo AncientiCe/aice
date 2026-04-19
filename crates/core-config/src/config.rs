@@ -320,20 +320,12 @@ fn default_ocr_engine() -> String {
 }
 
 /// News feature settings (in addition to per-call NewsHeadlinesQuery).
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NewsConfig {
     /// Stream LLM-summarized headlines after the structured `NewsHeadlines` answer.
     /// Off by default — opt in to trade latency for richer per-headline summaries.
     #[serde(default)]
     pub enable_summary_streaming: bool,
-}
-
-impl Default for NewsConfig {
-    fn default() -> Self {
-        Self {
-            enable_summary_streaming: false,
-        }
-    }
 }
 
 /// Audio runtime settings for capture/playback loop behavior.

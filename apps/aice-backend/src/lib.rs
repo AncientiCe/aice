@@ -13,8 +13,7 @@ use core_observability::{
     record_backend_turn_duration, record_backend_turn_first_token_duration,
     record_backend_turn_partial_transcript_duration, record_backend_turn_stage_duration,
     record_backend_turn_total, record_model_preload, record_model_preload_duration,
-    record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_open,
-    record_palace_search, record_palace_wake_up,
+    record_palace_error, record_palace_ingest, record_palace_open, record_palace_wake_up,
 };
 use core_orchestrator::{
     intent_classifier_few_shots_for_skills, intent_classifier_json_schema_for_skills,
@@ -74,9 +73,8 @@ const STT_DEBOUNCE_SAMPLES: usize = 1_600;
 /// Minimum wall-clock gap between incremental STT runs to avoid repeatedly
 /// re-transcribing the full turn buffer under sustained audio chunk ingress.
 const STT_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(1_200);
-const FRONTEND_CLASSIFIER_SKILLS: [&str; 11] = [
+const FRONTEND_CLASSIFIER_SKILLS: [&str; 10] = [
     "skill_smart_home",
-    "skill_assistant",
     "skill_media",
     "skill_computer",
     "skill_screenshot",
@@ -2030,94 +2028,6 @@ impl BackendEngine for AiceBackendEngine {
                 "skill_smart_home",
                 json!({"smart_home_target": target, "smart_home_action": action}),
             )),
-            IntentDecision::SkillMemory { query, store } => {
-                let skill_started = Instant::now();
-                let palace = self.palace.clone();
-                let user_text_for_memory = request_text.clone();
-                let store_flag = store.unwrap_or(false);
-
-                let answer = tokio::task::spawn_blocking(move || -> Result<String, DynError> {
-                    let palace = palace
-                        .lock()
-                        .map_err(|e| -> DynError { format!("palace lock: {e}").into() })?;
-
-                    if store_flag {
-                        let content = query
-                            .as_deref()
-                            .unwrap_or(&user_text_for_memory)
-                            .trim()
-                            .to_string();
-                        if !content.is_empty() {
-                            let add_start = Instant::now();
-                            match palace.add_memory("user_notes", "stored", &content, "voice", 4.0)
-                            {
-                                Ok(_) => {
-                                    record_palace_add_memory("success", add_start.elapsed());
-                                }
-                                Err(e) => {
-                                    record_palace_add_memory("error", add_start.elapsed());
-                                    record_palace_error("add_memory");
-                                    return Err(format!("palace store: {e}").into());
-                                }
-                            }
-                            return Ok(format!("I have stored that in my memory: {content}"));
-                        }
-                    }
-
-                    if let Some(q) = query {
-                        let q = q.trim().to_string();
-                        if !q.is_empty() {
-                            let search_start = Instant::now();
-                            let results = match palace.search(&q, 5) {
-                                Ok(r) => {
-                                    record_palace_search("success", search_start.elapsed());
-                                    r
-                                }
-                                Err(e) => {
-                                    record_palace_search("error", search_start.elapsed());
-                                    record_palace_error("search");
-                                    return Err(format!("palace search: {e}").into());
-                                }
-                            };
-                            if results.is_empty() {
-                                return Ok(
-                                    "I could not find anything related in my memory.".to_string()
-                                );
-                            }
-                            let context: Vec<String> = results
-                                .iter()
-                                .map(|r| {
-                                    format!(
-                                        "[{}/{}] (sim={:.2}) {}",
-                                        r.wing, r.room, r.similarity, r.text
-                                    )
-                                })
-                                .collect();
-                            return Ok(context.join("\n"));
-                        }
-                    }
-
-                    Ok(format!(
-                        "I am not sure what to remember about: {user_text_for_memory}"
-                    ))
-                })
-                .await
-                .map_err(|e| -> DynError { format!("palace task: {e}").into() })??;
-
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-
-                if self.skip_secondary_llm_for_skill_answers {
-                    return Ok(BackendEngineDecision::BackendSkill(answer));
-                }
-
-                let compose_started = Instant::now();
-                let composed = self.compose_skill_answer(&request_text, &answer).await?;
-                record_backend_turn_stage_duration(
-                    "skill_answer_compose",
-                    compose_started.elapsed(),
-                );
-                Ok(BackendEngineDecision::BackendSkill(composed))
-            }
             IntentDecision::SkillComputer { action, target } => Ok(build_frontend_intent(
                 "skill_computer",
                 json!({"computer_action": action, "computer_target": target}),
@@ -2162,9 +2072,136 @@ impl BackendEngine for AiceBackendEngine {
                 "skill_screenshot",
                 json!({"screenshot_filename": filename}),
             )),
-            IntentDecision::SkillAssistant { kind } => Ok(build_frontend_intent(
-                "skill_assistant",
-                json!({"assistant_kind": kind}),
+            IntentDecision::SkillCalculator { expression } => Ok(build_frontend_intent(
+                "skill_calculator",
+                json!({"calculator_expression": expression}),
+            )),
+            IntentDecision::SkillUnitConversion {
+                query,
+                value,
+                from_unit,
+                to_unit,
+            } => Ok(build_frontend_intent(
+                "skill_unit_conversion",
+                json!({
+                    "unit_query": query,
+                    "unit_value": value,
+                    "unit_from": from_unit,
+                    "unit_to": to_unit,
+                }),
+            )),
+            IntentDecision::SkillCurrency {
+                amount,
+                from_currency,
+                to_currency,
+            } => Ok(build_frontend_intent(
+                "skill_currency",
+                json!({
+                    "currency_amount": amount,
+                    "currency_from": from_currency,
+                    "currency_to": to_currency,
+                }),
+            )),
+            IntentDecision::SkillAirQuality { location } => Ok(build_frontend_intent(
+                "skill_air_quality",
+                json!({"air_quality_location": location}),
+            )),
+            IntentDecision::SkillDictionary { word } => Ok(build_frontend_intent(
+                "skill_dictionary",
+                json!({"dictionary_word": word}),
+            )),
+            IntentDecision::SkillTranslate {
+                text,
+                source_language,
+                target_language,
+            } => Ok(build_frontend_intent(
+                "skill_translate",
+                json!({
+                    "translate_text": text,
+                    "translate_source_language": source_language,
+                    "translate_target_language": target_language,
+                }),
+            )),
+            IntentDecision::SkillCalendar {
+                action,
+                title,
+                when,
+                days,
+                location,
+                calendar_name,
+            } => Ok(build_frontend_intent(
+                "skill_calendar",
+                json!({
+                    "calendar_action": action,
+                    "calendar_title": title,
+                    "calendar_when": when,
+                    "calendar_days": days,
+                    "calendar_location": location,
+                    "calendar_name": calendar_name,
+                }),
+            )),
+            IntentDecision::SkillMeetingNotes {
+                transcript,
+                title,
+                create_reminders,
+            } => Ok(build_frontend_intent(
+                "skill_meeting_notes",
+                json!({
+                    "meeting_transcript": transcript,
+                    "meeting_title": title,
+                    "meeting_create_reminders": create_reminders,
+                }),
+            )),
+            IntentDecision::SkillEmail {
+                action,
+                query,
+                limit,
+                mailbox,
+            } => Ok(build_frontend_intent(
+                "skill_email",
+                json!({
+                    "email_action": action,
+                    "email_query": query,
+                    "email_limit": limit,
+                    "email_mailbox": mailbox,
+                }),
+            )),
+            IntentDecision::SkillBriefing {
+                include,
+                news_topic,
+                news_country,
+            } => Ok(build_frontend_intent(
+                "skill_briefing",
+                json!({
+                    "briefing_include": include,
+                    "briefing_news_topic": news_topic,
+                    "briefing_news_country": news_country,
+                }),
+            )),
+            IntentDecision::SkillJournal {
+                action,
+                text,
+                sentiment,
+                tags,
+                query,
+                limit,
+            } => Ok(build_frontend_intent(
+                "skill_journal",
+                json!({
+                    "journal_action": action,
+                    "journal_text": text,
+                    "journal_sentiment": sentiment,
+                    "journal_tags": tags,
+                    "journal_query": query,
+                    "journal_limit": limit,
+                }),
+            )),
+            IntentDecision::SkillScreenOcr { question, filename } => Ok(build_frontend_intent(
+                "skill_screen_ocr",
+                json!({
+                    "ocr_question": question,
+                    "ocr_filename": filename,
+                }),
             )),
             IntentDecision::Chat => {
                 let wake_up_started = Instant::now();
