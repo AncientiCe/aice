@@ -264,6 +264,11 @@ pub enum IntentDecision {
         action: Option<String>,
         level: Option<u8>,
     },
+    /// Hotel concierge: structured per-property request executed by a Hotel MCP transport.
+    SkillHotel {
+        intent_kind: Option<String>,
+        slots: Option<serde_json::Value>,
+    },
 }
 
 /// Parse LLM classifier output into IntentDecision. Expects a single JSON object.
@@ -508,6 +513,15 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
         jt: Option<Vec<String>>,
         #[serde(default)]
         jl: Option<usize>,
+        // --- hotel concierge ---
+        #[serde(default)]
+        hotel_intent_kind: Option<String>,
+        #[serde(default)]
+        hotel_slots: Option<serde_json::Value>,
+        #[serde(default)]
+        hik: Option<String>,
+        #[serde(default)]
+        hsl: Option<serde_json::Value>,
     }
     let p: Payload = serde_json::from_str(s).map_err(ParseIntentError::Json)?;
     let intent = p.intent.to_lowercase().trim().to_string();
@@ -675,6 +689,10 @@ pub fn parse_intent(raw: &str) -> Result<IntentDecision, ParseIntentError> {
             action: action_from(p.volume_action, &command),
             level: p.volume_level.or(p.vl),
         }),
+        "skill_hotel" | "hotel" => Ok(IntentDecision::SkillHotel {
+            intent_kind: or_opt(p.hotel_intent_kind, opt_str(p.hik)),
+            slots: p.hotel_slots.or(p.hsl),
+        }),
         _ => Ok(IntentDecision::Chat),
     }
 }
@@ -702,6 +720,34 @@ pub trait IntentClassifier: Send + Sync {
         user_text: &str,
     ) -> Result<IntentDecision, Box<dyn std::error::Error + Send + Sync>>;
 }
+
+const HOTEL_INTENT_KINDS: &[&str] = &[
+    "set_room_temperature",
+    "set_lights",
+    "set_curtains",
+    "set_tv",
+    "set_ambient_music",
+    "set_do_not_disturb",
+    "order_room_service",
+    "request_housekeeping",
+    "request_extra_towels",
+    "request_extra_pillows",
+    "request_toiletries",
+    "request_laundry_pickup",
+    "request_iron",
+    "set_wake_up_call",
+    "request_late_checkout",
+    "book_restaurant",
+    "book_spa",
+    "book_taxi",
+    "concierge_info",
+    "request_local_recommendation",
+    "report_complaint",
+    "report_lost_item",
+    "request_billing_summary",
+    "request_checkout",
+    "language_help",
+];
 
 const SMART_HOME_ACTIONS: &[&str] = &["on", "off", "toggle", "status", "set"];
 const MEDIA_ACTIONS: &[&str] = &[
@@ -754,6 +800,10 @@ pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
         IntentDecision::SkillCalendar { action, .. } => !action_allowed(action, CALENDAR_ACTIONS),
         IntentDecision::SkillEmail { action, .. } => !action_allowed(action, EMAIL_ACTIONS),
         IntentDecision::SkillJournal { action, .. } => !action_allowed(action, JOURNAL_ACTIONS),
+        IntentDecision::SkillHotel { intent_kind, .. } => match intent_kind.as_deref() {
+            None => true,
+            Some(kind) => !HOTEL_INTENT_KINDS.contains(&kind),
+        },
         _ => false,
     };
     if invalid {
@@ -785,6 +835,9 @@ pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
             }
             IntentDecision::SkillJournal { action, .. } => {
                 format!("skill_journal action={:?}", action)
+            }
+            IntentDecision::SkillHotel { intent_kind, .. } => {
+                format!("skill_hotel intent_kind={:?}", intent_kind)
             }
             other => format!("{:?}", other),
         };
@@ -1879,6 +1932,87 @@ mod tests {
             }
             _ => panic!("expected SkillFuelPriceLookup"),
         }
+    }
+
+    #[test]
+    fn parse_intent_hotel_long_form() {
+        let raw = r#"{"intent":"skill_hotel","hotel_intent_kind":"set_room_temperature","hotel_slots":{"celsius":22}}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillHotel { intent_kind, slots } => {
+                assert_eq!(intent_kind.as_deref(), Some("set_room_temperature"));
+                let s = slots.as_ref().must_some("slots present");
+                assert_eq!(s["celsius"], serde_json::json!(22));
+            }
+            _ => panic!("expected SkillHotel"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_hotel_compact() {
+        let raw = r#"{"i":"hotel","c":"request","hik":"book_taxi","hsl":{"destination":"airport","time":"16:00"}}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillHotel { intent_kind, slots } => {
+                assert_eq!(intent_kind.as_deref(), Some("book_taxi"));
+                let s = slots.as_ref().must_some("slots present");
+                assert_eq!(s["destination"], serde_json::json!("airport"));
+                assert_eq!(s["time"], serde_json::json!("16:00"));
+            }
+            _ => panic!("expected SkillHotel"),
+        }
+    }
+
+    #[test]
+    fn parse_intent_hotel_without_slots() {
+        let raw = r#"{"i":"hotel","c":"request","hik":"request_late_checkout"}"#;
+        let d = parse_intent(raw).must();
+        match &d {
+            IntentDecision::SkillHotel { intent_kind, slots } => {
+                assert_eq!(intent_kind.as_deref(), Some("request_late_checkout"));
+                assert!(slots.is_none());
+            }
+            _ => panic!("expected SkillHotel"),
+        }
+    }
+
+    #[test]
+    fn validation_passes_canonical_hotel_intent_kinds() {
+        for kind in [
+            "set_room_temperature",
+            "order_room_service",
+            "set_wake_up_call",
+            "book_taxi",
+            "language_help",
+        ] {
+            let d = IntentDecision::SkillHotel {
+                intent_kind: Some(kind.to_string()),
+                slots: None,
+            };
+            assert_eq!(
+                validate_intent_decision(d.clone()),
+                d,
+                "expected hotel intent_kind '{kind}' to pass validation"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_unknown_hotel_intent_kind() {
+        let d = IntentDecision::SkillHotel {
+            intent_kind: Some("teleport_user".to_string()),
+            slots: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_rejects_hotel_without_intent_kind() {
+        let d = IntentDecision::SkillHotel {
+            intent_kind: None,
+            slots: None,
+        };
+        assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
     }
 
     #[test]
