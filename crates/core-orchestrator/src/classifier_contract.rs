@@ -1,6 +1,6 @@
 //! Canonical intent-classifier contract shared by backend and desktop runtimes.
 
-const ALL_CLASSIFIER_SKILLS: [&str; 30] = [
+const ALL_CLASSIFIER_SKILLS: [&str; 31] = [
     "skill_weather",
     "skill_time",
     "skill_distance",
@@ -31,6 +31,36 @@ const ALL_CLASSIFIER_SKILLS: [&str; 30] = [
     "skill_shopping_list",
     "skill_message",
     "skill_volume",
+    "skill_hotel",
+];
+
+/// Canonical hotel concierge intent kinds (mirrors `skill_hotel::HotelIntentKind`).
+const HOTEL_INTENT_KINDS: [&str; 25] = [
+    "set_room_temperature",
+    "set_lights",
+    "set_curtains",
+    "set_tv",
+    "set_ambient_music",
+    "set_do_not_disturb",
+    "order_room_service",
+    "request_housekeeping",
+    "request_extra_towels",
+    "request_extra_pillows",
+    "request_toiletries",
+    "request_laundry_pickup",
+    "request_iron",
+    "set_wake_up_call",
+    "request_late_checkout",
+    "book_restaurant",
+    "book_spa",
+    "book_taxi",
+    "concierge_info",
+    "request_local_recommendation",
+    "report_complaint",
+    "report_lost_item",
+    "request_billing_summary",
+    "request_checkout",
+    "language_help",
 ];
 
 fn has_skill(available_skills: &[&str], skill: &str) -> bool {
@@ -72,6 +102,7 @@ fn short_intent_name(skill: &str) -> &'static str {
         "skill_shopping_list" => "shop",
         "skill_message" => "msg",
         "skill_volume" => "vol",
+        "skill_hotel" => "hotel",
         _ => "chat",
     }
 }
@@ -136,6 +167,7 @@ fn schema_fields_for_skill(skill: &str) -> &'static [(&'static str, &'static str
         "skill_shopping_list" => &[("p", "[string]"), ("w", "string")],
         "skill_message" => &[("t", "string"), ("v", "string")],
         "skill_volume" => &[("vl", "number")],
+        "skill_hotel" => &[("hik", "hotel_intent_kind"), ("hsl", "object")],
         _ => &[],
     }
 }
@@ -180,6 +212,11 @@ pub fn intent_classifier_json_schema_for_skills(available_skills: &[&str]) -> se
                 "number" => serde_json::json!({ "type": "number" }),
                 "boolean" => serde_json::json!({ "type": "boolean" }),
                 "[string]" => serde_json::json!({ "type": "array", "items": { "type": "string" } }),
+                "object" => serde_json::json!({ "type": "object", "additionalProperties": true }),
+                "hotel_intent_kind" => serde_json::json!({
+                    "type": "string",
+                    "enum": HOTEL_INTENT_KINDS,
+                }),
                 _ => serde_json::json!({ "type": "string" }),
             };
             properties.insert(name.to_string(), json_ty);
@@ -241,6 +278,10 @@ fn render_compact_rules(available_skills: &[&str]) -> String {
         ("skill_shopping_list", "c=add|remove p! w?"),
         ("skill_message", "c=send t! v?"),
         ("skill_volume", "c=set|up|down|mute|unmute|get vl?"),
+        (
+            "skill_hotel",
+            "c=request hik=set_room_temperature|set_lights|set_curtains|set_tv|set_ambient_music|set_do_not_disturb|order_room_service|request_housekeeping|request_extra_towels|request_extra_pillows|request_toiletries|request_laundry_pickup|request_iron|set_wake_up_call|request_late_checkout|book_restaurant|book_spa|book_taxi|concierge_info|request_local_recommendation|report_complaint|report_lost_item|request_billing_summary|request_checkout|language_help hsl?",
+        ),
     ];
     for &(skill, rule) in rules {
         if has_skill(available_skills, skill) {
@@ -292,6 +333,11 @@ fn render_disambiguation(available_skills: &[&str]) -> String {
     if has_skill(available_skills, "skill_calendar") {
         lines
             .push("cal action: today/tomorrow/upcoming list events; create needs n (title) and w.");
+    }
+    if has_skill(available_skills, "skill_hotel") {
+        lines.push(
+            "hotel: in-room concierge requests. Always set hik. Put structured details in hsl (object).",
+        );
     }
     lines.join("\n")
 }
@@ -429,6 +475,30 @@ pub fn intent_classifier_few_shots() -> Vec<(String, String)> {
         (
             "what does this screenshot say".to_string(),
             "{\"i\":\"ocr\",\"c\":\"ask\",\"q\":\"what does this screenshot say\"}".to_string(),
+        ),
+        (
+            "set the room to 22 degrees".to_string(),
+            "{\"i\":\"hotel\",\"c\":\"request\",\"hik\":\"set_room_temperature\",\"hsl\":{\"celsius\":22}}".to_string(),
+        ),
+        (
+            "send up extra towels".to_string(),
+            "{\"i\":\"hotel\",\"c\":\"request\",\"hik\":\"request_extra_towels\",\"hsl\":{\"count\":2}}".to_string(),
+        ),
+        (
+            "wake me at 7am".to_string(),
+            "{\"i\":\"hotel\",\"c\":\"request\",\"hik\":\"set_wake_up_call\",\"hsl\":{\"time\":\"07:00\"}}".to_string(),
+        ),
+        (
+            "book a taxi to the airport at 4pm".to_string(),
+            "{\"i\":\"hotel\",\"c\":\"request\",\"hik\":\"book_taxi\",\"hsl\":{\"destination\":\"airport\",\"time\":\"16:00\"}}".to_string(),
+        ),
+        (
+            "order a club sandwich and still water".to_string(),
+            "{\"i\":\"hotel\",\"c\":\"request\",\"hik\":\"order_room_service\",\"hsl\":{\"items\":[\"club sandwich\",\"still water\"]}}".to_string(),
+        ),
+        (
+            "I locked myself out".to_string(),
+            "{\"i\":\"hotel\",\"c\":\"request\",\"hik\":\"report_complaint\",\"hsl\":{\"category\":\"lockout\",\"description\":\"locked out of room\"}}".to_string(),
         ),
     ]
 }
@@ -732,7 +802,7 @@ mod tests {
     fn few_shots_count_is_compact() {
         let few_shots = intent_classifier_few_shots();
         assert!(
-            few_shots.len() <= 23,
+            few_shots.len() <= 30,
             "few-shot set should stay compact; got {} examples",
             few_shots.len()
         );
@@ -839,11 +909,57 @@ mod tests {
     }
 
     #[test]
+    fn prompt_lists_hotel_skill_when_enabled() {
+        let prompt = intent_classifier_system_prompt_for_skills(&["skill_hotel"]);
+        assert!(prompt.contains("\"hotel\""));
+        assert!(prompt.contains("hotel: c=request hik="));
+        assert!(prompt.contains("set_room_temperature"));
+        assert!(prompt.contains("language_help"));
+        assert!(prompt.contains("hotel: in-room concierge"));
+    }
+
+    #[test]
+    fn json_schema_constrains_hotel_intent_kind_enum() {
+        let schema = intent_classifier_json_schema_for_skills(&["skill_hotel"]);
+        let hik = &schema["properties"]["hik"];
+        assert_eq!(hik["type"], serde_json::json!("string"));
+        let kinds: Vec<&str> = hik["enum"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(kinds.len(), 25);
+        assert!(kinds.contains(&"set_room_temperature"));
+        assert!(kinds.contains(&"language_help"));
+        let hsl = &schema["properties"]["hsl"];
+        assert_eq!(hsl["type"], serde_json::json!("object"));
+        assert_eq!(hsl["additionalProperties"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn few_shots_cover_canonical_hotel_utterances() {
+        let few_shots = intent_classifier_few_shots();
+        for needle in [
+            "set_room_temperature",
+            "request_extra_towels",
+            "set_wake_up_call",
+            "book_taxi",
+            "order_room_service",
+        ] {
+            assert!(
+                few_shots
+                    .iter()
+                    .any(|(_, a)| a.contains(needle) && a.contains("\"i\":\"hotel\"")),
+                "expected hotel few-shot for '{needle}'"
+            );
+        }
+    }
+
+    #[test]
     fn compact_prompt_is_significantly_smaller_than_full_skill_set() {
         let prompt = intent_classifier_system_prompt();
         assert!(
-            prompt.len() < 2700,
-            "compact prompt should stay under 2700 chars; got {} chars",
+            prompt.len() < 3500,
+            "compact prompt should stay under 3500 chars; got {} chars",
             prompt.len()
         );
     }

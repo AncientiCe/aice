@@ -97,7 +97,7 @@ const STT_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(1_200);
 /// `frontend_intent_allowed`. This list only constrains *which* intent names
 /// the classifier may target as frontend skills, regardless of which
 /// frontend(s) happen to be connected.
-const FRONTEND_CLASSIFIER_SKILLS: [&str; 13] = [
+const FRONTEND_CLASSIFIER_SKILLS: [&str; 14] = [
     "skill_smart_home",
     "skill_media",
     "skill_computer",
@@ -111,6 +111,7 @@ const FRONTEND_CLASSIFIER_SKILLS: [&str; 13] = [
     "skill_calendar",
     "skill_email",
     "skill_screen_ocr",
+    "skill_hotel",
 ];
 
 #[derive(Clone, Debug)]
@@ -2304,6 +2305,10 @@ impl BackendEngine for AiceBackendEngine {
                 "skill_screenshot",
                 json!({"screenshot_filename": filename}),
             )),
+            IntentDecision::SkillHotel { intent_kind, slots } => Ok(build_frontend_intent(
+                "skill_hotel",
+                json!({"hotel_intent_kind": intent_kind, "hotel_slots": slots}),
+            )),
             IntentDecision::SkillCalculator { expression } => {
                 let Some(expr) = expression.filter(|s| !s.trim().is_empty()) else {
                     record_calculator_skill("error");
@@ -2993,6 +2998,7 @@ mod tests {
         build_intent_classification_prompt, classifier_cache_key, compose_distance_answer,
         compose_frontend_skill_error_outcome, compose_frontend_skill_success_echo,
         compose_time_answer, compose_weather_answer, parse_validated_intent,
+        FRONTEND_CLASSIFIER_SKILLS,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -3180,6 +3186,49 @@ mod tests {
         assert!(!skills.contains(&"skill_timer".to_string()));
         assert!(!skills.contains(&"skill_smart_home".to_string()));
         assert!(!skills.contains(&"skill_memory".to_string()));
+    }
+
+    #[test]
+    fn frontend_classifier_skills_list_includes_skill_hotel() {
+        assert!(
+            FRONTEND_CLASSIFIER_SKILLS.contains(&"skill_hotel"),
+            "skill_hotel must be allowed as a frontend classifier intent"
+        );
+    }
+
+    #[test]
+    fn available_classifier_skills_propagate_skill_hotel_from_frontend_handshake() {
+        let context = json!({
+            "frontend_supported_intents": ["skill_hotel"]
+        });
+        let skills = build_available_classifier_skills(Some(&context));
+        assert!(
+            skills.contains(&"skill_hotel".to_string()),
+            "expected skill_hotel to be enabled when frontend declares it; got {:?}",
+            skills
+        );
+    }
+
+    #[test]
+    fn skill_hotel_dispatch_builds_frontend_skill_intent_with_canonical_slot_keys() {
+        let intent_kind = Some("set_room_temperature".to_string());
+        let slots = Some(json!({"celsius": 22}));
+        let dispatch_slots = json!({
+            "hotel_intent_kind": intent_kind,
+            "hotel_slots": slots,
+        });
+        let obj = dispatch_slots
+            .as_object()
+            .expect("dispatch slots must be a JSON object");
+        assert_eq!(
+            obj.get("hotel_intent_kind").and_then(|v| v.as_str()),
+            Some("set_room_temperature")
+        );
+        let slots_obj = obj
+            .get("hotel_slots")
+            .and_then(|v| v.as_object())
+            .expect("hotel_slots must serialise as a JSON object");
+        assert_eq!(slots_obj.get("celsius"), Some(&json!(22)));
     }
 
     #[test]
