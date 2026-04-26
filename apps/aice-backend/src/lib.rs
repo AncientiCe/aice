@@ -3217,18 +3217,25 @@ mod tests {
             "hotel_intent_kind": intent_kind,
             "hotel_slots": slots,
         });
-        let obj = dispatch_slots
-            .as_object()
-            .expect("dispatch slots must be a JSON object");
         assert_eq!(
-            obj.get("hotel_intent_kind").and_then(|v| v.as_str()),
+            dispatch_slots,
+            json!({
+                "hotel_intent_kind": "set_room_temperature",
+                "hotel_slots": { "celsius": 22 },
+            })
+        );
+        assert_eq!(
+            dispatch_slots
+                .get("hotel_intent_kind")
+                .and_then(|v| v.as_str()),
             Some("set_room_temperature")
         );
-        let slots_obj = obj
-            .get("hotel_slots")
-            .and_then(|v| v.as_object())
-            .expect("hotel_slots must serialise as a JSON object");
-        assert_eq!(slots_obj.get("celsius"), Some(&json!(22)));
+        assert_eq!(
+            dispatch_slots
+                .get("hotel_slots")
+                .and_then(|v| v.get("celsius")),
+            Some(&json!(22))
+        );
     }
 
     #[test]
