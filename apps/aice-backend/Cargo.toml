@@ -34,7 +34,7 @@ core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "ccf156ce4b4f9c95ce65b5f1c367c90ca6bb22c5", default-features = false, features = ["core-common", "hotel"] }
 skill-chain = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "ccf156ce4b4f9c95ce65b5f1c367c90ca6bb22c5" }
-mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", rev = "12ed9841494915e7c8902e8bdc5a891ef27dc2f3", default-features = false }
+mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", tag = "v0.1.0", package = "mempalace-rust", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

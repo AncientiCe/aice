@@ -16,8 +16,9 @@ use core_observability::{
     record_backend_turn_total, record_briefing_skill, record_calculator_skill,
     record_calendar_skill, record_currency_skill, record_dictionary_skill, record_email_skill,
     record_journal_skill, record_meeting_notes_skill, record_model_preload,
-    record_model_preload_duration, record_palace_error, record_palace_ingest, record_palace_open,
-    record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
+    record_model_preload_duration, record_palace_add_memory, record_palace_error,
+    record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
+    record_palace_search, record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
     record_unit_conversion_skill,
 };
 use core_orchestrator::{
@@ -58,7 +59,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use mempalace::palace::Palace;
+use mempalace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
 use serde_json::{json, Value};
 use skill_chain::EffectiveCapabilities;
 use std::collections::HashMap;
@@ -80,7 +81,39 @@ type PalaceHandle = Arc<std::sync::Mutex<Palace>>;
 type FrontendSessions = Arc<Mutex<HashMap<FrontendSessionKey, FrontendSessionState>>>;
 type ClassifierPromptCache = Arc<RwLock<HashMap<String, ClassifierPromptArtifacts>>>;
 
+#[derive(Clone, Debug)]
+struct PalaceMemorySettings {
+    recall_results: usize,
+    recall_min_similarity: f64,
+    recall_max_chars: usize,
+    journal_mirror_enabled: bool,
+    kg_enabled: bool,
+}
+
+impl PalaceMemorySettings {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            recall_results: config.memory.palace_recall_results,
+            recall_min_similarity: config.memory.palace_recall_min_similarity,
+            recall_max_chars: config.memory.palace_recall_max_chars,
+            journal_mirror_enabled: config.memory.palace_journal_mirror_enabled,
+            kg_enabled: config.memory.palace_kg_enabled,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExtractedKgTriple {
+    subject: String,
+    predicate: String,
+    object: String,
+    confidence: f64,
+}
+
 const MAX_BINARY_FRAME_BYTES: usize = 32_768;
+const AICE_PALACE_INGEST_LABEL: &str = "aice";
+const KG_FOCUS_MAX_ENTITIES: usize = 5;
+const KG_EXTRACT_MAX_TRIPLES: usize = 8;
 
 /// Minimum pending samples before running incremental STT on append-only
 /// buffered audio. At 16 kHz this is 100 ms.
@@ -1364,6 +1397,7 @@ pub struct AiceBackendEngine {
     classifier_prompt_cache: ClassifierPromptCache,
     classifier_num_ctx: Option<u32>,
     classifier_llm: Arc<CradleLlmStream>,
+    palace_memory_settings: PalaceMemorySettings,
 }
 
 /// LLM-backed intent classifier reused by backend and compatibility wrappers.
@@ -1413,6 +1447,11 @@ where
     }
 }
 
+fn aice_palace_handle(mut palace: Palace) -> PalaceHandle {
+    palace.set_ingest_label(AICE_PALACE_INGEST_LABEL);
+    Arc::new(std::sync::Mutex::new(palace))
+}
+
 impl AiceBackendEngine {
     pub async fn from_config(config: &Config) -> Result<Self, DynError> {
         let llm = CradleLlmStream::new(
@@ -1452,14 +1491,14 @@ impl AiceBackendEngine {
                         palace_identity = %identity_path,
                         "memory palace opened"
                     );
-                    Arc::new(std::sync::Mutex::new(p))
+                    aice_palace_handle(p)
                 }
                 Err(error) => {
                     record_palace_open("error", open_start.elapsed());
                     record_palace_error("open");
                     warn!(%error, "failed to open memory palace; falling back to in-memory");
                     match Palace::open_in_memory() {
-                        Ok(p) => Arc::new(std::sync::Mutex::new(p)),
+                        Ok(p) => aice_palace_handle(p),
                         Err(fatal) => {
                             error!(%fatal, "in-memory palace also failed");
                             return Err(format!("palace init failed: {fatal}").into());
@@ -1470,7 +1509,7 @@ impl AiceBackendEngine {
         } else {
             info!("memory palace disabled; using in-memory instance");
             match Palace::open_in_memory() {
-                Ok(p) => Arc::new(std::sync::Mutex::new(p)),
+                Ok(p) => aice_palace_handle(p),
                 Err(fatal) => {
                     error!(%fatal, "in-memory palace failed");
                     return Err(format!("palace init failed: {fatal}").into());
@@ -1578,6 +1617,7 @@ impl AiceBackendEngine {
             classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
             classifier_num_ctx: config.llm.classifier_num_ctx,
             classifier_llm,
+            palace_memory_settings: PalaceMemorySettings::from_config(config),
         })
     }
 
@@ -1613,6 +1653,81 @@ impl AiceBackendEngine {
             "llm_output"
         );
         Ok(output)
+    }
+
+    async fn collect_llm_json(
+        &self,
+        operation: &str,
+        user_text: &str,
+        system_prompt: &str,
+        max_output_tokens: u32,
+    ) -> Result<String, DynError> {
+        let options = LlmCallOptions {
+            temperature: Some(0.1),
+            format_json: true,
+            format_json_schema: None,
+            max_output_tokens: Some(max_output_tokens),
+            num_ctx: self.classifier_num_ctx,
+        };
+        self.collect_llm(
+            operation,
+            user_text,
+            &[],
+            Some(system_prompt),
+            Some(&options),
+        )
+        .await
+    }
+
+    async fn build_memory_context(&self, transcript: &str) -> Option<String> {
+        if self.palace_memory_settings.recall_max_chars == 0 {
+            return None;
+        }
+
+        let started = Instant::now();
+        let focus_entities = if self.palace_memory_settings.kg_enabled {
+            match self
+                .collect_llm_json(
+                    "kg_focus_entities",
+                    transcript,
+                    kg_focus_entities_prompt(),
+                    96,
+                )
+                .await
+            {
+                Ok(raw) => parse_focus_entities(&raw),
+                Err(error) => {
+                    tracing::warn!(%error, "palace kg focus entity extraction failed");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let palace = self.palace.clone();
+        let settings = self.palace_memory_settings.clone();
+        let transcript = transcript.to_string();
+        let context = tokio::task::spawn_blocking(move || {
+            let mut palace = palace
+                .lock()
+                .map_err(|error| -> DynError { format!("palace lock: {error}").into() })?;
+            build_palace_memory_context(&mut palace, &transcript, &settings, &focus_entities)
+        })
+        .await
+        .map_err(|error| -> DynError { format!("palace memory context task: {error}").into() })
+        .and_then(|value| value);
+
+        record_backend_turn_stage_duration("palace_memory_context", started.elapsed());
+        match context {
+            Ok(text) if text.trim().is_empty() => None,
+            Ok(text) => Some(text),
+            Err(error) => {
+                record_palace_error("memory_context");
+                tracing::warn!(%error, "palace memory context failed");
+                None
+            }
+        }
     }
 
     async fn classify_intent(
@@ -1689,14 +1804,67 @@ impl AiceBackendEngine {
         &self,
         user_text: &str,
         context: &str,
+        system_prompt_override: Option<&str>,
     ) -> Result<String, DynError> {
         let prompt = format!(
             "User: \"{}\"\\nData: {}.\\nReply in at most 2 short voice-friendly sentences.",
             user_text.trim(),
             context
         );
-        self.collect_llm("skill_answer_composer", &prompt, &[], None, None)
-            .await
+        self.collect_llm(
+            "skill_answer_composer",
+            &prompt,
+            &[],
+            system_prompt_override,
+            None,
+        )
+        .await
+    }
+
+    fn schedule_palace_ingest_and_kg(&self, user_text: String, assistant_text: String) {
+        schedule_palace_ingest(
+            self.palace.clone(),
+            user_text.clone(),
+            assistant_text.clone(),
+        );
+        if self.palace_memory_settings.kg_enabled {
+            schedule_palace_kg_extract(
+                Arc::clone(&self.llm),
+                self.palace.clone(),
+                user_text,
+                assistant_text,
+                self.classifier_num_ctx,
+            );
+        }
+    }
+
+    async fn finalize_voice_outcome(
+        &self,
+        user_text: &str,
+        outcome: BackendEngineDecision,
+        memory_context: Option<&str>,
+    ) -> Result<BackendEngineDecision, DynError> {
+        let finalized = match outcome {
+            BackendEngineDecision::BackendSkill(context) => {
+                let answer = if self.skip_secondary_llm_for_skill_answers {
+                    compose_direct_skill_answer(&context)
+                        .unwrap_or_else(|| "The action completed successfully.".to_string())
+                } else {
+                    self.compose_skill_answer(user_text, &context, memory_context)
+                        .await?
+                };
+                self.schedule_palace_ingest_and_kg(user_text.to_string(), answer.clone());
+                BackendEngineDecision::BackendSkill(answer)
+            }
+            BackendEngineDecision::Chat(text) => {
+                self.schedule_palace_ingest_and_kg(user_text.to_string(), text.clone());
+                BackendEngineDecision::Chat(text)
+            }
+            BackendEngineDecision::FrontendSkillIntent(intent) => {
+                BackendEngineDecision::FrontendSkillIntent(intent)
+            }
+        };
+        Ok(finalized)
     }
 }
 
@@ -1705,6 +1873,333 @@ fn next_backend_turn_id(counter: &std::sync::atomic::AtomicU64) -> String {
         "turn-{}",
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
+}
+
+fn kg_focus_entities_prompt() -> &'static str {
+    "Extract up to five entity names that would help query a memory knowledge graph for this voice turn. Reply with only a JSON array of strings. If none are useful, reply with []."
+}
+
+fn kg_triple_extractor_prompt() -> &'static str {
+    "Extract stable, user-relevant memory facts from this voice turn as JSON. Reply with only an array of objects shaped {\"subject\":\"...\",\"predicate\":\"...\",\"object\":\"...\",\"confidence\":0.0}. Use an empty array when there are no durable facts."
+}
+
+fn parse_focus_entities(raw: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(raw.trim()) else {
+        return Vec::new();
+    };
+    let array = value
+        .as_array()
+        .or_else(|| value.get("entities").and_then(Value::as_array));
+    let Some(array) = array else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|entity| !entity.is_empty())
+        .take(KG_FOCUS_MAX_ENTITIES)
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn parse_extracted_kg_triples(raw: &str) -> Vec<ExtractedKgTriple> {
+    #[derive(serde::Deserialize)]
+    struct RawTriple {
+        subject: String,
+        predicate: String,
+        object: String,
+        #[serde(default = "default_kg_confidence")]
+        confidence: f64,
+    }
+
+    fn parse_array(value: Value) -> Vec<RawTriple> {
+        if let Ok(items) = serde_json::from_value::<Vec<RawTriple>>(value.clone()) {
+            return items;
+        }
+        value
+            .get("triples")
+            .cloned()
+            .and_then(|triples| serde_json::from_value::<Vec<RawTriple>>(triples).ok())
+            .unwrap_or_default()
+    }
+
+    let Ok(value) = serde_json::from_str::<Value>(raw.trim()) else {
+        return Vec::new();
+    };
+    parse_array(value)
+        .into_iter()
+        .filter_map(|triple| {
+            let subject = triple.subject.trim();
+            let predicate = triple.predicate.trim();
+            let object = triple.object.trim();
+            if subject.is_empty() || predicate.is_empty() || object.is_empty() {
+                return None;
+            }
+            let confidence = if triple.confidence.is_finite() {
+                triple.confidence.clamp(0.0, 1.0)
+            } else {
+                default_kg_confidence()
+            };
+            Some(ExtractedKgTriple {
+                subject: subject.to_string(),
+                predicate: predicate.to_string(),
+                object: object.to_string(),
+                confidence,
+            })
+        })
+        .take(KG_EXTRACT_MAX_TRIPLES)
+        .collect()
+}
+
+fn default_kg_confidence() -> f64 {
+    0.8
+}
+
+fn build_palace_memory_context(
+    palace: &mut Palace,
+    transcript: &str,
+    settings: &PalaceMemorySettings,
+    focus_entities: &[String],
+) -> Result<String, DynError> {
+    let wake_started = Instant::now();
+    let wake_context = palace.wake_up(None);
+    record_palace_wake_up("success", wake_started.elapsed());
+
+    let recall_results = if settings.recall_results == 0 {
+        Vec::new()
+    } else {
+        let search_started = Instant::now();
+        match palace.search(transcript, settings.recall_results) {
+            Ok(results) => {
+                record_palace_search("success", search_started.elapsed());
+                record_backend_turn_stage_duration("palace_recall", search_started.elapsed());
+                results
+                    .into_iter()
+                    .filter(|result| result.similarity >= settings.recall_min_similarity)
+                    .collect()
+            }
+            Err(error) => {
+                record_palace_search("error", search_started.elapsed());
+                record_backend_turn_stage_duration("palace_recall", search_started.elapsed());
+                record_palace_error("search");
+                tracing::warn!(%error, "palace search failed");
+                Vec::new()
+            }
+        }
+    };
+
+    let mut kg_facts = Vec::new();
+    if settings.kg_enabled {
+        for entity in focus_entities.iter().take(KG_FOCUS_MAX_ENTITIES) {
+            let kg_started = Instant::now();
+            match palace.kg_query(entity) {
+                Ok(triples) => {
+                    record_palace_kg_query("success", kg_started.elapsed());
+                    if !triples.is_empty() {
+                        kg_facts.push((entity.clone(), triples));
+                    }
+                }
+                Err(error) => {
+                    record_palace_kg_query("error", kg_started.elapsed());
+                    record_palace_error("kg_query");
+                    tracing::warn!(%error, entity, "palace kg query failed");
+                }
+            }
+        }
+    }
+
+    Ok(compose_palace_memory_context(
+        &wake_context,
+        &recall_results,
+        &kg_facts,
+        settings.recall_max_chars,
+    ))
+}
+
+fn compose_palace_memory_context(
+    wake_context: &str,
+    recall_results: &[SearchResult],
+    kg_facts: &[(String, Vec<Triple>)],
+    max_chars: usize,
+) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut sections = Vec::new();
+    let wake = wake_context.trim();
+    if !wake.is_empty() {
+        sections.push(wake.to_string());
+    }
+
+    if !recall_results.is_empty() {
+        let mut lines = vec!["Relevant remembered context:".to_string()];
+        for result in recall_results {
+            lines.push(format!(
+                "- [{} / {}, score {:.3}] {}",
+                result.wing,
+                result.room,
+                result.similarity,
+                result.text.trim()
+            ));
+        }
+        sections.push(lines.join("\n"));
+    }
+
+    if !kg_facts.is_empty() {
+        let mut lines = vec!["Known memory facts:".to_string()];
+        for (entity, triples) in kg_facts {
+            for triple in triples {
+                lines.push(format!(
+                    "- {entity}: {} {} {} (confidence {:.2})",
+                    triple.subject, triple.predicate, triple.object, triple.confidence
+                ));
+            }
+        }
+        sections.push(lines.join("\n"));
+    }
+
+    truncate_to_char_limit(&sections.join("\n\n"), max_chars)
+}
+
+fn truncate_to_char_limit(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    text.chars().take(max_chars).collect()
+}
+
+fn persist_kg_triples(palace: &Palace, triples: &[ExtractedKgTriple]) -> Result<usize, DynError> {
+    let mut added = 0usize;
+    for triple in triples {
+        palace
+            .kg_add_triple(
+                &triple.subject,
+                &triple.predicate,
+                &triple.object,
+                triple.confidence,
+            )
+            .map_err(|error| -> DynError { error.into() })?;
+        added += 1;
+    }
+    Ok(added)
+}
+
+fn schedule_palace_ingest(palace: PalaceHandle, user_text: String, assistant_text: String) {
+    tokio::task::spawn_blocking(move || {
+        let ingest_started = Instant::now();
+        match palace.lock() {
+            Ok(palace) => match palace.ingest_turn(&user_text, &assistant_text) {
+                Ok(()) => {
+                    record_palace_ingest("success", ingest_started.elapsed());
+                }
+                Err(error) => {
+                    record_palace_ingest("error", ingest_started.elapsed());
+                    record_palace_error("ingest");
+                    tracing::warn!(%error, "palace ingest_turn failed");
+                }
+            },
+            Err(error) => {
+                record_palace_error("ingest_lock");
+                tracing::warn!(%error, "palace ingest lock failed");
+            }
+        }
+    });
+}
+
+fn schedule_palace_kg_extract(
+    llm: Arc<CradleLlmStream>,
+    palace: PalaceHandle,
+    user_text: String,
+    assistant_text: String,
+    num_ctx: Option<u32>,
+) {
+    tokio::spawn(async move {
+        let combined = format!("User: {user_text}\nAssistant: {assistant_text}");
+        let options = LlmCallOptions {
+            temperature: Some(0.1),
+            format_json: true,
+            format_json_schema: None,
+            max_output_tokens: Some(256),
+            num_ctx,
+        };
+        let mut stream = match llm
+            .chat_stream(
+                &combined,
+                &[],
+                Some(kg_triple_extractor_prompt()),
+                Some(&options),
+            )
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                record_palace_error("kg_extract");
+                tracing::warn!(%error, "palace kg triple extraction failed");
+                return;
+            }
+        };
+        let mut raw = String::new();
+        while let Some(token) = stream.next().await {
+            raw.push_str(&token);
+        }
+        let triples = parse_extracted_kg_triples(&raw);
+        if triples.is_empty() {
+            return;
+        }
+
+        let persist_started = Instant::now();
+        let result = tokio::task::spawn_blocking(move || {
+            let palace = palace
+                .lock()
+                .map_err(|error| -> DynError { format!("palace lock: {error}").into() })?;
+            persist_kg_triples(&palace, &triples)
+        })
+        .await
+        .map_err(|error| -> DynError { format!("palace kg persist task: {error}").into() })
+        .and_then(|value| value);
+
+        match result {
+            Ok(_) => record_palace_kg_add("success", persist_started.elapsed()),
+            Err(error) => {
+                record_palace_kg_add("error", persist_started.elapsed());
+                record_palace_error("kg_add");
+                tracing::warn!(%error, "palace kg triple persist failed");
+            }
+        }
+    });
+}
+
+fn journal_room_from_sentiment(sentiment: Option<&str>) -> String {
+    sentiment
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase().replace(' ', "_"))
+        .unwrap_or_else(|| "general".to_string())
+}
+
+fn schedule_journal_memory_mirror(palace: PalaceHandle, text: String, room: String, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        match palace.lock() {
+            Ok(palace) => match palace.add_memory("journal", &room, &text, "journal_skill", 4.0) {
+                Ok(_) => record_palace_add_memory("success", started.elapsed()),
+                Err(error) => {
+                    record_palace_add_memory("error", started.elapsed());
+                    record_palace_error("add_memory");
+                    tracing::warn!(%error, "palace journal mirror failed");
+                }
+            },
+            Err(error) => {
+                record_palace_error("add_memory_lock");
+                tracing::warn!(%error, "palace journal mirror lock failed");
+            }
+        }
+    });
 }
 
 fn format_degrees_c(temp_c: f64) -> String {
@@ -2016,6 +2511,7 @@ impl BackendEngine for AiceBackendEngine {
         };
         let classify_elapsed = classify_started.elapsed();
         record_backend_turn_stage_duration("classify_intent", classify_elapsed);
+        let memory_context = self.build_memory_context(&request.transcript).await;
 
         let build_frontend_intent = |intent: &str, slots: serde_json::Value| {
             BackendEngineDecision::FrontendSkillIntent(FrontendSkillIntent {
@@ -2025,7 +2521,7 @@ impl BackendEngine for AiceBackendEngine {
                 user_text: request_text.clone(),
             })
         };
-        match decision {
+        let outcome: Result<BackendEngineDecision, DynError> = match decision {
             IntentDecision::SkillWeather { location } => {
                 let skill_started = Instant::now();
                 let result = self
@@ -2664,6 +3160,7 @@ impl BackendEngine for AiceBackendEngine {
                     ));
                 };
                 let action_str = action.as_deref().unwrap_or("add");
+                let mut journal_mirror: Option<(String, String)> = None;
                 let journal_action = match action_str.trim().to_lowercase().as_str() {
                     "add" => {
                         let Some(text) = text.filter(|s| !s.trim().is_empty()) else {
@@ -2672,6 +3169,8 @@ impl BackendEngine for AiceBackendEngine {
                                 "What would you like me to journal?".to_string(),
                             ));
                         };
+                        let room = journal_room_from_sentiment(sentiment.as_deref());
+                        journal_mirror = Some((text.clone(), room));
                         JournalAction::Add {
                             text,
                             sentiment: sentiment.as_deref().and_then(Sentiment::parse),
@@ -2711,6 +3210,14 @@ impl BackendEngine for AiceBackendEngine {
                 };
                 record_backend_skill_execute_duration("skill_journal", skill_started.elapsed());
                 record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                if let Some((text, room)) = journal_mirror {
+                    schedule_journal_memory_mirror(
+                        self.palace.clone(),
+                        text,
+                        room,
+                        self.palace_memory_settings.journal_mirror_enabled,
+                    );
+                }
                 Ok(BackendEngineDecision::BackendSkill(compose_journal_answer(
                     &result,
                 )))
@@ -2726,66 +3233,23 @@ impl BackendEngine for AiceBackendEngine {
                 ))
             }
             IntentDecision::Chat => {
-                let wake_up_started = Instant::now();
-                let palace_for_wakeup = self.palace.clone();
-                let memory_context =
-                    tokio::task::spawn_blocking(move || -> Result<String, DynError> {
-                        let mut palace = palace_for_wakeup
-                            .lock()
-                            .map_err(|e| -> DynError { format!("palace lock: {e}").into() })?;
-                        Ok(palace.wake_up(None))
-                    })
-                    .await
-                    .map_err(|e| -> DynError {
-                        record_palace_wake_up("error", wake_up_started.elapsed());
-                        record_palace_error("wake_up");
-                        format!("palace wake_up task: {e}").into()
-                    })??;
-                record_palace_wake_up("success", wake_up_started.elapsed());
-                record_backend_turn_stage_duration("palace_wake_up", wake_up_started.elapsed());
-
-                let system_prompt_override = if memory_context.trim().is_empty() {
-                    None
-                } else {
-                    Some(memory_context)
-                };
-
                 let chat_started = Instant::now();
                 let text = self
                     .collect_llm(
                         "chat",
                         &request.transcript,
                         &[],
-                        system_prompt_override.as_deref(),
+                        memory_context.as_deref(),
                         None,
                     )
                     .await?;
                 record_backend_turn_stage_duration("chat_generate", chat_started.elapsed());
-
-                let palace_for_ingest = self.palace.clone();
-                let ingest_user = request_text.clone();
-                let ingest_assistant = text.clone();
-                tokio::task::spawn_blocking(move || {
-                    let ingest_started = Instant::now();
-                    if let Ok(palace) = palace_for_ingest.lock() {
-                        match palace.ingest_turn(&ingest_user, &ingest_assistant) {
-                            Ok(()) => {
-                                record_palace_ingest("success", ingest_started.elapsed());
-                            }
-                            Err(error) => {
-                                record_palace_ingest("error", ingest_started.elapsed());
-                                record_palace_error("ingest");
-                                tracing::warn!(%error, "palace ingest_turn failed");
-                            }
-                        }
-                    } else {
-                        record_palace_error("ingest_lock");
-                    }
-                });
-
                 Ok(BackendEngineDecision::Chat(text))
             }
-        }
+        };
+        let outcome = outcome?;
+        self.finalize_voice_outcome(&request_text, outcome, memory_context.as_deref())
+            .await
     }
 
     async fn finalize_frontend_skill(
@@ -2802,9 +3266,12 @@ impl BackendEngine for AiceBackendEngine {
         }
 
         if intent_id == "skill_screen_ocr" {
-            return self.finalize_screen_ocr(&request).await;
+            let answer = self.finalize_screen_ocr(&request).await?;
+            self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+            return Ok(answer);
         }
 
+        let memory_context = self.build_memory_context(&request.user_text).await;
         // Skill-agnostic: any non-empty structured context from the frontend is composed like backend skills.
         let context_opt = request
             .structured_result_context
@@ -2813,21 +3280,26 @@ impl BackendEngine for AiceBackendEngine {
             .filter(|s| !s.is_empty());
         if let Some(context) = context_opt {
             if self.skip_secondary_llm_for_skill_answers {
-                return Ok(compose_direct_skill_answer(context)
-                    .unwrap_or_else(|| "The action completed successfully.".to_string()));
+                let answer = compose_direct_skill_answer(context)
+                    .unwrap_or_else(|| "The action completed successfully.".to_string());
+                self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+                return Ok(answer);
             }
             let compose_started = Instant::now();
             let composed = self
-                .compose_skill_answer(&request.user_text, context)
+                .compose_skill_answer(&request.user_text, context, memory_context.as_deref())
                 .await?;
             record_backend_turn_stage_duration(
                 "frontend_skill_answer_compose",
                 compose_started.elapsed(),
             );
+            self.schedule_palace_ingest_and_kg(request.user_text.clone(), composed.clone());
             return Ok(composed);
         }
 
-        Ok(compose_frontend_skill_success_echo(&request))
+        let answer = compose_frontend_skill_success_echo(&request);
+        self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+        Ok(answer)
     }
 }
 
@@ -2994,11 +3466,12 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_available_classifier_skills, build_classifier_prompt_artifacts,
+        aice_palace_handle, build_available_classifier_skills, build_classifier_prompt_artifacts,
         build_intent_classification_prompt, classifier_cache_key, compose_distance_answer,
         compose_frontend_skill_error_outcome, compose_frontend_skill_success_echo,
-        compose_time_answer, compose_weather_answer, parse_validated_intent,
-        FRONTEND_CLASSIFIER_SKILLS,
+        compose_palace_memory_context, compose_time_answer, compose_weather_answer,
+        journal_room_from_sentiment, parse_extracted_kg_triples, parse_focus_entities,
+        parse_validated_intent, persist_kg_triples, FRONTEND_CLASSIFIER_SKILLS,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -3007,8 +3480,119 @@ mod tests {
         NewsHeadline, NewsHeadlinesResult, SportsEvent, SportsLiveResult, TimeResult,
         WeatherResult,
     };
+    use mempalace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
     use serde_json::json;
     use std::time::SystemTime;
+
+    fn sample_search_result(text: &str, similarity: f64) -> SearchResult {
+        SearchResult {
+            id: "drawer_test".to_string(),
+            text: text.to_string(),
+            wing: "preferences".to_string(),
+            room: "voice_turns".to_string(),
+            source_file: "test".to_string(),
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+            similarity,
+        }
+    }
+
+    fn sample_triple() -> Triple {
+        Triple {
+            direction: "outgoing".to_string(),
+            subject: "Alice".to_string(),
+            predicate: "prefers".to_string(),
+            object: "quiet mornings".to_string(),
+            valid_from: None,
+            valid_to: None,
+            confidence: 0.9,
+            source_closet: None,
+            current: true,
+        }
+    }
+
+    #[test]
+    fn aice_palace_handle_sets_ingest_label() {
+        let palace = match Palace::open_in_memory() {
+            Ok(value) => value,
+            Err(error) => panic!("expected in-memory palace, got {error}"),
+        };
+        let handle = aice_palace_handle(palace);
+        let palace = match handle.lock() {
+            Ok(value) => value,
+            Err(error) => panic!("expected palace lock, got {error}"),
+        };
+
+        assert_eq!(palace.ingest_label(), "aice");
+    }
+
+    #[test]
+    fn compose_palace_memory_context_includes_wakeup_recall_and_kg() {
+        let recall = vec![sample_search_result("Alice prefers quiet mornings.", 0.82)];
+        let facts = vec![("Alice".to_string(), vec![sample_triple()])];
+
+        let context = compose_palace_memory_context("L0 identity", &recall, &facts, 2_000);
+
+        assert!(context.contains("L0 identity"));
+        assert!(context.contains("Relevant remembered context:"));
+        assert!(context.contains("Alice prefers quiet mornings."));
+        assert!(context.contains("Known memory facts:"));
+        assert!(context.contains("Alice prefers quiet mornings"));
+    }
+
+    #[test]
+    fn compose_palace_memory_context_respects_char_budget() {
+        let recall = vec![sample_search_result("x".repeat(200).as_str(), 0.7)];
+        let context = compose_palace_memory_context("identity", &recall, &[], 32);
+
+        assert!(context.chars().count() <= 32);
+    }
+
+    #[test]
+    fn parse_focus_entities_accepts_array_or_object() {
+        assert_eq!(
+            parse_focus_entities(r#"["Alice", " Project Apollo ", ""]"#),
+            vec!["Alice".to_string(), "Project Apollo".to_string()]
+        );
+        assert_eq!(
+            parse_focus_entities(r#"{"entities":["Bob"]}"#),
+            vec!["Bob".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_and_persist_kg_triples_store_queryable_fact() {
+        let triples = parse_extracted_kg_triples(
+            r#"[{"subject":"Alice","predicate":"prefers","object":"quiet mornings","confidence":0.95}]"#,
+        );
+        assert_eq!(triples.len(), 1);
+        let palace = match Palace::open_in_memory() {
+            Ok(value) => value,
+            Err(error) => panic!("expected in-memory palace, got {error}"),
+        };
+
+        let added = match persist_kg_triples(&palace, &triples) {
+            Ok(value) => value,
+            Err(error) => panic!("expected persisted triples, got {error}"),
+        };
+        let queried = match palace.kg_query("Alice") {
+            Ok(value) => value,
+            Err(error) => panic!("expected kg query, got {error}"),
+        };
+
+        assert_eq!(added, 1);
+        assert_eq!(queried.len(), 1);
+        assert_eq!(queried[0].predicate, "prefers");
+        assert_eq!(queried[0].object, "quiet mornings");
+    }
+
+    #[test]
+    fn journal_room_from_sentiment_defaults_and_normalizes() {
+        assert_eq!(journal_room_from_sentiment(None), "general");
+        assert_eq!(
+            journal_room_from_sentiment(Some(" Very Happy ")),
+            "very_happy"
+        );
+    }
 
     #[test]
     fn compose_time_answer_is_deterministic() {

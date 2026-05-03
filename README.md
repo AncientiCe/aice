@@ -16,7 +16,7 @@ It owns:
 
 - **STT** via Whisper (`core-stt`, `whisper-cli` model files).
 - **LLM orchestration** via Ollama (`core-llm`, `core-orchestrator`).
-- **Memory Palace** persistent memory (`mempalace-rs`).
+- **Memory Palace** persistent memory (`mempalace-rs`) with aice-tagged drawers, per-turn recall + KG facts in answer composition, and Journal mirroring.
 - **Backend-owned skills** (weather, time, distance, smart-home, news, holidays, sports, horoscope, fuel prices) pulled from the external [`aice-skills`](https://github.com/AncientiCe/aice-skills) repo as a pinned Cargo git dependency.
 - **UDP broadcast discovery** so frontends find the backend with zero manual configuration.
 - **Prometheus metrics** for every code path (`core-observability`).
