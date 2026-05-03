@@ -515,6 +515,21 @@ pub struct MemoryConfig {
     /// Path to the memory palace identity file (L0 context).
     #[serde(default = "default_palace_identity_path")]
     pub palace_identity_path: String,
+    /// Number of semantic palace recall hits to include in voice answer context.
+    #[serde(default = "default_palace_recall_results")]
+    pub palace_recall_results: usize,
+    /// Minimum hybrid recall score accepted for palace recall context.
+    #[serde(default = "default_palace_recall_min_similarity")]
+    pub palace_recall_min_similarity: f64,
+    /// Maximum characters of palace context injected into voice answer composition.
+    #[serde(default = "default_palace_recall_max_chars")]
+    pub palace_recall_max_chars: usize,
+    /// Mirror explicit journal additions into the palace as high-importance drawers.
+    #[serde(default = "default_palace_journal_mirror_enabled")]
+    pub palace_journal_mirror_enabled: bool,
+    /// Enable palace knowledge-graph read/write enrichment.
+    #[serde(default = "default_palace_kg_enabled")]
+    pub palace_kg_enabled: bool,
 }
 
 fn default_memory_enabled() -> bool {
@@ -551,6 +566,26 @@ fn default_palace_identity_path() -> String {
     format!("{home}/.mempalace/identity.txt")
 }
 
+fn default_palace_recall_results() -> usize {
+    5
+}
+
+fn default_palace_recall_min_similarity() -> f64 {
+    0.3
+}
+
+fn default_palace_recall_max_chars() -> usize {
+    1_500
+}
+
+fn default_palace_journal_mirror_enabled() -> bool {
+    true
+}
+
+fn default_palace_kg_enabled() -> bool {
+    true
+}
+
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
@@ -562,6 +597,11 @@ impl Default for MemoryConfig {
             sqlite_path: default_memory_sqlite_path(),
             palace_db_path: default_palace_db_path(),
             palace_identity_path: default_palace_identity_path(),
+            palace_recall_results: default_palace_recall_results(),
+            palace_recall_min_similarity: default_palace_recall_min_similarity(),
+            palace_recall_max_chars: default_palace_recall_max_chars(),
+            palace_journal_mirror_enabled: default_palace_journal_mirror_enabled(),
+            palace_kg_enabled: default_palace_kg_enabled(),
         }
     }
 }
@@ -754,6 +794,11 @@ mod tests {
             .memory
             .palace_identity_path
             .ends_with(".mempalace/identity.txt"));
+        assert_eq!(config.memory.palace_recall_results, 5);
+        assert_eq!(config.memory.palace_recall_min_similarity, 0.3);
+        assert_eq!(config.memory.palace_recall_max_chars, 1_500);
+        assert!(config.memory.palace_journal_mirror_enabled);
+        assert!(config.memory.palace_kg_enabled);
     }
 
     #[test]
