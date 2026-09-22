@@ -61,7 +61,7 @@ jobs:
         run: cargo test --workspace
 
   backend-build-matrix:
-    name: Build aice-backend (${{ matrix.os }})
+    name: Build backend and property packs (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -102,5 +102,5 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build aice-backend
-        run: cargo build -p aice-backend
+      - name: Build backend and property packs
+        run: cargo build -p aice-backend -p aice-hotels -p aice-care -p aice-ward

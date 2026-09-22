@@ -4,6 +4,6 @@ mod config;
 
 pub use config::{
     AssistantProfileConfig, AudioRuntimeConfig, Config, HueConfig, LlmConfig, MacOsMusicConfig,
-    MediaConfig, MemoryConfig, SearchProviderConfig, ServiceConfig, SmartHomeConfig, SttConfig,
-    TtsConfig, WakeWordConfig,
+    MediaConfig, MemoryConfig, PropertyConfig, SearchProviderConfig, ServiceConfig,
+    SmartHomeConfig, SttConfig, TtsConfig, WakeWordConfig,
 };

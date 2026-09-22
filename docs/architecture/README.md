@@ -538,3 +538,27 @@ flowchart LR
 - **Inputs:** `stt.preload_model_on_startup`, `llm.preload_model_on_startup`, and `llm.model_keep_alive`.
 - **Outputs:** Lower first-turn latency and reduced model cold-start churn; telemetry `voice_model_preload_total{component,result}` and `voice_model_preload_duration_seconds{component}`.
 - **Failure paths:** Preload failures are non-fatal, logged as warnings, metered as `result="error"`, and runtime continues with lazy model loading.
+
+---
+
+## 23. Property facilitator (hotels, care, ward)
+
+**Purpose:** A property runs one on-prem MCP. The voice runtime classifies a request and calls a tool. Staff see every request. A property can delegate named tools to its own MCP.
+
+```mermaid
+flowchart LR
+    Guest[GuestResidentPatient] --> Ingress[ButtonPhoneOrPod]
+    Ingress --> Voice[AiceBackend]
+    Voice --> Facade[FacilitatorMCP]
+    Facade --> Desk[StaffDesk]
+    Facade --> Theirs[PropertyMCP]
+```
+
+**Notes:**
+- **Inputs:** Spoken request classified as `skill_hotel` with `hik` and `hsl`. Room comes from the tool argument `room`, a pod room, or a phone `extension` mapped in the property file. `config.property.facilitator_url` points at `http://<host>:<port>/mcp`.
+- **Outputs:** A ticket on the local staff desk (`open`, `acknowledged`, `done`, `escalated`) and a short spoken confirmation. Delegated tools also call the property MCP once.
+- **Packs:** `aice-hotels` (rooms and serviced apartments), `aice-care` (distress and fall always escalate), `aice-ward` (non-clinical tools only; anything else is denied by `core-policy` and escalated).
+- **Live tools:** `tools/list` is the classifier `hik` enum. Extra tools from the property MCP are included. Built-in hotel kinds remain when the facilitator is not connected.
+- **Failure paths:** Property MCP down, unknown extension, or a denied ward tool still leaves an escalated ticket. See [aice-hotels](../skills/aice-hotels.md), [aice-care](../skills/aice-care.md), and [aice-ward](../skills/aice-ward.md).
+- **Metrics:** `property_requests_total{pack,tool,status}`, `property_mcp_errors_total{kind}`, `property_mcp_duration_seconds{operation}`.
+- **Pipeline:** `cargo test --workspace` starts each pack binary and checks a live ticket (`apps/aice-hotels/tests/smoke.rs`, `apps/aice-care/tests/smoke.rs`, `apps/aice-ward/tests/smoke.rs`). The OS build matrix and the macOS release smoke build `aice-hotels`, `aice-care`, and `aice-ward` beside `aice-backend`. The release archive includes those three binaries.

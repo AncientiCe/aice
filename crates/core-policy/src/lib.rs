@@ -5,6 +5,8 @@
 
 mod engine;
 mod types;
+mod ward;
 
 pub use engine::{skill_id_and_risk, PolicyEngine, StandardPolicyEngine};
 pub use types::{ActionRequest, PolicyDecision, RiskTier, SkillId};
+pub use ward::{decide_ward_tool, WARD_NON_CLINICAL_TOOLS};

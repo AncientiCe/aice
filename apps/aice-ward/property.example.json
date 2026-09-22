@@ -1,0 +1,8 @@
+{
+  "pack": "ward",
+  "bind": "127.0.0.1:8793",
+  "database_path": "property.sqlite",
+  "property_mcp_url": null,
+  "delegated_tools": [],
+  "extensions": {}
+}

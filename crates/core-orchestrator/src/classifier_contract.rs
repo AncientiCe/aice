@@ -231,6 +231,36 @@ pub fn intent_classifier_json_schema_for_skills(available_skills: &[&str]) -> se
     })
 }
 
+/// Classifier schema whose `hik` enum is the live property tool list.
+///
+/// An empty list keeps the built-in hotel kinds. A non-empty list is the
+/// facilitator's `tools/list` (pack tools plus any tools the property MCP added).
+pub fn intent_classifier_json_schema_for_skills_with_property_tools(
+    available_skills: &[&str],
+    property_tools: &[String],
+) -> serde_json::Value {
+    let mut schema = intent_classifier_json_schema_for_skills(available_skills);
+    if property_tools.is_empty() {
+        return schema;
+    }
+    let Some(properties) = schema.get_mut("properties") else {
+        return schema;
+    };
+    let Some(props) = properties.as_object_mut() else {
+        return schema;
+    };
+    if props.contains_key("hik") {
+        props.insert(
+            "hik".to_string(),
+            serde_json::json!({
+                "type": "string",
+                "enum": property_tools,
+            }),
+        );
+    }
+    schema
+}
+
 /// Compact per-skill rule line using short intent names and short field keys.
 /// `!` = required, `?` = optional.
 fn render_compact_rules(available_skills: &[&str]) -> String {
@@ -538,8 +568,9 @@ pub fn intent_classifier_few_shots_for_skills(available_skills: &[&str]) -> Vec<
 mod tests {
     use super::{
         intent_classifier_few_shots, intent_classifier_few_shots_for_skills,
-        intent_classifier_json_schema_for_skills, intent_classifier_system_prompt,
-        intent_classifier_system_prompt_for_skills,
+        intent_classifier_json_schema_for_skills,
+        intent_classifier_json_schema_for_skills_with_property_tools,
+        intent_classifier_system_prompt, intent_classifier_system_prompt_for_skills,
     };
 
     #[test]
@@ -952,6 +983,42 @@ mod tests {
                 "expected hotel few-shot for '{needle}'"
             );
         }
+    }
+
+    #[test]
+    fn live_property_tool_list_replaces_hotel_intent_enum() {
+        let tools = vec![
+            "request_extra_towels".to_string(),
+            "custom_minibar".to_string(),
+        ];
+        let schema =
+            intent_classifier_json_schema_for_skills_with_property_tools(&["skill_hotel"], &tools);
+        let hik = match schema
+            .get("properties")
+            .and_then(|value| value.get("hik"))
+            .and_then(|value| value.get("enum"))
+            .and_then(|value| value.as_array())
+        {
+            Some(values) => values,
+            None => panic!("hik enum missing from property schema"),
+        };
+        assert!(hik.iter().any(|value| value == "request_extra_towels"));
+        assert!(hik.iter().any(|value| value == "custom_minibar"));
+        assert!(!hik.iter().any(|value| value == "set_room_temperature"));
+        let fallback =
+            intent_classifier_json_schema_for_skills_with_property_tools(&["skill_hotel"], &[]);
+        let fallback_hik = match fallback
+            .get("properties")
+            .and_then(|value| value.get("hik"))
+            .and_then(|value| value.get("enum"))
+            .and_then(|value| value.as_array())
+        {
+            Some(values) => values,
+            None => panic!("hik enum missing from fallback schema"),
+        };
+        assert!(fallback_hik
+            .iter()
+            .any(|value| value == "set_room_temperature"));
     }
 
     #[test]

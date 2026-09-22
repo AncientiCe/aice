@@ -1,0 +1,17 @@
+[package]
+name = "aice-hotels"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aice-hotels"
+path = "src/main.rs"
+
+[dependencies]
+property-facilitator = { path = "../../crates/property-facilitator" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

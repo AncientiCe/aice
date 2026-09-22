@@ -15,6 +15,10 @@ members = [
     "crates/pod-protocol",
     "apps/aice-backend",
     "apps/pod-gateway",
+    "crates/property-facilitator",
+    "apps/aice-hotels",
+    "apps/aice-care",
+    "apps/aice-ward",
 ]
 
 # Local development: clone aice-skills as a sibling directory and uncomment
