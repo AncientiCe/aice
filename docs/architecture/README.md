@@ -187,28 +187,51 @@ flowchart TD
 
 ## 7. Memory Palace (core persistent memory)
 
-**Purpose:** The Memory Palace (`mempalace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides a 4-layer structured, persistent, semantic memory system inspired by the memory palace concept. Every chat turn automatically enriches the LLM system prompt with contextual memory (wake-up) and ingests the conversation for long-term recall. There is no longer a `SkillMemory` intent — store/recall happens implicitly per turn (and explicit user-controlled note-taking is handled by the [Journal](../skills/journal.md) skill).
+**Purpose:** The Memory Palace (`mempalace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides structured, persistent, semantic memory for the voice journey. Every non-empty voice turn can enrich answer composition with wake-up context, semantic recall, and knowledge-graph facts; every spoken outcome is ingested for long-term recall. There is no `SkillMemory` intent — memory is infrastructure, while explicit user-controlled note-taking remains the [Journal](../skills/journal.md) skill.
 
 ```mermaid
-flowchart TD
-    Startup[Startup] --> OpenPalace["Palace::open_paths(db, identity)"]
-    OpenPalace -->|success| Ready[PalaceHandle ready]
-    OpenPalace -->|error| Fallback["Palace::open_in_memory()"]
-    Fallback --> Ready
+sequenceDiagram
+    participant Mac as External macOS frontend
+    participant Core as aice-backend
+    participant Palace as mempalace::Palace
+    participant LLM as Cradle LLM
 
-    Ready --> ChatTurn[Chat Turn]
-    ChatTurn --> WakeUp["palace.wake_up() → L0/L1 context"]
-    WakeUp --> EnrichPrompt["Prepend memory context to system prompt"]
-    EnrichPrompt --> LLM[OllamaStreamingLLM]
-    LLM --> Reply[AssistantReply]
-    Reply --> Ingest["palace.ingest_turn(user, assistant)"]
-    Ingest --> NextTurn[NextTurn]
+    Core->>Palace: open_paths or open_in_memory
+    Core->>Palace: set_ingest_label aice
+    Mac->>Core: WS audio turn
+    Core->>Core: STT transcript
+    Core->>LLM: classify intent without palace context
+    par memory context
+        Core->>Palace: wake_up
+        Core->>Palace: search transcript
+        Core->>LLM: kg_focus_entities
+        LLM-->>Core: entity list
+        Core->>Palace: kg_query per entity
+    end
+    Core->>Core: compose memory_context
+    alt backend-owned skill
+        Core->>Core: execute skill
+        Core->>LLM: skill_answer_composer with memory_context
+    else frontend-owned skill
+        Core-->>Mac: frontend_skill_intent
+        Mac-->>Core: frontend_skill_result
+        Core->>LLM: skill_answer_composer with memory_context
+    else open dialogue
+        Core->>LLM: chat with memory_context
+    end
+    Core-->>Mac: token events for TTS
+    par background memory write
+        Core->>Palace: ingest_turn transcript and spoken answer
+        Core->>LLM: triple_extractor
+        LLM-->>Core: fact triples
+        Core->>Palace: kg_add_triple
+    end
 ```
 
 **Notes:**
-- **Inputs:** Config `memory.palace_db_path` and `memory.palace_identity_path`; `mempalace` crate embedded via git dependency (`default-features = false`, no CLI). Palace facade wraps `rusqlite` + `fastembed` for 384-dim local embeddings.
-- **Outputs:** Per-turn wake-up context (L0 working + L1 episodic layers) injected into LLM system prompt; semantic search results; persistent SQLite-backed memory across sessions. Metrics: `palace_open_total`, `palace_wake_up_total/duration`, `palace_search_total/duration`, `palace_ingest_total/duration`, `palace_add_memory_total/duration`, `palace_errors_total{operation}`.
-- **Failure paths:** Palace open failure falls back to in-memory instance (logged + metered). Wake-up or ingest errors are logged and metered but do not fail the turn. Search/store errors propagate to the answer composer as error text.
+- **Inputs:** Config `memory.palace_db_path`, `memory.palace_identity_path`, `memory.palace_recall_results`, `memory.palace_recall_min_similarity`, `memory.palace_recall_max_chars`, `memory.palace_journal_mirror_enabled`, and `memory.palace_kg_enabled`; `mempalace` crate embedded via git dependency (`default-features = false`, no CLI).
+- **Outputs:** Per-turn memory context injected into answer composition for open dialogue, backend-owned skills, and frontend skill finalization; persistent SQLite-backed drawers tagged `added_by = "aice"`; optional Journal add mirroring into `wing = "journal"`; knowledge-graph triples extracted from spoken outcomes. Metrics: `palace_open_total`, `palace_wake_up_total/duration`, `palace_search_total/duration`, `palace_ingest_total/duration`, `palace_add_memory_total/duration`, `palace_kg_query_total/duration`, `palace_kg_add_total/duration`, `palace_errors_total{operation}`.
+- **Failure paths:** Palace open failure falls back to in-memory instance (logged + metered). Wake-up, recall, KG query, ingest, Journal mirroring, or KG extraction errors are logged and metered but do not fail the voice turn.
 - **Threading:** All Palace calls are synchronous (`rusqlite`); wrapped in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 
 ---
