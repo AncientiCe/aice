@@ -21,9 +21,11 @@ use core_observability::{
     record_unit_conversion_skill,
 };
 use core_orchestrator::{
-    intent_classifier_few_shots_for_skills, intent_classifier_json_schema_for_skills,
+    intent_classifier_few_shots_for_skills,
+    intent_classifier_json_schema_for_skills_with_property_tools,
     intent_classifier_system_prompt_for_skills, parse_intent, validate_intent_decision,
-    IntentClassifier, IntentDecision, LlmCallOptions, LlmStream,
+    validate_intent_decision_with_property_tools, IntentClassifier, IntentDecision, LlmCallOptions,
+    LlmStream,
 };
 use core_runtime_protocol::{
     FrontendSkillIntent, FrontendSkillResultRequest, TurnRequest, TurnStreamClientMessage,
@@ -59,6 +61,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use mempalace::palace::Palace;
+use property_facilitator::PropertyClient;
 use serde_json::{json, Value};
 use skill_chain::EffectiveCapabilities;
 use std::collections::HashMap;
@@ -484,7 +487,7 @@ fn build_available_classifier_skills(context: Option<&Value>) -> Vec<String> {
     capabilities.classifier_enabled_skills
 }
 
-fn classifier_cache_key(available_skills: &[&str]) -> String {
+fn classifier_cache_key(available_skills: &[&str], property_tools: &[String]) -> String {
     let mut normalized = available_skills
         .iter()
         .map(|skill| skill.trim().to_ascii_lowercase())
@@ -492,19 +495,49 @@ fn classifier_cache_key(available_skills: &[&str]) -> String {
         .collect::<Vec<_>>();
     normalized.sort();
     normalized.dedup();
-    normalized.join("|")
+    let mut key = normalized.join("|");
+    if !property_tools.is_empty() {
+        key.push('#');
+        key.push_str(&property_tools.join(","));
+    }
+    key
 }
 
-fn build_classifier_prompt_artifacts(available_skills: &[&str]) -> ClassifierPromptArtifacts {
+fn build_classifier_prompt_artifacts(
+    available_skills: &[&str],
+    property_tools: &[String],
+) -> ClassifierPromptArtifacts {
+    let mut system_prompt = intent_classifier_system_prompt_for_skills(available_skills);
+    if !property_tools.is_empty() {
+        system_prompt.push_str("\nProperty tools for hik: ");
+        system_prompt.push_str(&property_tools.join(", "));
+        system_prompt.push('.');
+    }
     ClassifierPromptArtifacts {
-        system_prompt: intent_classifier_system_prompt_for_skills(available_skills),
+        system_prompt,
         compact_few_shots: intent_classifier_few_shots_for_skills(available_skills),
-        json_schema: Some(intent_classifier_json_schema_for_skills(available_skills)),
+        json_schema: Some(
+            intent_classifier_json_schema_for_skills_with_property_tools(
+                available_skills,
+                property_tools,
+            ),
+        ),
     }
 }
 
-fn parse_validated_intent(raw: &str) -> Option<IntentDecision> {
-    parse_intent(raw.trim()).ok().map(validate_intent_decision)
+fn parse_validated_intent(raw: &str, property_tools: &[String]) -> Option<IntentDecision> {
+    parse_intent(raw.trim())
+        .ok()
+        .map(|decision| validate_intent_decision_with_property_tools(decision, property_tools))
+}
+
+fn context_str(context: Option<&serde_json::Value>, key: &str) -> Option<String> {
+    context
+        .and_then(|value| value.get(key))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> String {
@@ -1364,6 +1397,8 @@ pub struct AiceBackendEngine {
     classifier_prompt_cache: ClassifierPromptCache,
     classifier_num_ctx: Option<u32>,
     classifier_llm: Arc<CradleLlmStream>,
+    property_client: Option<PropertyClient>,
+    discovered_property_tools: Vec<String>,
 }
 
 /// LLM-backed intent classifier reused by backend and compatibility wrappers.
@@ -1549,6 +1584,31 @@ impl AiceBackendEngine {
             &llm_arc,
         )));
 
+        let property_client = match config.property.facilitator_url.as_deref() {
+            Some(url) if !url.trim().is_empty() => match PropertyClient::new(url) {
+                Ok(client) => Some(client),
+                Err(error) => {
+                    tracing::warn!(%error, "property facilitator client was not created");
+                    None
+                }
+            },
+            _ => None,
+        };
+        let discovered_property_tools = if let Some(client) = &property_client {
+            match client.list_tools().await {
+                Ok(tools) => tools,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "property tools/list failed; classifier keeps built-in hotel kinds"
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             llm: llm_arc,
             weather_skill,
@@ -1578,6 +1638,8 @@ impl AiceBackendEngine {
             classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
             classifier_num_ctx: config.llm.classifier_num_ctx,
             classifier_llm,
+            property_client,
+            discovered_property_tools,
         })
     }
 
@@ -1622,14 +1684,15 @@ impl AiceBackendEngine {
     ) -> Result<IntentDecision, DynError> {
         let prompt = build_intent_classification_prompt(user_text);
         let prompt_build_started = Instant::now();
-        let key = classifier_cache_key(available_skills);
+        let property_tools = self.discovered_property_tools.clone();
+        let key = classifier_cache_key(available_skills, &property_tools);
         let artifacts = if let Ok(cache) = self.classifier_prompt_cache.read() {
             cache.get(&key).cloned()
         } else {
             None
         }
         .unwrap_or_else(|| {
-            let built = build_classifier_prompt_artifacts(available_skills);
+            let built = build_classifier_prompt_artifacts(available_skills, &property_tools);
             if let Ok(mut cache) = self.classifier_prompt_cache.write() {
                 cache.entry(key).or_insert_with(|| built.clone());
             }
@@ -1674,7 +1737,10 @@ impl AiceBackendEngine {
         record_backend_turn_stage_duration("classifier_llm_roundtrip", llm_started.elapsed());
 
         let parse_started = Instant::now();
-        let decision = raw.as_ref().ok().and_then(|r| parse_validated_intent(r));
+        let decision = raw
+            .as_ref()
+            .ok()
+            .and_then(|r| parse_validated_intent(r, &property_tools));
         record_backend_turn_stage_duration("intent_parse_validate", parse_started.elapsed());
 
         if let Some(d) = decision {
@@ -2305,10 +2371,54 @@ impl BackendEngine for AiceBackendEngine {
                 "skill_screenshot",
                 json!({"screenshot_filename": filename}),
             )),
-            IntentDecision::SkillHotel { intent_kind, slots } => Ok(build_frontend_intent(
-                "skill_hotel",
-                json!({"hotel_intent_kind": intent_kind, "hotel_slots": slots}),
-            )),
+            IntentDecision::SkillHotel { intent_kind, slots } => {
+                if let Some(client) = &self.property_client {
+                    let name = intent_kind
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| "concierge_info".to_string());
+                    let room = context_str(request.context.as_ref(), "room");
+                    let extension = context_str(request.context.as_ref(), "extension");
+                    let arguments = slots.clone().unwrap_or_else(|| json!({}));
+                    let skill_started = Instant::now();
+                    let decision = match client
+                        .call_tool(&name, room.as_deref(), extension.as_deref(), &arguments)
+                        .await
+                    {
+                        Ok(response) => {
+                            let result = if response.is_error {
+                                "error"
+                            } else {
+                                "success"
+                            };
+                            let kind = if response.is_error {
+                                Some("property")
+                            } else {
+                                None
+                            };
+                            record_backend_skill_execute("skill_hotel", result, kind);
+                            BackendEngineDecision::BackendSkill(response.spoken)
+                        }
+                        Err(error) => {
+                            record_backend_skill_execute(
+                                "skill_hotel",
+                                "error",
+                                Some("facilitator"),
+                            );
+                            BackendEngineDecision::BackendSkill(format!(
+                                "I could not reach the property desk: {error}"
+                            ))
+                        }
+                    };
+                    record_backend_skill_execute_duration("skill_hotel", skill_started.elapsed());
+                    record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
+                    Ok(decision)
+                } else {
+                    Ok(build_frontend_intent(
+                        "skill_hotel",
+                        json!({"hotel_intent_kind": intent_kind, "hotel_slots": slots}),
+                    ))
+                }
+            }
             IntentDecision::SkillCalculator { expression } => {
                 let Some(expr) = expression.filter(|s| !s.trim().is_empty()) else {
                     record_calculator_skill("error");
@@ -3240,15 +3350,15 @@ mod tests {
 
     #[test]
     fn classifier_cache_key_is_order_and_case_insensitive() {
-        let a = classifier_cache_key(&["skill_timer", "skill_time", "SKILL_TIMER"]);
-        let b = classifier_cache_key(&["skill_time", "skill_timer"]);
+        let a = classifier_cache_key(&["skill_timer", "skill_time", "SKILL_TIMER"], &[]);
+        let b = classifier_cache_key(&["skill_time", "skill_timer"], &[]);
         assert_eq!(a, b);
         assert_eq!(a, "skill_time|skill_timer");
     }
 
     #[test]
     fn classifier_prompt_artifacts_scope_compact_few_shots() {
-        let artifacts = build_classifier_prompt_artifacts(&["skill_time"]);
+        let artifacts = build_classifier_prompt_artifacts(&["skill_time"], &[]);
         assert!(artifacts.system_prompt.contains("\"time\""));
         assert!(!artifacts.compact_few_shots.is_empty());
         assert!(artifacts
@@ -3260,8 +3370,8 @@ mod tests {
     #[test]
     fn classifier_prompt_artifacts_are_byte_identical_across_calls() {
         let skills = &["skill_weather", "skill_time", "skill_media"][..];
-        let a = build_classifier_prompt_artifacts(skills);
-        let b = build_classifier_prompt_artifacts(skills);
+        let a = build_classifier_prompt_artifacts(skills, &[]);
+        let b = build_classifier_prompt_artifacts(skills, &[]);
         assert_eq!(a.system_prompt, b.system_prompt);
         assert_eq!(a.compact_few_shots, b.compact_few_shots);
         assert_eq!(a.json_schema, b.json_schema);
@@ -3269,7 +3379,7 @@ mod tests {
 
     #[test]
     fn parse_validated_intent_returns_none_for_invalid_json() {
-        assert!(parse_validated_intent("not-json").is_none());
+        assert!(parse_validated_intent("not-json", &[]).is_none());
     }
 
     #[test]

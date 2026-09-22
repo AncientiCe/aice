@@ -1,0 +1,10 @@
+{
+  "pack": "care",
+  "bind": "127.0.0.1:8792",
+  "database_path": "property.sqlite",
+  "property_mcp_url": null,
+  "delegated_tools": [],
+  "extensions": {
+    "12": "12"
+  }
+}

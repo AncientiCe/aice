@@ -115,6 +115,9 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release -p aice-backend --bin aice-backend
+          cargo build --release -p aice-hotels --bin aice-hotels
+          cargo build --release -p aice-care --bin aice-care
+          cargo build --release -p aice-ward --bin aice-ward
 
       - name: Package release archive and checksums
         shell: bash
@@ -122,9 +125,9 @@ jobs:
           set -euo pipefail
           tag="${{ github.event.inputs.release_tag }}"
           mkdir -p dist
-          cp target/release/aice-backend dist/
+          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
-          tar -C dist -czf "dist/${archive}" aice-backend
+          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward
           shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets

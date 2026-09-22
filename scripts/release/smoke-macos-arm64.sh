@@ -42,9 +42,15 @@ cargo aice-test
 
 echo "==> Building release binaries in scope"
 cargo build --release -p aice-backend --bin aice-backend
+cargo build --release -p aice-hotels --bin aice-hotels
+cargo build --release -p aice-care --bin aice-care
+cargo build --release -p aice-ward --bin aice-ward
 
 echo "==> Verifying aice-backend binary starts"
 ./target/release/aice-backend --help >/dev/null
+
+echo "==> Smoking property pack release binaries"
+cargo test -p aice-hotels -p aice-care -p aice-ward --release --test smoke
 
 cat <<'EOF'
 ==> Scripted checks passed.

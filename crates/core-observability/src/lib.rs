@@ -41,6 +41,7 @@ pub use metrics::{
     record_pod_audio_frame, record_pod_connection, record_pod_disconnect,
     record_pod_egress_device_lock_poison, record_pod_egress_queue_drop,
     record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
+    record_property_mcp_duration, record_property_mcp_error, record_property_request,
     record_reminder_skill, record_screen_ocr_skill, record_screenshot_skill, record_session_start,
     record_shopping_list_skill, record_shutdown_signal, record_skill_duration,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
@@ -54,7 +55,8 @@ pub use metrics::{
 mod tests {
     use super::{
         init_prometheus_exporter, record_backend_turn_stage_duration,
-        record_llm_stream_tail_duration, record_mic_to_stt_duration, record_session_start,
+        record_llm_stream_tail_duration, record_mic_to_stt_duration, record_property_mcp_duration,
+        record_property_mcp_error, record_property_request, record_session_start,
         record_skill_duration, record_tts_first_audio_latency, record_tts_flush_duration,
         register_metrics, ExporterInitState,
     };
@@ -115,6 +117,9 @@ mod tests {
         assert!(state == ExporterInitState::Started || state == ExporterInitState::AlreadyRunning);
         register_metrics();
         record_session_start();
+        record_property_request("hotels", "request_extra_towels", "open");
+        record_property_mcp_error("upstream");
+        record_property_mcp_duration("tools_call", Duration::from_millis(5));
 
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -209,6 +214,9 @@ mod tests {
                         && payload.contains("voice_tts_flush_duration")
                         && payload.contains("voice_skill_duration")
                         && payload.contains("backend_turn_stage_duration")
+                        && payload.contains("property_requests_total")
+                        && payload.contains("property_mcp_errors_total")
+                        && payload.contains("property_mcp_duration_seconds")
                     {
                         break;
                     }

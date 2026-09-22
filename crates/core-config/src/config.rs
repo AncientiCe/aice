@@ -618,6 +618,9 @@ pub struct Config {
     /// News skill behavior (e.g. opt-in summary streaming).
     #[serde(default)]
     pub news: NewsConfig,
+    /// Property facilitator MCP. When set, hotel intents call this server.
+    #[serde(default)]
+    pub property: PropertyConfig,
 }
 
 fn default_ollama_url() -> String {
@@ -652,8 +655,17 @@ impl Default for Config {
             journal: JournalConfig::default(),
             briefing: BriefingConfig::default(),
             news: NewsConfig::default(),
+            property: PropertyConfig::default(),
         }
     }
+}
+
+/// Voice runtime connection to the on-prem property facilitator.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PropertyConfig {
+    /// MCP endpoint, for example `http://127.0.0.1:8791/mcp`.
+    #[serde(default)]
+    pub facilitator_url: Option<String>,
 }
 
 impl Config {

@@ -40,6 +40,16 @@ All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aic
 
 Memory is no longer a skill; it is core infrastructure embedded in `aice-backend` via the Memory Palace (`mempalace-rs`). See [§7 in architecture docs](../architecture/README.md#7-memory-palace-core-persistent-memory).
 
+## Property packs
+
+These run in this repository as facilitator MCP servers. The voice runtime calls them when `property.facilitator_url` is set. See [§23 in architecture docs](../architecture/README.md#23-property-facilitator-hotels-care-ward).
+
+| Pack | App | Document |
+|------|-----|----------|
+| Hotels and serviced apartments | `aice-hotels` | [aice-hotels.md](aice-hotels.md) |
+| Care homes | `aice-care` | [aice-care.md](aice-care.md) |
+| Hospital ward, non-clinical only | `aice-ward` | [aice-ward.md](aice-ward.md) |
+
 Backend-owned skills (`weather`, `time`, `distance`, `smart-home`) emit shared backend metrics:
 `backend_skill_execute_total`, `backend_skill_execute_duration_seconds`, and where applicable dependency metrics (`backend_dependency_requests_total`, `backend_dependency_request_duration_seconds`).
 

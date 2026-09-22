@@ -783,6 +783,14 @@ fn action_allowed(action: &Option<String>, allowlist: &[&str]) -> bool {
 /// prompt.  In that case this function logs a warning and returns `IntentDecision::Chat` so
 /// the turn falls back gracefully instead of reaching skill execution with an invalid action.
 pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
+    validate_intent_decision_with_property_tools(decision, &[])
+}
+
+/// Like [`validate_intent_decision`], and also accepts hotel tools advertised by a property MCP.
+pub fn validate_intent_decision_with_property_tools(
+    decision: IntentDecision,
+    property_tools: &[String],
+) -> IntentDecision {
     let invalid = match &decision {
         IntentDecision::SkillSmartHome { action, .. } => {
             !action_allowed(action, SMART_HOME_ACTIONS)
@@ -802,7 +810,10 @@ pub fn validate_intent_decision(decision: IntentDecision) -> IntentDecision {
         IntentDecision::SkillJournal { action, .. } => !action_allowed(action, JOURNAL_ACTIONS),
         IntentDecision::SkillHotel { intent_kind, .. } => match intent_kind.as_deref() {
             None => true,
-            Some(kind) => !HOTEL_INTENT_KINDS.contains(&kind),
+            Some(kind) => {
+                !HOTEL_INTENT_KINDS.contains(&kind)
+                    && !property_tools.iter().any(|tool| tool == kind)
+            }
         },
         _ => false,
     };
@@ -879,7 +890,10 @@ mod tests {
             }
         }
     }
-    use super::{parse_intent, validate_intent_decision, IntentDecision};
+    use super::{
+        parse_intent, validate_intent_decision, validate_intent_decision_with_property_tools,
+        IntentDecision,
+    };
     #[allow(unused_imports)]
     use TestOptionExt as _;
 
@@ -2004,6 +2018,25 @@ mod tests {
             slots: None,
         };
         assert_eq!(validate_intent_decision(d), IntentDecision::Chat);
+    }
+
+    #[test]
+    fn validation_accepts_live_property_tool_and_rejects_it_otherwise() {
+        let allowed = IntentDecision::SkillHotel {
+            intent_kind: Some("custom_minibar".to_string()),
+            slots: None,
+        };
+        assert_eq!(
+            validate_intent_decision(allowed.clone()),
+            IntentDecision::Chat
+        );
+        assert_eq!(
+            validate_intent_decision_with_property_tools(
+                allowed.clone(),
+                &["custom_minibar".to_string()]
+            ),
+            allowed
+        );
     }
 
     #[test]

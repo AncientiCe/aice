@@ -147,6 +147,9 @@ const PALACE_INGEST_DURATION_SECONDS: &str = "palace_ingest_duration_seconds";
 const PALACE_ADD_MEMORY_TOTAL: &str = "palace_add_memory_total";
 const PALACE_ADD_MEMORY_DURATION_SECONDS: &str = "palace_add_memory_duration_seconds";
 const PALACE_ERRORS_TOTAL: &str = "palace_errors_total";
+const PROPERTY_REQUESTS_TOTAL: &str = "property_requests_total";
+const PROPERTY_MCP_ERRORS_TOTAL: &str = "property_mcp_errors_total";
+const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -326,6 +329,19 @@ pub fn register_metrics() {
     counter!(PALACE_ADD_MEMORY_TOTAL, 0, "result" => "unknown");
     histogram!(PALACE_ADD_MEMORY_DURATION_SECONDS, 0.0_f64);
     counter!(PALACE_ERRORS_TOTAL, 0, "operation" => "unknown");
+    counter!(
+        PROPERTY_REQUESTS_TOTAL,
+        0,
+        "pack" => "unknown",
+        "tool" => "unknown",
+        "status" => "unknown"
+    );
+    counter!(PROPERTY_MCP_ERRORS_TOTAL, 0, "kind" => "unknown");
+    histogram!(
+        PROPERTY_MCP_DURATION_SECONDS,
+        0.0_f64,
+        "operation" => "unknown"
+    );
 }
 
 /// Record a new voice session start.
@@ -1036,4 +1052,26 @@ pub fn record_palace_add_memory(result: &str, duration: Duration) {
 
 pub fn record_palace_error(operation: &str) {
     counter!(PALACE_ERRORS_TOTAL, 1, "operation" => operation.to_string());
+}
+
+pub fn record_property_request(pack: &str, tool: &str, status: &str) {
+    counter!(
+        PROPERTY_REQUESTS_TOTAL,
+        1,
+        "pack" => pack.to_string(),
+        "tool" => tool.to_string(),
+        "status" => status.to_string()
+    );
+}
+
+pub fn record_property_mcp_error(kind: &str) {
+    counter!(PROPERTY_MCP_ERRORS_TOTAL, 1, "kind" => kind.to_string());
+}
+
+pub fn record_property_mcp_duration(operation: &str, duration: Duration) {
+    histogram!(
+        PROPERTY_MCP_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "operation" => operation.to_string()
+    );
 }
