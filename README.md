@@ -157,6 +157,28 @@ These components predate the split-runtime design and are retained for continuit
 - **`apps/pod-gateway`**: standalone WebSocket ingest/egress transport for advanced/internal deployments. Invoke via `cargo aice-gateway`.
 - **`pod-firmware` + M5Stack ATOM Echo**: experimental hardware path, not covered by binary release guarantees. See [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md) and [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md).
 
+### Release v0.3.0
+
+Current binary release. macOS arm64. The archive contains `aice-backend`, `aice-hotels`, `aice-care`, and `aice-ward`.
+
+1. Download `aice-v0.3.0-macos-arm64.tar.gz` and `aice-v0.3.0-macos-arm64.tar.gz.sha256` from the GitHub release page.
+2. Verify checksum:
+
+   ```bash
+   shasum -a 256 -c aice-v0.3.0-macos-arm64.tar.gz.sha256
+   ```
+
+3. Extract and run one pack:
+
+   ```bash
+   tar -xzf aice-v0.3.0-macos-arm64.tar.gz
+   ./aice-hotels property.example.json
+   ```
+
+`aice-backend` still serves the voice runtime. Set `property.facilitator_url` to `http://127.0.0.1:8791/mcp` so hotel intents call the facilitator. Care listens on 8792 and ward on 8793.
+
+Release runbook: [docs/runbooks/release-v0.3.0.md](docs/runbooks/release-v0.3.0.md).
+
 ### Release v0.1.0 (legacy)
 
 The `v0.1.0` binary release predates the cross-platform backend story and ships `pod-voice` artifacts only.

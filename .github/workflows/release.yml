@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Git tag to release (v0.1.0-rc.N or v0.1.0)"
+        description: "Git tag to release (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N)"
         required: true
         type: string
 
@@ -27,9 +27,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.event.inputs.release_tag }}"
-          if [[ ! "$tag" =~ ^v0\.1\.0(-rc\.[0-9]+)?$ ]]; then
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
             echo "Invalid release_tag: $tag"
-            echo "Expected v0.1.0 or v0.1.0-rc.N"
+            echo "Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N"
             exit 1
           fi
 

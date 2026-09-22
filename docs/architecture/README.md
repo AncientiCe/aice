@@ -311,6 +311,7 @@ sequenceDiagram
 | Build and flash M5Stack pod (push code to pod) | [M5Stack pod deployment](../deployment/m5stack-pod.md) |
 | Wi‑Fi and gateway host/port for pods | [Wi‑Fi configuration](../network/wifi-configuration.md) |
 | Plan and implementation status | [Local voice AI plan](../local_voice_ai_plan.md) |
+| Cut and publish `v0.3.0` | [v0.3.0 release runbook](../runbooks/release-v0.3.0.md) |
 
 Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, `cargo aice-audit`, `cargo aice-test`, `cargo aice-backend`.
 
