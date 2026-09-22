@@ -8,25 +8,34 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [v0.3.0] - 2026-09-22
 
+Changes after `v0.2.0` (`fc3e032`).
+
 ### Added
 
-- On-prem property facilitator for hotels, care homes, and non-clinical ward logistics (`aice-hotels`, `aice-care`, `aice-ward`). Each spoken request becomes a staff-desk ticket. Named tools can be delegated once to a property MCP. Distress and falls in care always escalate. Ward tools outside the non-clinical list are denied and escalated.
-- Phone extension to room mapping, and process smoke tests that start each pack binary and check the desk.
-- Release archive now includes `aice-backend`, `aice-hotels`, `aice-care`, and `aice-ward`.
-- Hotel concierge skill contract (`skill_hotel`) and Memory Palace v0.1.0 on voice turns.
-- Public-repo baseline documents: `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md`.
+- Hotel concierge skill. The classifier accepts `skill_hotel` with a closed list of in-room intent kinds and slots (`5c5273d`).
+- Memory Palace `v0.1.0` on voice turns (`8402943`). Every non-empty turn can add wake-up context, semantic recall, and knowledge-graph facts to the spoken answer, then ingest the outcome. Journal entries can be mirrored into the palace. New config: `palace_recall_results`, `palace_recall_min_similarity`, `palace_recall_max_chars`, `palace_journal_mirror_enabled`, `palace_kg_enabled`.
+- On-prem property facilitator (`988df75`): `aice-hotels`, `aice-care`, and `aice-ward`. A request becomes a staff-desk ticket. Named tools delegate once to a property MCP and stay escalated if that MCP is down. Care distress and falls always escalate. Ward tools outside the non-clinical list are denied and escalated. A phone extension maps to a room.
+- Process smoke tests that start each pack binary and check the desk. CI builds the three packs on Linux, macOS, and Windows. The macOS release archive contains `aice-backend`, `aice-hotels`, `aice-care`, and `aice-ward`.
+- Release workflow accepts `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N`, including `v0.3.0`.
 
 ### Changed
 
-- When `property.facilitator_url` is set, `skill_hotel` calls the facilitator MCP. The classifier `hik` list is that server's `tools/list`.
-- PCM frame decoding uses `as_chunks` so workspace Clippy passes on Rust 1.98.
-- README public-consumer guidance: stability/support matrix, experimental scope boundaries, and repository safety rules for local state and credentials.
-- Publication checklist hardening: explicit guidance for secret handling before public visibility changes.
+- With `property.facilitator_url` set, `skill_hotel` calls the facilitator. The classifier `hik` enum is that server's `tools/list`. Without the URL, the intent still goes to the connected frontend.
+- The backend depends on `mempalace` tag `v0.1.0` instead of a raw git revision.
+
+### Fixed
+
+- Hotel dispatch test no longer uses `expect()` (`03c680e`).
+- PCM frame decoding uses `as_chunks` so workspace Clippy passes on Rust 1.98 (`c547280`).
 
 ### Release assets
 
 - `aice-v0.3.0-macos-arm64.tar.gz`
 - `aice-v0.3.0-macos-arm64.tar.gz.sha256`
+
+## [v0.2.0] - 2026-04-19
+
+Published as tag `v0.2.0` (`fc3e032`) without a changelog entry. That tree already contained `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, and `CODE_OF_CONDUCT.md`, plus the public README guidance that had been left under Unreleased.
 
 ## [v0.1.0-rc.1] - 2026-03-17
 
