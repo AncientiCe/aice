@@ -6,6 +6,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+## [v0.3.1] - 2026-09-22
+
+### Fixed
+
+- macOS release build of `whisper-rs`. The whisper library target was compiled without `-std=gnu++17`, so current Apple Clang rejected `[[noreturn]]` and `constexpr`. `CMAKE_CXX_STANDARD=17` is now set for that build. `v0.3.0` was tagged but the macOS publish job failed before any assets were uploaded.
+
+### Release assets
+
+- `aice-v0.3.1-macos-arm64.tar.gz`
+- `aice-v0.3.1-macos-arm64.tar.gz.sha256`
+
 ## [v0.3.0] - 2026-09-22
 
 Changes after `v0.2.0` (`fc3e032`).
@@ -28,10 +39,7 @@ Changes after `v0.2.0` (`fc3e032`).
 - Hotel dispatch test no longer uses `expect()` (`03c680e`).
 - PCM frame decoding uses `as_chunks` so workspace Clippy passes on Rust 1.98 (`c547280`).
 
-### Release assets
-
-- `aice-v0.3.0-macos-arm64.tar.gz`
-- `aice-v0.3.0-macos-arm64.tar.gz.sha256`
+`v0.3.0` has no release assets. The publish job failed before upload.
 
 ## [v0.2.0] - 2026-04-19
 

@@ -1,6 +1,11 @@
 [net]
 git-fetch-with-cli = true
 
+[env]
+# whisper-rs forwards CMAKE_* into its CMake build. On current macOS Clang,
+# the whisper library target is compiled without -std=gnu++17 unless this is set.
+CMAKE_CXX_STANDARD = "17"
+
 [alias]
 aice-backend = 'run -p aice-backend --bin aice-backend'
 aice-gateway = 'run -p pod-gateway --bin pod-gateway'
