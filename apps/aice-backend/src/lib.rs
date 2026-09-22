@@ -816,8 +816,8 @@ async fn process_binary_audio_frame(
         return Ok(());
     }
     let chunk_started = Instant::now();
-    for frame in raw.chunks_exact(2) {
-        state.samples.push(i16::from_le_bytes([frame[0], frame[1]]));
+    for frame in raw.as_chunks::<2>().0 {
+        state.samples.push(i16::from_le_bytes(*frame));
     }
     record_backend_audio_chunk(raw.len(), chunk_started.elapsed());
 

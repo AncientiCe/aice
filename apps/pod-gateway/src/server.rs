@@ -36,8 +36,10 @@ pub enum PodEgressCommand {
 
 fn bytes_to_pcm(payload: &[u8]) -> Vec<i16> {
     payload
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|frame| i16::from_le_bytes(*frame))
         .collect()
 }
 
