@@ -9,7 +9,7 @@ Cut and publish `v0.3.0` from a green `main` commit. This release adds the on-pr
 - Distribution: GitHub Releases.
 - Official binaries: macOS arm64.
 - Archive members: `aice-backend`, `aice-hotels`, `aice-care`, `aice-ward`.
-- Asset names: `aice-v0.3.1-macos-arm64.tar.gz` and `aice-v0.3.1-macos-arm64.tar.gz.sha256`.
+- Asset names: `aice-v0.3.2-macos-arm64.tar.gz` and `aice-v0.3.2-macos-arm64.tar.gz.sha256`.
 - `pod-firmware` stays experimental and is not in the archive.
 
 ## Gates on the exact commit
@@ -29,14 +29,14 @@ On a Mac arm64 host, also run `./scripts/release/smoke-macos-arm64.sh`.
 
 The Release workflow accepts `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N`. It runs from `main` and checks out the tag you name.
 
-`v0.3.0` was tagged and the publish job failed before assets were uploaded. The published tag is `v0.3.1`.
+`v0.3.0` and `v0.3.1` were tagged. Both publish jobs failed before assets were uploaded. The published tag is `v0.3.2`.
 
 ```bash
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.3.2
+git push origin v0.3.2
 ```
 
-Then run the GitHub Actions **Release** workflow manually with `release_tag=v0.3.1`.
+Then run the GitHub Actions **Release** workflow manually with `release_tag=v0.3.2`.
 
 Confirm the release page has both assets and that the tarball contains the four binaries.
 
