@@ -146,6 +146,10 @@ const PALACE_INGEST_TOTAL: &str = "palace_ingest_total";
 const PALACE_INGEST_DURATION_SECONDS: &str = "palace_ingest_duration_seconds";
 const PALACE_ADD_MEMORY_TOTAL: &str = "palace_add_memory_total";
 const PALACE_ADD_MEMORY_DURATION_SECONDS: &str = "palace_add_memory_duration_seconds";
+const PALACE_KG_QUERY_TOTAL: &str = "palace_kg_query_total";
+const PALACE_KG_QUERY_DURATION_SECONDS: &str = "palace_kg_query_duration_seconds";
+const PALACE_KG_ADD_TOTAL: &str = "palace_kg_add_total";
+const PALACE_KG_ADD_DURATION_SECONDS: &str = "palace_kg_add_duration_seconds";
 const PALACE_ERRORS_TOTAL: &str = "palace_errors_total";
 const PROPERTY_REQUESTS_TOTAL: &str = "property_requests_total";
 const PROPERTY_MCP_ERRORS_TOTAL: &str = "property_mcp_errors_total";
@@ -328,6 +332,10 @@ pub fn register_metrics() {
     histogram!(PALACE_INGEST_DURATION_SECONDS, 0.0_f64);
     counter!(PALACE_ADD_MEMORY_TOTAL, 0, "result" => "unknown");
     histogram!(PALACE_ADD_MEMORY_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_KG_QUERY_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_KG_QUERY_DURATION_SECONDS, 0.0_f64);
+    counter!(PALACE_KG_ADD_TOTAL, 0, "result" => "unknown");
+    histogram!(PALACE_KG_ADD_DURATION_SECONDS, 0.0_f64);
     counter!(PALACE_ERRORS_TOTAL, 0, "operation" => "unknown");
     counter!(
         PROPERTY_REQUESTS_TOTAL,
@@ -1048,6 +1056,16 @@ pub fn record_palace_ingest(result: &str, duration: Duration) {
 pub fn record_palace_add_memory(result: &str, duration: Duration) {
     counter!(PALACE_ADD_MEMORY_TOTAL, 1, "result" => result.to_string());
     histogram!(PALACE_ADD_MEMORY_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_kg_query(result: &str, duration: Duration) {
+    counter!(PALACE_KG_QUERY_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_KG_QUERY_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+pub fn record_palace_kg_add(result: &str, duration: Duration) {
+    counter!(PALACE_KG_ADD_TOTAL, 1, "result" => result.to_string());
+    histogram!(PALACE_KG_ADD_DURATION_SECONDS, duration.as_secs_f64());
 }
 
 pub fn record_palace_error(operation: &str) {

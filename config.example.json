@@ -82,6 +82,11 @@
     "autosave": true,
     "sqlite_path": "memory.sqlite",
     "palace_db_path": ".mempalace/palace/palace.db",
-    "palace_identity_path": ".mempalace/identity.txt"
+    "palace_identity_path": ".mempalace/identity.txt",
+    "palace_recall_results": 5,
+    "palace_recall_min_similarity": 0.3,
+    "palace_recall_max_chars": 1500,
+    "palace_journal_mirror_enabled": true,
+    "palace_kg_enabled": true
   }
 }
