@@ -99,13 +99,13 @@ fn normalize_wav_to_pcm16k_mono(wav_bytes: &[u8]) -> Result<Vec<u8>, TtsError> {
     let mut mono: Vec<i16> = Vec::new();
     if channels == 1 {
         mono.reserve(data.len() / 2);
-        for frame in data.chunks_exact(2) {
-            mono.push(i16::from_le_bytes([frame[0], frame[1]]));
+        for frame in data.as_chunks::<2>().0 {
+            mono.push(i16::from_le_bytes(*frame));
         }
     } else {
         // Downmix stereo PCM16 by averaging left/right.
         mono.reserve(data.len() / 4);
-        for frame in data.chunks_exact(4) {
+        for frame in data.as_chunks::<4>().0 {
             let l = i16::from_le_bytes([frame[0], frame[1]]) as i32;
             let r = i16::from_le_bytes([frame[2], frame[3]]) as i32;
             mono.push(((l + r) / 2) as i16);
@@ -384,8 +384,10 @@ mod tests {
 
     fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
         bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|frame| i16::from_le_bytes(*frame))
             .collect()
     }
 
