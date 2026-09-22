@@ -6,16 +6,24 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+## [v0.3.2] - 2026-09-22
+
+### Fixed
+
+- macOS publish no longer restores a Cargo `target` cache. That cache kept an `ort-sys` linker path for `libclang_rt.osx` from a different Xcode, so `aice-backend` failed to link. `v0.3.1` was tagged and the publish job failed before any assets were uploaded.
+
+### Release assets
+
+- `aice-v0.3.2-macos-arm64.tar.gz`
+- `aice-v0.3.2-macos-arm64.tar.gz.sha256`
+
 ## [v0.3.1] - 2026-09-22
 
 ### Fixed
 
 - macOS release build of `whisper-rs`. The whisper library target was compiled without `-std=gnu++17`, so current Apple Clang rejected `[[noreturn]]` and `constexpr`. `CMAKE_CXX_STANDARD=17` is now set for that build. `v0.3.0` was tagged but the macOS publish job failed before any assets were uploaded.
 
-### Release assets
-
-- `aice-v0.3.1-macos-arm64.tar.gz`
-- `aice-v0.3.1-macos-arm64.tar.gz.sha256`
+`v0.3.1` has no release assets. The publish job failed before upload.
 
 ## [v0.3.0] - 2026-09-22
 
