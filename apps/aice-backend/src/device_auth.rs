@@ -104,6 +104,14 @@ impl DeviceAuth {
         devices
     }
 
+    /// Raise a help-button ticket for this pod at the facilitator.
+    pub async fn raise_help(&self, device_id: &str) -> Result<String, DeviceAuthError> {
+        self.client
+            .raise_help(device_id)
+            .await
+            .map_err(|error| DeviceAuthError::Unavailable(error.to_string()))
+    }
+
     /// Tell the facilitator which pods are connected right now.
     pub async fn report_heartbeat(&self) -> Result<usize, DeviceAuthError> {
         let devices = self.connected_devices();

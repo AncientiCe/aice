@@ -283,6 +283,9 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
     if method == Method::GET && path.starts_with("/api/firmware/") {
         return firmware_api(state, &incoming);
     }
+    if method == Method::POST && path == "/api/devices/help" {
+        return device_help(state, &incoming);
+    }
     if method == Method::POST && path == "/api/devices/heartbeat" {
         return device_heartbeat(state, &incoming);
     }
@@ -716,6 +719,35 @@ fn bytes_response(bytes: Vec<u8>) -> Response<BoxBody> {
             .insert(hyper::header::CONTENT_LENGTH, value);
     }
     response
+}
+
+fn device_help(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {
+    let authorized = incoming
+        .bearer()
+        .is_some_and(|token| state.service_token_matches(token));
+    if !authorized {
+        record_property_auth_attempt("service_token", "rejected");
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "service token required"}),
+        );
+    }
+    let device_id = serde_json::from_slice::<Value>(&incoming.body)
+        .ok()
+        .and_then(|body| {
+            body.get("device_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    match state.raise_help(&device_id) {
+        Ok(Some(ticket)) => json_response(StatusCode::OK, json!({"ticket_id": ticket.id})),
+        Ok(None) => json_response(
+            StatusCode::NOT_FOUND,
+            json!({"error": "no active pod with that id"}),
+        ),
+        Err(error) => internal_error(&error),
+    }
 }
 
 fn device_heartbeat(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {

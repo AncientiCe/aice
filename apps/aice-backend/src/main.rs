@@ -3,8 +3,9 @@ use aice_backend::discovery_broadcast::{
 };
 use aice_backend::{
     property_client_from_config, server_options_from_config, spawn_device_heartbeats,
-    spawn_memory_retention, spawn_server_with_options, AiceBackendEngine, AudioIngressConfig,
-    BackendEngine, WhisperAudioTranscriber, HEARTBEAT_INTERVAL,
+    spawn_memory_retention, spawn_server_with_options, AdmissionSettings, AdmittedEngine,
+    AdmittedTranscriber, AiceBackendEngine, AudioIngressConfig, AudioTranscriber, BackendEngine,
+    WhisperAudioTranscriber, HEARTBEAT_INTERVAL,
 };
 use core_config::Config;
 use core_observability::{
@@ -79,11 +80,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         None => None,
     };
-    let engine: Arc<dyn BackendEngine> = Arc::new(concrete_engine);
-    let transcriber = Arc::new(WhisperAudioTranscriber::new(
-        config.stt.whisper_model_path.clone(),
-        config.stt.preload_model_on_startup,
-    )?);
+    let admission = AdmissionSettings::from_config(&config);
+    info!(
+        max_concurrent_turns = admission.max_concurrent_turns,
+        stt_workers = admission.max_concurrent_stt,
+        max_wait_ms = admission.max_wait.as_millis() as u64,
+        "admission control"
+    );
+    let engine: Arc<dyn BackendEngine> =
+        Arc::new(AdmittedEngine::new(Arc::new(concrete_engine), &admission));
+    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(AdmittedTranscriber::new(
+        Arc::new(WhisperAudioTranscriber::new(
+            config.stt.whisper_model_path.clone(),
+            config.stt.preload_model_on_startup,
+            admission.max_concurrent_stt,
+        )?),
+        &admission,
+    ));
     let options = server_options_from_config(&config, &bind)?;
     let heartbeats = options.device_auth.as_ref().map(|auth| {
         info!("turn stream requires facilitator device tokens");

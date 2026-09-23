@@ -322,6 +322,14 @@ where
                             }
                             push(GatewayToPod::Led { state: LedState::Listening });
                         }
+                        PodToGateway::HelpButton => {
+                            // No speech needed: the backend raises the ticket directly.
+                            backend_tx
+                                .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::HelpRequest)?))
+                                .await?;
+                            record_pod_bridge_turn("help_button");
+                            push(GatewayToPod::Led { state: LedState::Thinking });
+                        }
                         PodToGateway::Ping { seq } => push(GatewayToPod::Pong { seq }),
                         PodToGateway::Hello { .. } | PodToGateway::Identify { .. } => {
                             push(GatewayToPod::HelloAck { protocol_version: PROTOCOL_VERSION });
@@ -372,6 +380,13 @@ where
                                 },
                             };
                             backend_tx.send(Message::Text(serde_json::to_string(&result)?)).await?;
+                        }
+                        TurnStreamServerEvent::HelpRaised { spoken, .. } => {
+                            let speech = Arc::clone(&speech);
+                            let spoken_tx = spoken_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let _ = spoken_tx.blocking_send(speech.synthesize(&spoken));
+                            });
                         }
                         TurnStreamServerEvent::PartialTranscript { .. }
                         | TurnStreamServerEvent::IntentUpdate { .. } => {}

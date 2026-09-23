@@ -131,6 +131,7 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length);
 static void send_hello();
 static void send_ping();
 static void send_tap_activate();
+static void send_help_button();
 static void start_mic();
 static void stop_mic();
 static void start_speaker();
@@ -222,12 +223,18 @@ void loop() {
     g_ws.loop();
     led_update();
 
-    // Button: tap-to-activate
+    // Button: short tap stops playback; a long press calls for help without speech.
     static bool btn_last = HIGH;
+    static uint32_t btn_down_ms = 0;
     bool btn_now = digitalRead(PIN_BTN);
     if (btn_last == HIGH && btn_now == LOW) {
-        Serial.println("[aice-pod] button pressed — tap activate");
-        if (g_ws_connected) {
+        btn_down_ms = millis();
+    } else if (btn_last == LOW && btn_now == HIGH && g_ws_connected) {
+        if (millis() - btn_down_ms >= HELP_PRESS_MS) {
+            Serial.println("[aice-pod] long press — calling for help");
+            send_help_button();
+        } else {
+            Serial.println("[aice-pod] button tap — stop");
             send_tap_activate();
         }
     }
@@ -422,6 +429,14 @@ static void send_ping() {
     JsonDocument doc;
     doc["type"] = "ping";
     doc["seq"]  = g_ping_seq++;
+    String out;
+    serializeJson(doc, out);
+    g_ws.sendTXT(out);
+}
+
+static void send_help_button() {
+    JsonDocument doc;
+    doc["type"] = "help_button";
     String out;
     serializeJson(doc, out);
     g_ws.sendTXT(out);

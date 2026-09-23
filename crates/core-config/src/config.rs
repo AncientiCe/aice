@@ -267,6 +267,9 @@ pub struct SttConfig {
     /// Warm Whisper model/state at startup to reduce first-turn latency.
     #[serde(default = "default_stt_preload_model_on_startup")]
     pub preload_model_on_startup: bool,
+    /// Whisper contexts loaded side by side (each holds the model in memory).
+    #[serde(default = "default_stt_workers")]
+    pub workers: usize,
 }
 
 impl Default for SttConfig {
@@ -274,8 +277,13 @@ impl Default for SttConfig {
         Self {
             whisper_model_path: default_whisper_model_path(),
             preload_model_on_startup: default_stt_preload_model_on_startup(),
+            workers: default_stt_workers(),
         }
     }
+}
+
+fn default_stt_workers() -> usize {
+    1
 }
 
 fn default_whisper_model_path() -> String {
@@ -349,6 +357,20 @@ pub struct ServiceConfig {
     /// Allow plain HTTP on a network bind in a property deployment.
     #[serde(default)]
     pub allow_plaintext_lan: bool,
+    /// Turns (classification, skills, answers) running at once; more wait.
+    #[serde(default = "default_max_concurrent_turns")]
+    pub max_concurrent_turns: usize,
+    /// Longest a turn or STT job waits before a busy reply, in milliseconds.
+    #[serde(default = "default_turn_queue_max_wait_ms")]
+    pub turn_queue_max_wait_ms: u64,
+}
+
+fn default_max_concurrent_turns() -> usize {
+    4
+}
+
+fn default_turn_queue_max_wait_ms() -> u64 {
+    20_000
 }
 
 /// PEM files for the backend's TLS listener (for example issued with
@@ -370,6 +392,8 @@ impl Default for ServiceConfig {
             audio_session_max_duration_ms: default_audio_session_max_duration_ms(),
             tls: None,
             allow_plaintext_lan: false,
+            max_concurrent_turns: default_max_concurrent_turns(),
+            turn_queue_max_wait_ms: default_turn_queue_max_wait_ms(),
         }
     }
 }
@@ -639,6 +663,9 @@ pub struct Config {
     #[serde(default)]
     pub llm: LlmConfig,
     /// Pod gateway bind address.
+    /// More Ollama hosts beside `ollama_url`; calls rotate and fail over.
+    #[serde(default)]
+    pub ollama_urls: Vec<String>,
     #[serde(default = "default_pod_bind")]
     pub pod_bind: String,
     /// Room bridge between pods and the backend (`cargo aice-gateway`).
@@ -754,6 +781,7 @@ impl Default for Config {
             ollama_url: default_ollama_url(),
             model: default_model(),
             llm: LlmConfig::default(),
+            ollama_urls: Vec::new(),
             pod_bind: default_pod_bind(),
             pod_gateway: PodGatewayConfig::default(),
             audio: AudioRuntimeConfig::default(),

@@ -764,6 +764,32 @@ impl Facilitator {
         ))?))
     }
 
+    /// The pod's help button: an escalated ticket for its room, no LLM involved.
+    pub(crate) fn raise_help(&self, device_id: &str) -> Result<Option<Ticket>, FacilitatorError> {
+        let Some(device) = self
+            .store
+            .list_devices()?
+            .into_iter()
+            .find(|device| device.device_id == device_id && device.status == "active")
+        else {
+            return Ok(None);
+        };
+        let room = device.room.unwrap_or_else(|| "unassigned".to_string());
+        let ticket = self.new_ticket(
+            &room,
+            "help_button",
+            &json!({ "device_id": device_id }),
+            TicketStatus::Escalated,
+            "help button pressed on the room pod",
+        )?;
+        record_property_request(
+            self.settings.pack.as_str(),
+            "help_button",
+            ticket.status.as_str(),
+        );
+        Ok(Some(ticket))
+    }
+
     /// Open an escalated ticket for every pod that just went silent.
     pub(crate) fn check_fleet(&self) -> Result<(), FacilitatorError> {
         let cutoff = store::unix_millis()
@@ -1338,6 +1364,33 @@ impl PropertyClient {
             base_url,
             service_token,
         }
+    }
+
+    /// Raise a help-button ticket for a pod; returns the ticket id.
+    pub async fn raise_help(&self, device_id: &str) -> Result<String, FacilitatorError> {
+        let response = self
+            .http
+            .post(format!("{}/api/devices/help", self.base_url))
+            .bearer_auth(&self.service_token)
+            .json(&json!({ "device_id": device_id }))
+            .send()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(FacilitatorError::Http(format!(
+                "help returned {}",
+                response.status()
+            )));
+        }
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        value
+            .get("ticket_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| FacilitatorError::Http("help response has no ticket_id".to_string()))
     }
 
     /// Report pods with an open turn stream; returns how many the facilitator knew.

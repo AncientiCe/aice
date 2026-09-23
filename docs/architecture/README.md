@@ -108,7 +108,7 @@ sequenceDiagram
 - **Inputs:** pod messages `hello`, `identify`, `audio`, `ping`, `tap_activate`; config `pod_bind`, `pod_gateway.backend_url` (`ws://` or `wss://`), `pod_gateway.backend_ca_file`, `pod_gateway.tls` (serve pods over TLS), `pod_gateway.vad_start_level`, `pod_gateway.vad_end_silence_ms`, and `tts.piper_model_path`.
 - **Turn detection:** a turn opens after three frames above `vad_start_level` (mean absolute sample value) and includes the eight frames before it, so the first word is kept. It closes after `vad_end_silence_ms` of quiet audio or 15 s. Time is measured in audio samples, so buffered bursts are judged like live audio. The pod mic is off while it plays, so the bridge ignores audio until the answer has been sent.
 - **Outputs:** `hello_ack`, `led` (`listening`, `thinking`, `speaking`), `audio` chunks of at most 2 KiB, `stop_audio`, `pong`, `error`. Audio is paced at playback speed with three chunks of lead, because the pod queues only six 2 KiB chunks (about 0.4 s); the pod returns to listening by itself when playback ends.
-- **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`).
+- **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`); `help_button` (long press) calls staff without speech (section 29).
 - **Local skills:** pods have none; a `frontend_skill_intent` is answered with an error result so the backend replies instead of waiting.
 - **Failure paths:** the backend refuses the token → `error {code: unauthorized}` and the pod connection closes; backend unreachable → `error {code: backend_unavailable}`; invalid JSON → `invalid_message`; audio over 64 KiB → `payload_too_large`; binary frames → `binary_not_supported`; Piper failure → the turn ends without audio (`pod_bridge_turns_total{result="speech_failed"}`). A property deployment refuses plain WebSocket pods on a network bind unless `service.allow_plaintext_lan` is set.
 - **Metrics:** `pod_bridge_turns_total{result}` (`answered`, `no_answer`, `cancelled`, `backend_error`, `speech_failed`, `unauthorized`, `backend_unavailable`), `pod_bridge_turn_duration_seconds`, `pod_connections_total`, `pod_disconnects_total`, `pod_audio_frames_total`, `pod_tts_chunks_total`, `pod_egress_queue_drops_total`, `pod_egress_send_errors_total`.
@@ -716,3 +716,58 @@ sequenceDiagram
 - **Restarts:** the schedule is stored on the ticket (`alert_tier`, `next_alert_at`), so a restarted pack resumes timers. Acknowledge or done clears the timer; a supervisor reopen re-announces from tier 0.
 - **Failure paths:** a failing channel is logged and counted but does not block the tier's other channels; if every channel of tier 0 fails, the first alert is retried every 5 s; a breach always advances so higher tiers are still paged.
 - **Metrics:** `property_alerts_sent_total{channel,result}`, `property_sla_breaches_total{pack,tool}`, `property_ticket_ack_duration_seconds{pack,tool}`.
+
+---
+
+## 28. Capacity: admission control, worker pools, and LLM failover
+
+**Purpose:** Many rooms share one backend. Work queues in a bounded way, speech-to-text runs on several Whisper contexts, and answers keep flowing when one LLM host fails.
+
+```mermaid
+flowchart LR
+    Rooms["Turn streams from many rooms"] --> SttGate{"STT gate\nstt.workers permits"}
+    SttGate -->|permit| Pool["Whisper worker pool\n(one context per worker)"]
+    SttGate -->|waited > max| SttBusy["STT error for that chunk"]
+    Pool --> TurnGate{"Turn gate\nservice.max_concurrent_turns"}
+    TurnGate -->|permit| Engine["Classify, skills, answer"]
+    TurnGate -->|waited > max| Busy["Spoken: helping other rooms, ask again"]
+    Engine --> Llm["CradleLlmStream"]
+    Llm --> H1["Ollama host 1"]
+    Llm --> H2["Ollama host 2"]
+    H1 -. fails .-> Cool["skipped for 30 s"]
+    Cool -. next call .-> H2
+```
+
+**Notes:**
+- **Inputs:** `service.max_concurrent_turns` (default 4), `service.turn_queue_max_wait_ms` (default 20 000), `stt.workers` (default 1; each worker loads the Whisper model, so memory grows with it), `ollama_url` plus `ollama_urls` (extra hosts).
+- **Behaviour:** turns and STT jobs take a permit before they run and queue in arrival order beyond the limit. A turn that cannot start within the wait gets the spoken `BUSY_REPLY` instead of silence. LLM calls rotate across hosts; a host that errors is skipped for 30 s and the call moves on to the next; if all are cooling down they are still tried, and an error is returned only when every host fails. A failure mid-stream is not retried.
+- **Capacity:** measure with `room-loadtest` (section 30) and size `stt.workers`, `max_concurrent_turns`, and the host list from the p95 you need.
+- **Metrics:** `backend_queue_depth{stage}`, `backend_queue_wait_seconds{stage}`, `backend_queue_rejections_total{stage}` (`stage` is `turn` or `stt`), `backend_inference_host_errors_total{host}`.
+
+---
+
+## 29. Help button (degraded mode)
+
+**Purpose:** A resident, patient, or guest can call staff from the pod even when speech recognition or the LLM is down. The button is a hardware signal, not speech, so nothing interprets what was said.
+
+```mermaid
+sequenceDiagram
+    participant Pod
+    participant Bridge as Room bridge
+    participant Backend as aice-backend
+    participant Fac as Facilitator
+    Pod->>Bridge: help_button (press ≥ 1.5 s)
+    Bridge->>Pod: led thinking
+    Bridge->>Backend: help_request
+    Backend->>Fac: POST /api/devices/help {device_id} (service token)
+    Fac->>Fac: escalated ticket "help_button" for the pod's room, alert armed
+    Fac-->>Backend: {ticket_id}
+    Backend-->>Bridge: help_raised {ticket_id, spoken}
+    Bridge->>Pod: speaking + "I've called the staff. Someone is on the way."
+```
+
+**Notes:**
+- **Inputs:** a long press on the pod (`HELP_PRESS_MS`, default 1500 ms); a short tap still stops playback.
+- **Outputs:** an escalated `help_button` ticket paged like any other (section 27); a spoken confirmation.
+- **Failure paths:** facilitator unreachable or no device auth → `help_raised` without a ticket and the spoken advice to use the phone or call button (`backend_help_requests_total{result="unavailable"|"no_property"}`); an unknown or revoked pod → 404 at the facilitator.
+- **Metrics:** `backend_help_requests_total{result}`, `pod_bridge_turns_total{result="help_button"}`, `property_requests_total{tool="help_button"}`.

@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod device_auth;
 pub mod discovery_broadcast;
 pub mod llm_adapters;
@@ -11,7 +12,7 @@ use core_llm::CradleLlmStream;
 use core_observability::{
     record_air_quality_skill, record_backend_audio_chunk, record_backend_auth_rejection,
     record_backend_dependency_request, record_backend_dependency_request_duration,
-    record_backend_http_request, record_backend_llm_provider_duration,
+    record_backend_help_request, record_backend_http_request, record_backend_llm_provider_duration,
     record_backend_skill_execute, record_backend_skill_execute_duration,
     record_backend_turn_cancellation, record_backend_turn_duration,
     record_backend_turn_first_token_duration, record_backend_turn_partial_transcript_duration,
@@ -217,30 +218,40 @@ pub trait AudioTranscriber: Send + Sync {
 }
 
 pub struct WhisperAudioTranscriber {
-    stt: Arc<std::sync::Mutex<WhisperSttStream>>,
+    pool: WorkerPool<WhisperSttStream>,
 }
 
 impl WhisperAudioTranscriber {
-    pub fn new(model_path: impl Into<String>, preload_on_startup: bool) -> Result<Self, DynError> {
+    /// Load `workers` Whisper contexts (each holds the model in memory) so
+    /// that many rooms can be transcribed at once.
+    pub fn new(
+        model_path: impl Into<String>,
+        preload_on_startup: bool,
+        workers: usize,
+    ) -> Result<Self, DynError> {
         let path: String = model_path.into();
-        let mut stt = WhisperSttStream::new(Path::new(&path))
-            .map_err(|error| format!("failed to load whisper model: {error}"))?;
-        if preload_on_startup {
-            let t0 = Instant::now();
-            match stt.warm_up() {
-                Ok(()) => {
-                    record_model_preload_duration("stt", t0.elapsed());
-                    record_model_preload("stt", "success");
-                }
-                Err(error) => {
-                    record_model_preload_duration("stt", t0.elapsed());
-                    record_model_preload("stt", "error");
-                    tracing::warn!(%error, "stt preload failed; continuing without startup warmup");
+        let mut contexts = Vec::new();
+        for _ in 0..workers.max(1) {
+            let mut stt = WhisperSttStream::new(Path::new(&path))
+                .map_err(|error| format!("failed to load whisper model: {error}"))?;
+            if preload_on_startup {
+                let t0 = Instant::now();
+                match stt.warm_up() {
+                    Ok(()) => {
+                        record_model_preload_duration("stt", t0.elapsed());
+                        record_model_preload("stt", "success");
+                    }
+                    Err(error) => {
+                        record_model_preload_duration("stt", t0.elapsed());
+                        record_model_preload("stt", "error");
+                        tracing::warn!(%error, "stt preload failed; continuing without startup warmup");
+                    }
                 }
             }
+            contexts.push(stt);
         }
         Ok(Self {
-            stt: Arc::new(std::sync::Mutex::new(stt)),
+            pool: WorkerPool::new(contexts),
         })
     }
 }
@@ -259,18 +270,13 @@ impl AudioTranscriber for WhisperAudioTranscriber {
             )
             .into());
         }
-        let stt = self.stt.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = stt
-                .lock()
-                .map_err(|error| format!("stt mutex poisoned: {error}"))?;
-            guard
-                .transcribe_blocking(&samples)
-                .map(|t| t.trim().to_string())
-                .map_err(|error| -> DynError { error.into() })
-        })
-        .await
-        .map_err(|error| -> DynError { format!("stt task join: {error}").into() })?
+        self.pool
+            .run(move |stt: &mut WhisperSttStream| {
+                stt.transcribe_blocking(&samples)
+                    .map(|text| text.trim().to_string())
+                    .map_err(|error| -> DynError { error.into() })
+            })
+            .await
     }
 }
 
@@ -301,6 +307,9 @@ impl ServerHandle {
     }
 }
 
+pub use admission::{
+    AdmissionSettings, AdmittedEngine, AdmittedTranscriber, WorkerPool, BUSY_REPLY,
+};
 pub use device_auth::{
     spawn_device_heartbeats, ConnectedDevice, DeviceAuth, DeviceAuthError, HEARTBEAT_INTERVAL,
 };
@@ -377,6 +386,12 @@ pub fn server_options_from_config(config: &Config, bind: &str) -> Result<ServerO
         None => Err("property.require_device_token needs property.facilitator_url".into()),
     }
 }
+
+/// Spoken after the help button opened a ticket.
+pub const HELP_RAISED_REPLY: &str = "I've called the staff. Someone is on the way.";
+/// Spoken when the help button could not reach the staff desk.
+pub const HELP_UNAVAILABLE_REPLY: &str =
+    "I couldn't reach the staff desk. Please use the phone or the call button.";
 
 /// A turn-stream connection whose pod token was verified.
 struct AuthenticatedDevice {
@@ -1258,6 +1273,38 @@ async fn handle_turn_stream_socket(
                                         }
                                     }
                                 }
+                                TurnStreamClientMessage::HelpRequest => {
+                                    let raised = match &device {
+                                        Some(authenticated) => {
+                                            let result = authenticated
+                                                .auth
+                                                .raise_help(&authenticated.identity.device_id)
+                                                .await;
+                                            record_backend_help_request(if result.is_ok() { "raised" } else { "unavailable" });
+                                            match result {
+                                                Ok(ticket_id) => TurnStreamServerEvent::HelpRaised {
+                                                    ticket_id: Some(ticket_id),
+                                                    spoken: HELP_RAISED_REPLY.to_string(),
+                                                },
+                                                Err(error) => {
+                                                    warn!(%error, "help button could not reach the facilitator");
+                                                    TurnStreamServerEvent::HelpRaised {
+                                                        ticket_id: None,
+                                                        spoken: HELP_UNAVAILABLE_REPLY.to_string(),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            record_backend_help_request("no_property");
+                                            TurnStreamServerEvent::HelpRaised {
+                                                ticket_id: None,
+                                                spoken: HELP_UNAVAILABLE_REPLY.to_string(),
+                                            }
+                                        }
+                                    };
+                                    emit_turn_stream_event(&mut ws, &raised).await?;
+                                }
                                 TurnStreamClientMessage::TurnCancel => {
                                     if let Some(mut state) = turn.take() {
                                         if let Some(task) = state.active_task.take() {
@@ -1723,8 +1770,16 @@ fn aice_palace_handle(mut palace: Palace) -> PalaceHandle {
 
 impl AiceBackendEngine {
     pub async fn from_config(config: &Config) -> Result<Self, DynError> {
-        let llm = CradleLlmStream::new(
-            config.ollama_url.clone(),
+        let mut llm_hosts = vec![config.ollama_url.clone()];
+        llm_hosts.extend(
+            config
+                .ollama_urls
+                .iter()
+                .filter(|url| !url.trim().is_empty())
+                .cloned(),
+        );
+        let llm = CradleLlmStream::new_with_hosts(
+            llm_hosts,
             config.model.clone(),
             config.llm.short_replies,
             config.llm.max_output_tokens,

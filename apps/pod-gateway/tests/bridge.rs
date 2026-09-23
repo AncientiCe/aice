@@ -370,3 +370,32 @@ async fn bad_frames_are_reported_without_dropping_the_pod() {
     stack.backend.shutdown().await;
     let _ = std::fs::remove_file(stack.db);
 }
+
+#[tokio::test]
+async fn a_long_press_calls_for_help_and_says_so() {
+    let stack = stack("help").await;
+    let bridge = bridge(&stack.backend).await;
+    let mut socket = pod(&bridge.bind, &stack.token).await;
+    hello(&mut socket).await;
+    assert!(matches!(
+        next(&mut socket).await,
+        Some(GatewayToPod::HelloAck { .. })
+    ));
+    let _listening = next(&mut socket).await;
+    send(&mut socket, &PodToGateway::HelpButton).await;
+    let mut audio = 0usize;
+    let mut saw_speaking = false;
+    while audio == 0 {
+        match next(&mut socket).await {
+            Some(GatewayToPod::Led {
+                state: LedState::Speaking,
+            }) => saw_speaking = true,
+            Some(GatewayToPod::Audio { payload }) => audio += payload.0.len(),
+            Some(GatewayToPod::Led { .. }) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+    assert!(saw_speaking && audio > 0, "the pod confirms out loud");
+    stack.backend.shutdown().await;
+    let _ = std::fs::remove_file(stack.db);
+}

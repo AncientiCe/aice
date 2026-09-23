@@ -163,6 +163,11 @@ const FLEET_FIRMWARE_DOWNLOADS_TOTAL: &str = "fleet_firmware_downloads_total";
 const MEMORY_STAY_TRANSITIONS_TOTAL: &str = "memory_stay_transitions_total";
 const PROPERTY_ALERTS_SENT_TOTAL: &str = "property_alerts_sent_total";
 const POD_BRIDGE_TURNS_TOTAL: &str = "pod_bridge_turns_total";
+const BACKEND_QUEUE_DEPTH: &str = "backend_queue_depth";
+const BACKEND_INFERENCE_HOST_ERRORS_TOTAL: &str = "backend_inference_host_errors_total";
+const BACKEND_HELP_REQUESTS_TOTAL: &str = "backend_help_requests_total";
+const BACKEND_QUEUE_WAIT_SECONDS: &str = "backend_queue_wait_seconds";
+const BACKEND_QUEUE_REJECTIONS_TOTAL: &str = "backend_queue_rejections_total";
 const POD_BRIDGE_TURN_DURATION_SECONDS: &str = "pod_bridge_turn_duration_seconds";
 const PROPERTY_SLA_BREACHES_TOTAL: &str = "property_sla_breaches_total";
 const PROPERTY_TICKET_ACK_DURATION_SECONDS: &str = "property_ticket_ack_duration_seconds";
@@ -379,6 +384,11 @@ pub fn register_metrics() {
     counter!(FLEET_FIRMWARE_DOWNLOADS_TOTAL, 0, "version" => "unknown");
     counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 0, "action" => "unknown");
     counter!(POD_BRIDGE_TURNS_TOTAL, 0, "result" => "unknown");
+    gauge!(BACKEND_QUEUE_DEPTH, 0.0, "stage" => "unknown");
+    counter!(BACKEND_INFERENCE_HOST_ERRORS_TOTAL, 0, "host" => "unknown");
+    counter!(BACKEND_HELP_REQUESTS_TOTAL, 0, "result" => "unknown");
+    histogram!(BACKEND_QUEUE_WAIT_SECONDS, 0.0_f64, "stage" => "unknown");
+    counter!(BACKEND_QUEUE_REJECTIONS_TOTAL, 0, "stage" => "unknown");
     histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, 0.0_f64);
     counter!(
         PROPERTY_ALERTS_SENT_TOTAL,
@@ -1249,4 +1259,33 @@ pub fn record_fleet_firmware_manifest(result: &str) {
 /// Firmware images served to pods.
 pub fn record_fleet_firmware_download(version: &str) {
     counter!(FLEET_FIRMWARE_DOWNLOADS_TOTAL, 1, "version" => version.to_string());
+}
+
+/// Jobs holding or waiting for a permit when one more arrives, by stage (`turn`, `stt`).
+pub fn record_backend_queue_depth(stage: &str, depth: usize) {
+    gauge!(BACKEND_QUEUE_DEPTH, depth as f64, "stage" => stage.to_string());
+}
+
+/// Time a job waited for a permit, by stage.
+pub fn record_backend_queue_wait(stage: &str, duration: Duration) {
+    histogram!(
+        BACKEND_QUEUE_WAIT_SECONDS,
+        duration.as_secs_f64(),
+        "stage" => stage.to_string()
+    );
+}
+
+/// Jobs turned away after waiting the maximum time, by stage.
+pub fn record_backend_queue_rejection(stage: &str) {
+    counter!(BACKEND_QUEUE_REJECTIONS_TOTAL, 1, "stage" => stage.to_string());
+}
+
+/// An LLM host failed a call (the call moved to the next host).
+pub fn record_backend_inference_host_error(host: &str) {
+    counter!(BACKEND_INFERENCE_HOST_ERRORS_TOTAL, 1, "host" => host.to_string());
+}
+
+/// Help-button presses, by result (`raised`, `unavailable`, `no_property`).
+pub fn record_backend_help_request(result: &str) {
+    counter!(BACKEND_HELP_REQUESTS_TOTAL, 1, "result" => result.to_string());
 }
