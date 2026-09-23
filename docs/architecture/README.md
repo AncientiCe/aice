@@ -771,3 +771,25 @@ sequenceDiagram
 - **Outputs:** an escalated `help_button` ticket paged like any other (section 27); a spoken confirmation.
 - **Failure paths:** facilitator unreachable or no device auth → `help_raised` without a ticket and the spoken advice to use the phone or call button (`backend_help_requests_total{result="unavailable"|"no_property"}`); an unknown or revoked pod → 404 at the facilitator.
 - **Metrics:** `backend_help_requests_total{result}`, `pod_bridge_turns_total{result="help_button"}`, `property_requests_total{tool="help_button"}`.
+
+---
+
+## 30. Capacity measurement (`room-loadtest`)
+
+**Purpose:** Know how many rooms one installation can serve at the latency the property needs, and catch regressions before they reach a property.
+
+```mermaid
+flowchart LR
+    Tool["room-loadtest"] -->|enrol + assign loadtest-NNNN| Fac[Facilitator]
+    Tool -->|N simulated pods, WSS, device tokens| Bridge[Room bridge]
+    Bridge --> Backend[aice-backend + admission]
+    Backend --> Stt[Whisper pool] & Llm[Ollama hosts]
+    Bridge -->|answer audio| Tool
+    Tool --> Report["rooms, answered, failed, p50 / p95 / max\n(end of speech → first answer audio)"]
+```
+
+**Notes:**
+- **Staging run:** `cargo aice-loadtest --bridge wss://voice.property.local:8765/ --ca tls/ca.pem --facilitator https://desk.property.local:8791 --db property.sqlite --rooms 40 --turns 3 --pcm utterance.raw`. Use a recorded request (`--pcm`, raw PCM16 16 kHz mono) so Whisper and the LLM do real work; revoke the `loadtest-NNNN` pods afterwards with `device revoke`.
+- **Sizing:** raise `--rooms` until p95 passes the target, then set `stt.workers`, `service.max_concurrent_turns`, and `ollama_urls` from the numbers. Record the result for the property in its deployment notes.
+- **CI gate:** `apps/room-loadtest/tests/capacity.rs` runs 8 rooms × 2 turns through the real bridge, backend (admission limit 2), and facilitator with explicit test doubles for STT, LLM, and speech; every turn must be answered, admission must hold, and p95 must stay under 5 s.
+- **Failure paths:** a room that gets no answer audio within `--timeout-secs` counts as failed and the binary exits non-zero.

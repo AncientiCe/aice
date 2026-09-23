@@ -16,6 +16,7 @@ members = [
     "crates/pod-protocol",
     "apps/aice-backend",
     "apps/pod-gateway",
+    "apps/room-loadtest",
     "crates/property-facilitator",
     "apps/aice-hotels",
     "apps/aice-care",
