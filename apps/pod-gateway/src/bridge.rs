@@ -672,8 +672,10 @@ fn mean_abs_level(frame: &[u8]) -> i32 {
         return 0;
     }
     let total: i64 = frame
-        .chunks_exact(2)
-        .map(|pair| i64::from(i16::from_le_bytes([pair[0], pair[1]])).abs())
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| i64::from(i16::from_le_bytes(*pair)).abs())
         .sum();
     i32::try_from(total / i64::try_from(samples).unwrap_or(1)).unwrap_or(i32::MAX)
 }

@@ -164,7 +164,13 @@ struct DeskRequest {
     body: Bytes,
 }
 
-async fn read_request(request: Request<Incoming>) -> Result<DeskRequest, Response<BoxBody>> {
+/// Why a request body could not be read.
+struct BodyError {
+    status: StatusCode,
+    message: String,
+}
+
+async fn read_request(request: Request<Incoming>) -> Result<DeskRequest, BodyError> {
     let header = |name: hyper::header::HeaderName| {
         request
             .headers()
@@ -190,7 +196,10 @@ async fn read_request(request: Request<Incoming>) -> Result<DeskRequest, Respons
             } else {
                 StatusCode::BAD_REQUEST
             };
-            return Err(json_response(status, json!({"error": error.to_string()})));
+            return Err(BodyError {
+                status,
+                message: error.to_string(),
+            });
         }
     };
     Ok(DeskRequest {
@@ -239,7 +248,12 @@ impl DeskRequest {
 async fn route(state: Arc<Facilitator>, request: Request<Incoming>) -> Response<BoxBody> {
     let incoming = match read_request(request).await {
         Ok(incoming) => incoming,
-        Err(response) => return with_security_headers(response),
+        Err(error) => {
+            return with_security_headers(json_response(
+                error.status,
+                json!({"error": error.message}),
+            ))
+        }
     };
     with_security_headers(dispatch(&state, incoming).await)
 }
