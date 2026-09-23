@@ -117,6 +117,7 @@ jobs:
           cargo build --release -p aice-hotels --bin aice-hotels
           cargo build --release -p aice-care --bin aice-care
           cargo build --release -p aice-ward --bin aice-ward
+          cargo build --release -p pod-gateway --bin pod-gateway
 
       - name: Package release archive and checksums
         shell: bash
@@ -124,9 +125,9 @@ jobs:
           set -euo pipefail
           tag="${{ github.event.inputs.release_tag }}"
           mkdir -p dist
-          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward dist/
+          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
-          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward
+          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway
           shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets
@@ -135,6 +136,73 @@ jobs:
           tag_name: ${{ github.event.inputs.release_tag }}
           prerelease: ${{ needs.validate-tag.outputs.prerelease }}
           generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  build-and-publish-linux:
+    name: Build and publish Linux ${{ matrix.arch }} assets
+    needs: [validate-tag, build-and-publish]
+    runs-on: ${{ matrix.runner }}
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.release_tag }}
+      - name: Configure git auth for private dependencies
+        shell: bash
+        env:
+          AICE_SKILLS_READ_TOKEN: ${{ secrets.AICE_SKILLS_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AICE_SKILLS_READ_TOKEN:-}" ]; then
+            echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
+            exit 1
+          fi
+          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
+          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev cmake
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: |
+          cargo build --release -p aice-backend --bin aice-backend
+          cargo build --release -p aice-hotels --bin aice-hotels
+          cargo build --release -p aice-care --bin aice-care
+          cargo build --release -p aice-ward --bin aice-ward
+          cargo build --release -p pod-gateway --bin pod-gateway
+
+      - name: Package release archive and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.release_tag }}"
+          mkdir -p dist
+          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway dist/
+          archive="aice-${tag}-linux-${{ matrix.arch }}.tar.gz"
+          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway
+          sha256sum "dist/${archive}" > "dist/${archive}.sha256"
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          prerelease: ${{ needs.validate-tag.outputs.prerelease }}
           files: |
             dist/*.tar.gz
             dist/*.sha256
