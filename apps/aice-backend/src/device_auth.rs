@@ -1,8 +1,9 @@
 //! Device-token checks for `/turns/stream`.
 //!
-//! Tokens are verified against the property facilitator. A verified identity is
-//! cached briefly; when the facilitator cannot be reached, a recently verified
-//! identity keeps working so a desk restart does not silence every room.
+//! Tokens are verified against the property facilitator on every connection
+//! and every turn, because the answer carries the room's current stay. When the
+//! facilitator cannot be reached, a recently verified identity keeps the room
+//! working with memory switched off, so a desk restart does not silence rooms.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -11,8 +12,6 @@ use core_observability::{record_backend_auth_rejection, record_backend_device_au
 use property_facilitator::{token_digest, DeviceIdentity, PropertyClient};
 use tokio::sync::Mutex;
 
-/// How long a verified token is trusted without asking the facilitator again.
-const FRESH_FOR: Duration = Duration::from_secs(30);
 /// How long a verified token keeps working while the facilitator is unreachable.
 const STALE_FOR: Duration = Duration::from_secs(10 * 60);
 
@@ -28,14 +27,15 @@ pub enum DeviceAuthError {
 
 pub struct DeviceAuth {
     client: PropertyClient,
-    cache: Mutex<HashMap<String, (DeviceIdentity, Instant)>>,
+    /// Last successful verification per token digest, for offline fallback only.
+    last_verified: Mutex<HashMap<String, (DeviceIdentity, Instant)>>,
 }
 
 impl DeviceAuth {
     pub fn new(client: PropertyClient) -> Self {
         Self {
             client,
-            cache: Mutex::new(HashMap::new()),
+            last_verified: Mutex::new(HashMap::new()),
         }
     }
 
@@ -65,28 +65,25 @@ impl DeviceAuth {
             .filter(|value| !value.is_empty())
             .ok_or(DeviceAuthError::Missing)?;
         let key = token_digest(token);
-        if let Some((identity, verified_at)) = self.cache.lock().await.get(&key) {
-            if verified_at.elapsed() < FRESH_FOR {
-                return Ok(identity.clone());
-            }
-        }
         match self.client.verify_device(token).await {
             Ok(Some(identity)) => {
-                self.cache
+                self.last_verified
                     .lock()
                     .await
                     .insert(key, (identity.clone(), Instant::now()));
                 Ok(identity)
             }
             Ok(None) => {
-                self.cache.lock().await.remove(&key);
+                self.last_verified.lock().await.remove(&key);
                 Err(DeviceAuthError::Rejected)
             }
             Err(error) => {
-                let cached = self.cache.lock().await.get(&key).cloned();
+                let cached = self.last_verified.lock().await.get(&key).cloned();
                 match cached {
-                    Some((identity, verified_at)) if verified_at.elapsed() < STALE_FOR => {
-                        tracing::warn!(%error, device_id = %identity.device_id, "facilitator unreachable; using recent device verification");
+                    Some((mut identity, verified_at)) if verified_at.elapsed() < STALE_FOR => {
+                        tracing::warn!(%error, device_id = %identity.device_id, "facilitator unreachable; using recent device verification without memory");
+                        // The stay may have changed since; remember nothing until we know.
+                        identity.memory_wing = None;
                         Ok(identity)
                     }
                     _ => Err(DeviceAuthError::Unavailable(error.to_string())),

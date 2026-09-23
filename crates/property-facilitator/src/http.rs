@@ -274,6 +274,11 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
     if method == Method::POST && path == "/api/devices/verify" {
         return verify_device(state, &incoming);
     }
+    if path == "/api/stays/purge-due"
+        || (path.starts_with("/api/stays/") && path.ends_with("/purged"))
+    {
+        return stay_purge_api(state, &incoming);
+    }
     if method == Method::GET
         && path == "/api/tickets"
         && incoming
@@ -324,6 +329,16 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
                 Err(error) => internal_error(&error),
             }
         }
+        (&Method::GET, "/api/stays") => match state.list_stays() {
+            Ok(stays) => json_response(StatusCode::OK, json!(stays)),
+            Err(error) => internal_error(&error),
+        },
+        (&Method::POST, "/api/stays") => {
+            if !incoming.csrf_matches(&session.csrf) {
+                return forbidden("csrf token mismatch");
+            }
+            open_stay(state, &incoming, &session)
+        }
         (&Method::GET, "/api/devices") => match state.list_devices() {
             Ok(devices) => json_response(StatusCode::OK, json!(devices)),
             Err(error) => internal_error(&error),
@@ -334,6 +349,22 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
                     return forbidden("csrf token mismatch");
                 }
                 return change_ticket(state, &incoming, &session, id, action);
+            }
+            if let Some(id) = path
+                .strip_prefix("/api/stays/")
+                .and_then(|rest| rest.strip_suffix("/close"))
+            {
+                if !incoming.csrf_matches(&session.csrf) {
+                    return forbidden("csrf token mismatch");
+                }
+                return match state.close_stay(id, &session.username) {
+                    Ok(_) if incoming.is_form() => redirect("/desk"),
+                    Ok(stay) => json_response(StatusCode::OK, json!(stay)),
+                    Err(FacilitatorError::UnknownStay(missing)) => {
+                        json_response(StatusCode::NOT_FOUND, json!({"error": missing}))
+                    }
+                    Err(error) => internal_error(&error),
+                };
             }
             if let Some((id, action)) = device_action(&path) {
                 if session.role != Role::Supervisor {
@@ -461,6 +492,78 @@ fn change_ticket(
             json_response(StatusCode::CONFLICT, json!({"error": error.to_string()}))
         }
         Err(error) => internal_error(&error),
+    }
+}
+
+fn open_stay(
+    state: &Arc<Facilitator>,
+    incoming: &DeskRequest,
+    session: &StaffSession,
+) -> Response<BoxBody> {
+    let field = |name: &str| -> String {
+        if incoming.is_form() {
+            incoming.form_field(name).unwrap_or_default()
+        } else {
+            serde_json::from_slice::<Value>(&incoming.body)
+                .ok()
+                .and_then(|body| body.get(name).and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default()
+        }
+    };
+    let room = field("room");
+    let room = room.trim();
+    if room.is_empty() || room.len() > 32 || room.chars().any(char::is_control) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "room must be 1-32 printable characters"}),
+        );
+    }
+    let continue_from = field("continue_from");
+    let continue_from = Some(continue_from.trim()).filter(|value| !value.is_empty());
+    match state.open_stay(room, continue_from, &session.username) {
+        Ok(_) if incoming.is_form() => redirect("/desk"),
+        Ok(stay) => json_response(StatusCode::CREATED, json!(stay)),
+        Err(error @ FacilitatorError::StayConflict(_)) => {
+            json_response(StatusCode::CONFLICT, json!({"error": error.to_string()}))
+        }
+        Err(FacilitatorError::UnknownStay(missing)) => {
+            json_response(StatusCode::NOT_FOUND, json!({"error": missing}))
+        }
+        Err(error) => internal_error(&error),
+    }
+}
+
+/// Backend-only: which stay memories to delete, and confirmation that one was deleted.
+fn stay_purge_api(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {
+    let authorized = incoming
+        .bearer()
+        .is_some_and(|token| state.service_token_matches(token));
+    if !authorized {
+        record_property_auth_attempt("service_token", "rejected");
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "service token required"}),
+        );
+    }
+    if incoming.method == Method::GET && incoming.path == "/api/stays/purge-due" {
+        return match state.purge_due() {
+            Ok(stays) => json_response(StatusCode::OK, json!(stays)),
+            Err(error) => internal_error(&error),
+        };
+    }
+    let id = incoming
+        .path
+        .strip_prefix("/api/stays/")
+        .and_then(|rest| rest.strip_suffix("/purged"));
+    match (incoming.method == Method::POST, id) {
+        (true, Some(id)) => match state.mark_stay_purged(id) {
+            Ok(()) => json_response(StatusCode::OK, json!({"id": id, "purged": true})),
+            Err(FacilitatorError::UnknownStay(missing)) => {
+                json_response(StatusCode::NOT_FOUND, json!({"error": missing}))
+            }
+            Err(error) => internal_error(&error),
+        },
+        _ => not_found(),
     }
 }
 

@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use core_observability::{
-    record_fleet_provisioning, record_property_auth_attempt, record_property_mcp_duration,
-    record_property_mcp_error, record_property_request,
+    record_fleet_provisioning, record_memory_stay_transition, record_property_auth_attempt,
+    record_property_mcp_duration, record_property_mcp_error, record_property_request,
 };
 use core_policy::decide_ward_tool;
 use serde::Deserialize;
@@ -29,7 +29,7 @@ pub use cli::{run_pack, PASSWORD_ENV};
 pub use core_policy::WARD_NON_CLINICAL_TOOLS as WARD_TOOLS;
 pub use pack::Pack;
 pub use phone::resolve_place;
-pub use store::{AuditEvent, Device, DeviceIdentity, Ticket, TicketStatus};
+pub use store::{AuditEvent, Device, DeviceIdentity, Stay, Ticket, TicketStatus};
 
 use store::TicketStore;
 
@@ -71,6 +71,10 @@ pub enum FacilitatorError {
     UnknownDevice(String),
     #[error("tls: {0}")]
     Tls(String),
+    #[error("stay '{0}' does not exist or is already closed")]
+    UnknownStay(String),
+    #[error("{0}")]
+    StayConflict(String),
     #[error("refusing plain HTTP on {0}; configure tls or bind to 127.0.0.1")]
     InsecureBind(String),
 }
@@ -78,6 +82,73 @@ pub enum FacilitatorError {
 impl From<core_tls::TlsError> for FacilitatorError {
     fn from(error: core_tls::TlsError) -> Self {
         Self::Tls(error.to_string())
+    }
+}
+
+/// What happens to a stay's memory when the guest or resident leaves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryRetention {
+    /// Keep the memory; a returning guest's new stay can continue it.
+    Keep,
+    /// Keep the memory for this many days after checkout, then delete it.
+    ArchiveAfterDays(u32),
+    /// Delete the memory at checkout.
+    WipeOnClose,
+}
+
+impl MemoryRetention {
+    /// Default per pack: wards wipe at discharge, hotels and care homes keep.
+    pub fn default_for(pack: Pack) -> Self {
+        match pack {
+            Pack::Ward => Self::WipeOnClose,
+            Pack::Hotels | Pack::Care => Self::Keep,
+        }
+    }
+
+    /// When a stay closed at `closed_at` becomes due for purge.
+    pub fn purge_after(self, closed_at: i64) -> Option<i64> {
+        match self {
+            Self::Keep => None,
+            Self::ArchiveAfterDays(days) => Some(closed_at + i64::from(days) * 24 * 60 * 60 * 1000),
+            Self::WipeOnClose => Some(closed_at),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Keep => "keep".to_string(),
+            Self::ArchiveAfterDays(days) => format!("archive {days}d"),
+            Self::WipeOnClose => "wipe_on_close".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RetentionFile {
+    mode: String,
+    #[serde(default)]
+    archive_after_days: Option<u32>,
+}
+
+fn resolve_retention(
+    pack: Pack,
+    file: Option<RetentionFile>,
+) -> Result<MemoryRetention, FacilitatorError> {
+    let Some(file) = file else {
+        return Ok(MemoryRetention::default_for(pack));
+    };
+    match file.mode.trim() {
+        "keep" => Ok(MemoryRetention::Keep),
+        "wipe_on_close" => Ok(MemoryRetention::WipeOnClose),
+        "archive" => match file.archive_after_days {
+            Some(days) if days > 0 => Ok(MemoryRetention::ArchiveAfterDays(days)),
+            _ => Err(FacilitatorError::Json(serde::de::Error::custom(
+                "memory_retention.archive_after_days must be at least 1",
+            ))),
+        },
+        other => Err(FacilitatorError::Json(serde::de::Error::custom(format!(
+            "memory_retention.mode must be keep, archive, or wipe_on_close (got '{other}')"
+        )))),
     }
 }
 
@@ -105,6 +176,8 @@ pub struct Settings {
     pub metrics_bind: Option<String>,
     /// HTTPS for the desk and MCP. Required unless `bind` is loopback.
     pub tls: Option<TlsFiles>,
+    /// What happens to a stay's memory at checkout.
+    pub memory_retention: MemoryRetention,
 }
 
 /// True when `bind` only accepts connections from this machine.
@@ -144,6 +217,8 @@ struct SettingsFile {
     metrics_bind: Option<String>,
     #[serde(default)]
     tls: Option<TlsFile>,
+    #[serde(default)]
+    memory_retention: Option<RetentionFile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -274,9 +349,11 @@ impl Settings {
             },
         };
         let tls = resolve_tls(&base_dir, &bind, file.tls)?;
+        let memory_retention = resolve_retention(pack, file.memory_retention)?;
         Ok(Self {
             pack,
             tls,
+            memory_retention,
             bind,
             database_path,
             property_mcp_url: file
@@ -303,6 +380,7 @@ impl Settings {
             service_token: random_token(),
             metrics_bind: None,
             tls: None,
+            memory_retention: MemoryRetention::default_for(pack),
         }
     }
 }
@@ -418,6 +496,33 @@ pub fn revoke_device(database_path: &Path, device_id: &str) -> Result<(), Facili
 /// Enrolled pods.
 pub fn list_devices(database_path: &Path) -> Result<Vec<Device>, FacilitatorError> {
     TicketStore::open(database_path)?.list_devices()
+}
+
+/// Check a guest or resident into a room (installers and PMS scripts use this).
+pub fn open_stay(
+    database_path: &Path,
+    room: &str,
+    continue_from: Option<&str>,
+) -> Result<Stay, FacilitatorError> {
+    let stay = TicketStore::open(database_path)?.open_stay(room.trim(), continue_from, "admin")?;
+    record_memory_stay_transition("opened");
+    Ok(stay)
+}
+
+/// Check a stay out, applying `retention` to its memory.
+pub fn close_stay(
+    database_path: &Path,
+    id: &str,
+    retention: MemoryRetention,
+) -> Result<Stay, FacilitatorError> {
+    let stay = TicketStore::open(database_path)?.close_stay(id.trim(), retention, "admin")?;
+    record_memory_stay_transition("closed");
+    Ok(stay)
+}
+
+/// Recent stays, open ones first.
+pub fn list_stays(database_path: &Path) -> Result<Vec<Stay>, FacilitatorError> {
+    TicketStore::open(database_path)?.list_stays()
 }
 
 /// Desk accounts, sorted by name.
@@ -576,6 +681,43 @@ impl Facilitator {
         token: &str,
     ) -> Result<Option<DeviceIdentity>, FacilitatorError> {
         self.store.verify_device(&auth::token_digest(token))
+    }
+
+    pub(crate) fn open_stay(
+        &self,
+        room: &str,
+        continue_from: Option<&str>,
+        actor: &str,
+    ) -> Result<Stay, FacilitatorError> {
+        let stay = self.store.open_stay(room, continue_from, actor)?;
+        record_memory_stay_transition(if continue_from.is_some() {
+            "continued"
+        } else {
+            "opened"
+        });
+        Ok(stay)
+    }
+
+    pub(crate) fn close_stay(&self, id: &str, actor: &str) -> Result<Stay, FacilitatorError> {
+        let stay = self
+            .store
+            .close_stay(id, self.settings.memory_retention, actor)?;
+        record_memory_stay_transition("closed");
+        Ok(stay)
+    }
+
+    pub fn list_stays(&self) -> Result<Vec<Stay>, FacilitatorError> {
+        self.store.list_stays()
+    }
+
+    pub(crate) fn purge_due(&self) -> Result<Vec<Stay>, FacilitatorError> {
+        self.store.purge_due()
+    }
+
+    pub(crate) fn mark_stay_purged(&self, id: &str) -> Result<(), FacilitatorError> {
+        self.store.mark_stay_purged(id)?;
+        record_memory_stay_transition("purged");
+        Ok(())
     }
 
     pub(crate) fn has_users(&self) -> Result<bool, FacilitatorError> {
@@ -1068,6 +1210,46 @@ impl PropertyClient {
         }
     }
 
+    /// Closed stays whose memory the backend should delete now.
+    pub async fn purge_due(&self) -> Result<Vec<Stay>, FacilitatorError> {
+        let response = self
+            .http
+            .get(format!("{}/api/stays/purge-due", self.base_url))
+            .bearer_auth(&self.service_token)
+            .send()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(FacilitatorError::Http(format!(
+                "purge-due returned {}",
+                response.status()
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))
+    }
+
+    /// Tell the facilitator a stay's memory has been deleted.
+    pub async fn mark_stay_purged(&self, id: &str) -> Result<(), FacilitatorError> {
+        let response = self
+            .http
+            .post(format!("{}/api/stays/{id}/purged", self.base_url))
+            .bearer_auth(&self.service_token)
+            .send()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(FacilitatorError::Http(format!(
+                "marking {id} purged returned {}",
+                response.status()
+            )))
+        }
+    }
+
     /// Ask the facilitator which pod and room a device token belongs to.
     /// `Ok(None)` means the token is unknown or revoked.
     pub async fn verify_device(
@@ -1084,18 +1266,11 @@ impl PropertyClient {
             .map_err(|error| FacilitatorError::Http(error.to_string()))?;
         match response.status() {
             reqwest::StatusCode::OK => {
-                let value: Value = response
+                let identity: DeviceIdentity = response
                     .json()
                     .await
                     .map_err(|error| FacilitatorError::Http(error.to_string()))?;
-                let field =
-                    |name: &str| value.get(name).and_then(Value::as_str).map(str::to_string);
-                match (field("device_id"), field("room")) {
-                    (Some(device_id), Some(room)) => Ok(Some(DeviceIdentity { device_id, room })),
-                    _ => Err(FacilitatorError::Http(
-                        "verify response is missing fields".to_string(),
-                    )),
-                }
+                Ok(Some(identity))
             }
             reqwest::StatusCode::NOT_FOUND => Ok(None),
             status => Err(FacilitatorError::Http(format!(

@@ -2,8 +2,9 @@ use aice_backend::discovery_broadcast::{
     resolve_discovery_udp_port, spawn_udp_discovery_responder, DEFAULT_DISCOVERY_UDP_PORT,
 };
 use aice_backend::{
-    server_options_from_config, spawn_server_with_options, AiceBackendEngine, AudioIngressConfig,
-    BackendEngine, WhisperAudioTranscriber,
+    property_client_from_config, server_options_from_config, spawn_memory_retention,
+    spawn_server_with_options, AiceBackendEngine, AudioIngressConfig, BackendEngine,
+    WhisperAudioTranscriber,
 };
 use core_config::Config;
 use core_observability::{
@@ -17,6 +18,8 @@ use std::time::Instant;
 use tracing::{info, warn};
 
 const DEFAULT_BACKEND_BIND: &str = "0.0.0.0:8781";
+/// How often the backend asks the facilitator for stay memories to delete.
+const MEMORY_RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn resolve_metrics_bind(
     metrics_enabled: bool,
@@ -63,7 +66,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         resolve_discovery_udp_port(std::env::var("AICE_BACKEND_DISCOVERY_UDP_PORT").ok())
             .map_err(|error| format!("failed to resolve discovery UDP port: {error}"))?;
 
-    let engine: Arc<dyn BackendEngine> = Arc::new(AiceBackendEngine::from_config(&config).await?);
+    let concrete_engine = AiceBackendEngine::from_config(&config).await?;
+    let retention = match property_client_from_config(&config.property) {
+        Some(Ok(client)) => Some(spawn_memory_retention(
+            concrete_engine.palace_handle(),
+            client,
+            MEMORY_RETENTION_INTERVAL,
+        )),
+        Some(Err(error)) => {
+            warn!(%error, "memory retention job not started");
+            None
+        }
+        None => None,
+    };
+    let engine: Arc<dyn BackendEngine> = Arc::new(concrete_engine);
     let transcriber = Arc::new(WhisperAudioTranscriber::new(
         config.stt.whisper_model_path.clone(),
         config.stt.preload_model_on_startup,
@@ -105,6 +121,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     tokio::signal::ctrl_c().await?;
+    if let Some(retention) = retention {
+        retention.abort();
+    }
     udp_handle.abort();
     let _ = udp_handle.await;
     handle.shutdown().await;
