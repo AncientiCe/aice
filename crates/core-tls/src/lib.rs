@@ -16,6 +16,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 
+pub use rustls;
 pub use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 const CA_CERT: &str = "ca.pem";

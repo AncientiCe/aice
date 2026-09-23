@@ -161,7 +161,11 @@ fn devices_html(state: &Facilitator, csrf_field: &str) -> Result<String, Facilit
             "<tr><td>{id}</td><td>{}</td><td>{room}</td><td>{}</td><td>{}</td><td>\
             <form class=\"inline\" method=\"post\" action=\"/api/devices/{id}/assign\">{csrf_field}\
             <input name=\"room\" value=\"{room}\" size=\"6\" required><button>Assign room</button></form>{revoke}</td></tr>",
-            escape_html(&device.status),
+            if device.offline_since_millis.is_some() {
+                "OFFLINE".to_string()
+            } else {
+                escape_html(&device.status)
+            },
             escape_html(&device.firmware),
             device.last_seen_millis,
         ));

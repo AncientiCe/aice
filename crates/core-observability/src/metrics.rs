@@ -2,7 +2,7 @@
 //!
 //! Names follow convention: voice_<subsystem>_<operation>_<unit>.
 
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 use std::time::Duration;
 
 /// Voice pipeline stages for duration tracking.
@@ -51,7 +51,6 @@ const POD_AUDIO_FRAMES_TOTAL: &str = "pod_audio_frames_total";
 const POD_AUDIO_BYTES_TOTAL: &str = "pod_audio_bytes_total";
 const POD_TTS_CHUNKS_TOTAL: &str = "pod_tts_chunks_total";
 const POD_TTS_BYTES_TOTAL: &str = "pod_tts_bytes_total";
-const POD_EGRESS_DEVICE_LOCK_POISON_TOTAL: &str = "pod_egress_device_lock_poison_total";
 const VOICE_INTENT_CLASSIFIER_TOTAL: &str = "voice_intent_classifier_total";
 const VOICE_INTENT_VALIDATION_REJECTED_TOTAL: &str = "voice_intent_validation_rejected_total";
 const VOICE_INTENT_ROUTED_TOTAL: &str = "voice_intent_routed_total";
@@ -157,8 +156,12 @@ const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
 const PROPERTY_AUTH_ATTEMPTS_TOTAL: &str = "property_auth_attempts_total";
 const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
 const FLEET_PROVISIONING_TOTAL: &str = "fleet_provisioning_total";
+const FLEET_HEARTBEAT_MISSED_TOTAL: &str = "fleet_heartbeat_missed_total";
+const FLEET_DEVICES: &str = "fleet_devices";
 const MEMORY_STAY_TRANSITIONS_TOTAL: &str = "memory_stay_transitions_total";
 const PROPERTY_ALERTS_SENT_TOTAL: &str = "property_alerts_sent_total";
+const POD_BRIDGE_TURNS_TOTAL: &str = "pod_bridge_turns_total";
+const POD_BRIDGE_TURN_DURATION_SECONDS: &str = "pod_bridge_turn_duration_seconds";
 const PROPERTY_SLA_BREACHES_TOTAL: &str = "property_sla_breaches_total";
 const PROPERTY_TICKET_ACK_DURATION_SECONDS: &str = "property_ticket_ack_duration_seconds";
 const MEMORY_RECALL_SCOPED_TOTAL: &str = "memory_recall_scoped_total";
@@ -192,7 +195,6 @@ pub fn register_metrics() {
     counter!(POD_AUDIO_BYTES_TOTAL, 0, "device_id" => "unknown");
     counter!(POD_TTS_CHUNKS_TOTAL, 0, "device_id" => "unknown");
     counter!(POD_TTS_BYTES_TOTAL, 0, "device_id" => "unknown");
-    counter!(POD_EGRESS_DEVICE_LOCK_POISON_TOTAL, 0, "operation" => "unknown");
     counter!(VOICE_INTENT_CLASSIFIER_TOTAL, 0);
     counter!(VOICE_INTENT_ROUTED_TOTAL, 0, "intent" => "unknown");
     counter!(VOICE_WEATHER_SKILL_TOTAL, 0, "result" => "unknown");
@@ -369,7 +371,11 @@ pub fn register_metrics() {
     );
     counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 0, "action" => "unknown");
     counter!(FLEET_PROVISIONING_TOTAL, 0, "result" => "unknown");
+    counter!(FLEET_HEARTBEAT_MISSED_TOTAL, 0);
+    gauge!(FLEET_DEVICES, 0.0, "status" => "unknown");
     counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 0, "action" => "unknown");
+    counter!(POD_BRIDGE_TURNS_TOTAL, 0, "result" => "unknown");
+    histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, 0.0_f64);
     counter!(
         PROPERTY_ALERTS_SENT_TOTAL,
         0,
@@ -537,14 +543,6 @@ pub fn record_pod_tts_chunk(device_id: &str, bytes: usize) {
     let id = device_id.to_string();
     counter!(POD_TTS_CHUNKS_TOTAL, 1, "device_id" => id.clone());
     counter!(POD_TTS_BYTES_TOTAL, bytes as u64, "device_id" => id);
-}
-
-pub fn record_pod_egress_device_lock_poison(operation: &str) {
-    counter!(
-        POD_EGRESS_DEVICE_LOCK_POISON_TOTAL,
-        1,
-        "operation" => operation.to_string()
-    );
 }
 
 pub fn record_backend_turn_total(path: &str, result: &str) {
@@ -1217,4 +1215,24 @@ pub fn record_property_ticket_ack_duration(pack: &str, tool: &str, duration: Dur
         "pack" => pack.to_string(),
         "tool" => tool.to_string()
     );
+}
+
+/// Pod bridge turns and refusals, by result.
+pub fn record_pod_bridge_turn(result: &str) {
+    counter!(POD_BRIDGE_TURNS_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Time from speech start to the answer being queued on the pod.
+pub fn record_pod_bridge_turn_duration(duration: Duration) {
+    histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+/// An active pod stopped reporting.
+pub fn record_fleet_heartbeat_missed() {
+    counter!(FLEET_HEARTBEAT_MISSED_TOTAL, 1);
+}
+
+/// Pods by fleet status (`pending`, `online`, `offline`, `revoked`).
+pub fn record_fleet_devices(status: &str, count: i64) {
+    gauge!(FLEET_DEVICES, count as f64, "status" => status.to_string());
 }

@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use core_observability::{
-    record_fleet_provisioning, record_memory_stay_transition, record_property_auth_attempt,
-    record_property_mcp_duration, record_property_mcp_error, record_property_request,
-    record_property_ticket_ack_duration,
+    record_fleet_devices, record_fleet_heartbeat_missed, record_fleet_provisioning,
+    record_memory_stay_transition, record_property_auth_attempt, record_property_mcp_duration,
+    record_property_mcp_error, record_property_request, record_property_ticket_ack_duration,
 };
 use core_policy::decide_ward_tool;
 use serde::Deserialize;
@@ -185,7 +185,12 @@ pub struct Settings {
     pub memory_retention: MemoryRetention,
     /// Who is paged, and when unacknowledged tickets escalate.
     pub alerts: AlertSettings,
+    /// An active pod silent this long raises a `device_offline` ticket.
+    pub device_offline_after: Duration,
 }
+
+/// Default silence before a pod counts as offline.
+pub const DEFAULT_DEVICE_OFFLINE_AFTER: Duration = Duration::from_secs(120);
 
 /// True when `bind` only accepts connections from this machine.
 pub fn is_loopback_bind(bind: &str) -> bool {
@@ -228,6 +233,8 @@ struct SettingsFile {
     memory_retention: Option<RetentionFile>,
     #[serde(default)]
     alerts: Option<alerts::AlertsFile>,
+    #[serde(default)]
+    device_offline_after_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -363,6 +370,10 @@ impl Settings {
         Ok(Self {
             pack,
             alerts,
+            device_offline_after: file
+                .device_offline_after_secs
+                .map(|secs| Duration::from_secs(secs.max(10)))
+                .unwrap_or(DEFAULT_DEVICE_OFFLINE_AFTER),
             tls,
             memory_retention,
             bind,
@@ -393,6 +404,7 @@ impl Settings {
             tls: None,
             memory_retention: MemoryRetention::default_for(pack),
             alerts: AlertSettings::default_for(pack),
+            device_offline_after: DEFAULT_DEVICE_OFFLINE_AFTER,
         }
     }
 }
@@ -695,6 +707,38 @@ impl Facilitator {
 
     pub fn list_devices(&self) -> Result<Vec<Device>, FacilitatorError> {
         self.store.list_devices()
+    }
+
+    pub(crate) fn heartbeat(&self, device_ids: &[String]) -> Result<usize, FacilitatorError> {
+        self.store.heartbeat(device_ids)
+    }
+
+    /// Open an escalated ticket for every pod that just went silent.
+    pub(crate) fn check_fleet(&self) -> Result<(), FacilitatorError> {
+        let cutoff = store::unix_millis()
+            - i64::try_from(self.settings.device_offline_after.as_millis()).unwrap_or(i64::MAX / 2);
+        for device in self.store.newly_offline(cutoff)? {
+            record_fleet_heartbeat_missed();
+            let room = device
+                .room
+                .clone()
+                .unwrap_or_else(|| "unassigned".to_string());
+            let detail = format!(
+                "pod {} stopped reporting; the room cannot call for help by voice",
+                device.device_id
+            );
+            self.new_ticket(
+                &room,
+                "device_offline",
+                &json!({ "device_id": device.device_id }),
+                TicketStatus::Escalated,
+                &detail,
+            )?;
+        }
+        for (status, count) in self.store.fleet_counts()? {
+            record_fleet_devices(&status, count);
+        }
+        Ok(())
     }
 
     pub(crate) fn assign_device(
@@ -1243,6 +1287,34 @@ impl PropertyClient {
             base_url,
             service_token,
         }
+    }
+
+    /// Report pods with an open turn stream; returns how many the facilitator knew.
+    pub async fn heartbeat(&self, device_ids: &[String]) -> Result<usize, FacilitatorError> {
+        let body = json!({ "device_ids": device_ids });
+        let response = self
+            .http
+            .post(format!("{}/api/devices/heartbeat", self.base_url))
+            .bearer_auth(&self.service_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(FacilitatorError::Http(format!(
+                "heartbeat returned {}",
+                response.status()
+            )));
+        }
+        let value: Value = response
+            .json()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        Ok(value
+            .get("seen")
+            .and_then(Value::as_u64)
+            .and_then(|seen| usize::try_from(seen).ok())
+            .unwrap_or(0))
     }
 
     /// Closed stays whose memory the backend should delete now.

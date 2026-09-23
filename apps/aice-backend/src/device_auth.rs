@@ -15,6 +15,27 @@ use tokio::sync::Mutex;
 /// How long a verified token keeps working while the facilitator is unreachable.
 const STALE_FOR: Duration = Duration::from_secs(10 * 60);
 
+/// How often connected pods are reported; the facilitator flags a pod after
+/// `device_offline_after` (120 s by default) without one.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Report connected pods every `interval` until the task is dropped.
+pub fn spawn_device_heartbeats(
+    auth: std::sync::Arc<DeviceAuth>,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = auth.report_heartbeat().await {
+                record_backend_auth_rejection("heartbeat_unavailable");
+                tracing::warn!(%error, "device heartbeat failed");
+            }
+        }
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceAuthError {
     #[error("device token required")]
@@ -29,6 +50,27 @@ pub struct DeviceAuth {
     client: PropertyClient,
     /// Last successful verification per token digest, for offline fallback only.
     last_verified: Mutex<HashMap<String, (DeviceIdentity, Instant)>>,
+    /// Open turn streams per device id, reported to the facilitator as heartbeats.
+    connected: std::sync::Mutex<HashMap<String, usize>>,
+}
+
+/// Keeps a device counted as connected until dropped.
+pub struct ConnectedDevice {
+    auth: std::sync::Arc<DeviceAuth>,
+    device_id: String,
+}
+
+impl Drop for ConnectedDevice {
+    fn drop(&mut self) {
+        if let Ok(mut connected) = self.auth.connected.lock() {
+            if let Some(count) = connected.get_mut(&self.device_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    connected.remove(&self.device_id);
+                }
+            }
+        }
+    }
 }
 
 impl DeviceAuth {
@@ -36,7 +78,42 @@ impl DeviceAuth {
         Self {
             client,
             last_verified: Mutex::new(HashMap::new()),
+            connected: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Count `device_id` as connected for the life of the returned guard.
+    pub fn track(self: &std::sync::Arc<Self>, device_id: &str) -> ConnectedDevice {
+        if let Ok(mut connected) = self.connected.lock() {
+            *connected.entry(device_id.to_string()).or_insert(0) += 1;
+        }
+        ConnectedDevice {
+            auth: std::sync::Arc::clone(self),
+            device_id: device_id.to_string(),
+        }
+    }
+
+    /// Devices with at least one open turn stream, sorted.
+    pub fn connected_devices(&self) -> Vec<String> {
+        let mut devices: Vec<String> = self
+            .connected
+            .lock()
+            .map(|connected| connected.keys().cloned().collect())
+            .unwrap_or_default();
+        devices.sort();
+        devices
+    }
+
+    /// Tell the facilitator which pods are connected right now.
+    pub async fn report_heartbeat(&self) -> Result<usize, DeviceAuthError> {
+        let devices = self.connected_devices();
+        if devices.is_empty() {
+            return Ok(0);
+        }
+        self.client
+            .heartbeat(&devices)
+            .await
+            .map_err(|error| DeviceAuthError::Unavailable(error.to_string()))
     }
 
     /// Resolve a bearer token to the pod and room it was issued for.

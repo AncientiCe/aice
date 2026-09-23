@@ -641,6 +641,9 @@ pub struct Config {
     /// Pod gateway bind address.
     #[serde(default = "default_pod_bind")]
     pub pod_bind: String,
+    /// Room bridge between pods and the backend (`cargo aice-gateway`).
+    #[serde(default)]
+    pub pod_gateway: PodGatewayConfig,
     /// Audio runtime options.
     #[serde(default)]
     pub audio: AudioRuntimeConfig,
@@ -691,6 +694,58 @@ fn default_pod_bind() -> String {
     "0.0.0.0:8765".to_string()
 }
 
+/// Room bridge settings.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PodGatewayConfig {
+    /// Backend turn stream, `ws://` or `wss://`.
+    #[serde(default = "default_pod_gateway_backend_url")]
+    pub backend_url: String,
+    /// Property CA that signed a `wss://` backend's certificate.
+    #[serde(default)]
+    pub backend_ca_file: Option<String>,
+    /// Serve pods over TLS with this certificate.
+    #[serde(default)]
+    pub tls: Option<ServiceTlsConfig>,
+    /// Mean absolute sample level that counts as speech.
+    #[serde(default = "default_pod_gateway_vad_start_level")]
+    pub vad_start_level: i16,
+    /// Quiet time that ends a turn.
+    #[serde(default = "default_pod_gateway_vad_end_silence_ms")]
+    pub vad_end_silence_ms: u64,
+    /// Prometheus exporter bind for the bridge.
+    #[serde(default = "default_pod_gateway_metrics_bind")]
+    pub metrics_bind: String,
+}
+
+impl Default for PodGatewayConfig {
+    fn default() -> Self {
+        Self {
+            backend_url: default_pod_gateway_backend_url(),
+            backend_ca_file: None,
+            tls: None,
+            vad_start_level: default_pod_gateway_vad_start_level(),
+            vad_end_silence_ms: default_pod_gateway_vad_end_silence_ms(),
+            metrics_bind: default_pod_gateway_metrics_bind(),
+        }
+    }
+}
+
+fn default_pod_gateway_backend_url() -> String {
+    "ws://127.0.0.1:8781/turns/stream".to_string()
+}
+
+fn default_pod_gateway_vad_start_level() -> i16 {
+    900
+}
+
+fn default_pod_gateway_vad_end_silence_ms() -> u64 {
+    700
+}
+
+fn default_pod_gateway_metrics_bind() -> String {
+    "127.0.0.1:9766".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -700,6 +755,7 @@ impl Default for Config {
             model: default_model(),
             llm: LlmConfig::default(),
             pod_bind: default_pod_bind(),
+            pod_gateway: PodGatewayConfig::default(),
             audio: AudioRuntimeConfig::default(),
             stt: SttConfig::default(),
             tts: TtsConfig::default(),

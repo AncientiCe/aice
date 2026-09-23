@@ -301,7 +301,9 @@ impl ServerHandle {
     }
 }
 
-pub use device_auth::{DeviceAuth, DeviceAuthError};
+pub use device_auth::{
+    spawn_device_heartbeats, ConnectedDevice, DeviceAuth, DeviceAuthError, HEARTBEAT_INTERVAL,
+};
 pub use memory_scope::{
     purge_stay_memory, run_memory_retention_once, spawn_memory_retention, MemoryScope,
 };
@@ -1049,6 +1051,9 @@ async fn handle_turn_stream_socket(
     audio_config: Arc<AudioIngressConfig>,
     mut device: Option<AuthenticatedDevice>,
 ) -> Result<(), DynError> {
+    let _connected = device
+        .as_ref()
+        .map(|authenticated| authenticated.auth.track(&authenticated.identity.device_id));
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TurnStreamInternalEvent>();
     let mut turn: Option<WsTurnState> = None;
     let mut ws_session_id: Option<String> = None;

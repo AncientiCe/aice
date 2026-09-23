@@ -26,14 +26,14 @@ pub use metrics::{
     record_cancellation_success, record_computer_skill, record_currency_skill,
     record_dictionary_skill, record_distance_skill, record_email_skill,
     record_endpointing_wait_duration, record_error, record_first_audio_latency,
-    record_first_token_latency, record_fleet_provisioning, record_frontend_rpc_duration,
-    record_frontend_skill_duration, record_frontend_tts_playback_duration,
-    record_intent_classifier, record_intent_routed, record_intent_validation_rejected,
-    record_interruption, record_journal_skill, record_llm_first_token_latency,
-    record_llm_stream_tail_duration, record_location_contract, record_location_contract_duration,
-    record_location_preload, record_media_execute, record_media_execute_duration,
-    record_media_skill, record_meeting_notes_skill, record_memory_fact_recall,
-    record_memory_fact_recall_duration, record_memory_fact_store,
+    record_first_token_latency, record_fleet_devices, record_fleet_heartbeat_missed,
+    record_fleet_provisioning, record_frontend_rpc_duration, record_frontend_skill_duration,
+    record_frontend_tts_playback_duration, record_intent_classifier, record_intent_routed,
+    record_intent_validation_rejected, record_interruption, record_journal_skill,
+    record_llm_first_token_latency, record_llm_stream_tail_duration, record_location_contract,
+    record_location_contract_duration, record_location_preload, record_media_execute,
+    record_media_execute_duration, record_media_skill, record_meeting_notes_skill,
+    record_memory_fact_recall, record_memory_fact_recall_duration, record_memory_fact_store,
     record_memory_fact_store_duration, record_memory_load, record_memory_load_duration,
     record_memory_load_error, record_memory_recall_scoped, record_memory_retention_purge,
     record_memory_save, record_memory_save_duration, record_memory_save_error,
@@ -41,13 +41,13 @@ pub use metrics::{
     record_model_preload, record_model_preload_duration, record_news_summary_chunk,
     record_news_summary_duration, record_palace_add_memory, record_palace_error,
     record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
-    record_palace_search, record_palace_wake_up, record_pod_audio_frame, record_pod_connection,
-    record_pod_disconnect, record_pod_egress_device_lock_poison, record_pod_egress_queue_drop,
-    record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
-    record_property_alert_sent, record_property_audit_event, record_property_auth_attempt,
-    record_property_mcp_duration, record_property_mcp_error, record_property_request,
-    record_property_sla_breach, record_property_ticket_ack_duration, record_reminder_skill,
-    record_screen_ocr_skill, record_screenshot_skill, record_session_start,
+    record_palace_search, record_palace_wake_up, record_pod_audio_frame, record_pod_bridge_turn,
+    record_pod_bridge_turn_duration, record_pod_connection, record_pod_disconnect,
+    record_pod_egress_queue_drop, record_pod_egress_send_error, record_pod_tts_chunk,
+    record_policy_denied, record_property_alert_sent, record_property_audit_event,
+    record_property_auth_attempt, record_property_mcp_duration, record_property_mcp_error,
+    record_property_request, record_property_sla_breach, record_property_ticket_ack_duration,
+    record_reminder_skill, record_screen_ocr_skill, record_screenshot_skill, record_session_start,
     record_shopping_list_skill, record_shutdown_signal, record_skill_duration,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
     record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
@@ -131,6 +131,10 @@ mod tests {
         super::record_backend_auth_rejection("missing");
         super::record_memory_stay_transition("opened");
         super::record_property_alert_sent("pager", "delivered");
+        super::record_pod_bridge_turn("answered");
+        super::record_fleet_heartbeat_missed();
+        super::record_fleet_devices("online", 3);
+        super::record_pod_bridge_turn_duration(Duration::from_millis(900));
         super::record_property_sla_breach("care", "report_fall");
         super::record_property_ticket_ack_duration("care", "report_fall", Duration::from_secs(30));
         super::record_memory_recall_scoped("stay");
@@ -240,6 +244,10 @@ mod tests {
                         && payload.contains("backend_auth_rejections_total")
                         && payload.contains("memory_stay_transitions_total")
                         && payload.contains("property_alerts_sent_total")
+                        && payload.contains("pod_bridge_turns_total")
+                        && payload.contains("fleet_heartbeat_missed_total")
+                        && payload.contains("fleet_devices")
+                        && payload.contains("pod_bridge_turn_duration_seconds")
                         && payload.contains("property_sla_breaches_total")
                         && payload.contains("property_ticket_ack_duration_seconds")
                         && payload.contains("memory_recall_scoped_total")
