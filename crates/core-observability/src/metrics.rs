@@ -156,6 +156,9 @@ const PROPERTY_MCP_ERRORS_TOTAL: &str = "property_mcp_errors_total";
 const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
 const PROPERTY_AUTH_ATTEMPTS_TOTAL: &str = "property_auth_attempts_total";
 const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
+const FLEET_PROVISIONING_TOTAL: &str = "fleet_provisioning_total";
+const BACKEND_AUTH_REJECTIONS_TOTAL: &str = "backend_auth_rejections_total";
+const BACKEND_DEVICE_AUTH_DURATION_SECONDS: &str = "backend_device_auth_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -359,6 +362,13 @@ pub fn register_metrics() {
         "result" => "unknown"
     );
     counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 0, "action" => "unknown");
+    counter!(FLEET_PROVISIONING_TOTAL, 0, "result" => "unknown");
+    counter!(BACKEND_AUTH_REJECTIONS_TOTAL, 0, "reason" => "unknown");
+    histogram!(
+        BACKEND_DEVICE_AUTH_DURATION_SECONDS,
+        0.0_f64,
+        "result" => "unknown"
+    );
 }
 
 /// Record a new voice session start.
@@ -1116,4 +1126,23 @@ pub fn record_property_auth_attempt(method: &str, result: &str) {
 /// Rows appended to the facilitator audit log, by action.
 pub fn record_property_audit_event(action: &str) {
     counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 1, "action" => action.to_string());
+}
+
+/// Pod enrolment and assignment steps, by result.
+pub fn record_fleet_provisioning(result: &str) {
+    counter!(FLEET_PROVISIONING_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Turn-stream connections refused for a missing, unknown, or unverifiable device token.
+pub fn record_backend_auth_rejection(reason: &str) {
+    counter!(BACKEND_AUTH_REJECTIONS_TOTAL, 1, "reason" => reason.to_string());
+}
+
+/// Time to verify a device token, by result.
+pub fn record_backend_device_auth_duration(result: &str, duration: Duration) {
+    histogram!(
+        BACKEND_DEVICE_AUTH_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "result" => result.to_string()
+    );
 }

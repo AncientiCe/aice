@@ -87,6 +87,34 @@ pub(crate) struct StaffSession {
     pub csrf: String,
 }
 
+/// Pods waiting for a supervisor before new enrolments are refused.
+pub(crate) const MAX_PENDING_DEVICES: i64 = 256;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Device {
+    pub device_id: String,
+    pub room: Option<String>,
+    pub status: String,
+    pub firmware: String,
+    pub last_seen_millis: i64,
+    pub created_millis: i64,
+}
+
+/// A pod identity the backend can trust.
+#[derive(Clone, Debug, Serialize)]
+pub struct DeviceIdentity {
+    pub device_id: String,
+    pub room: String,
+}
+
+pub(crate) enum EnrollOutcome {
+    Pending,
+    Active { room: String, token: Option<String> },
+    Revoked,
+    NonceMismatch,
+    TooManyPending,
+}
+
 pub(crate) enum LoginState {
     Unknown,
     Locked,
@@ -143,6 +171,17 @@ impl TicketStore {
                 from_status TEXT,
                 to_status TEXT,
                 detail TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS devices (
+                device_id TEXT PRIMARY KEY,
+                room TEXT,
+                status TEXT NOT NULL,
+                token_hash TEXT UNIQUE,
+                pending_token TEXT,
+                nonce_hash TEXT NOT NULL,
+                firmware TEXT NOT NULL,
+                last_seen INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
             );
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events
@@ -514,6 +553,224 @@ impl TicketStore {
         )?;
         append_audit(&connection, username, "logout", None, None, None, "")?;
         Ok(())
+    }
+}
+
+impl TicketStore {
+    pub(crate) fn enroll_device(
+        &self,
+        device_id: &str,
+        nonce_hash: &str,
+        firmware: &str,
+    ) -> Result<EnrollOutcome, FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let now = unix_millis();
+        let existing: Option<(String, Option<String>, Option<String>, String)> = transaction
+            .query_row(
+                "SELECT status, room, pending_token, nonce_hash FROM devices WHERE device_id = ?1",
+                params![device_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let outcome = match existing {
+            None => {
+                let pending: i64 = transaction.query_row(
+                    "SELECT COUNT(*) FROM devices WHERE status = 'pending'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if pending >= MAX_PENDING_DEVICES {
+                    return Ok(EnrollOutcome::TooManyPending);
+                }
+                transaction.execute(
+                    "INSERT INTO devices (device_id, room, status, token_hash, pending_token, nonce_hash, firmware, last_seen, created_at)
+                     VALUES (?1, NULL, 'pending', NULL, NULL, ?2, ?3, ?4, ?4)",
+                    params![device_id, nonce_hash, firmware, now],
+                )?;
+                append_audit(
+                    &transaction,
+                    device_id,
+                    "device_enrolled",
+                    None,
+                    None,
+                    None,
+                    firmware,
+                )?;
+                EnrollOutcome::Pending
+            }
+            Some((_, _, _, stored_nonce))
+                if !crate::auth::constant_time_eq(
+                    stored_nonce.as_bytes(),
+                    nonce_hash.as_bytes(),
+                ) =>
+            {
+                append_audit(
+                    &transaction,
+                    device_id,
+                    "device_nonce_mismatch",
+                    None,
+                    None,
+                    None,
+                    "",
+                )?;
+                EnrollOutcome::NonceMismatch
+            }
+            Some((status, room, pending_token, _)) => {
+                transaction.execute(
+                    "UPDATE devices SET firmware = ?1, last_seen = ?2, pending_token = NULL WHERE device_id = ?3",
+                    params![firmware, now, device_id],
+                )?;
+                match (status.as_str(), room) {
+                    ("active", Some(room)) => {
+                        if pending_token.is_some() {
+                            append_audit(
+                                &transaction,
+                                device_id,
+                                "device_token_delivered",
+                                None,
+                                None,
+                                None,
+                                &room,
+                            )?;
+                        }
+                        EnrollOutcome::Active {
+                            room,
+                            token: pending_token,
+                        }
+                    }
+                    ("revoked", _) => EnrollOutcome::Revoked,
+                    _ => EnrollOutcome::Pending,
+                }
+            }
+        };
+        transaction.commit()?;
+        Ok(outcome)
+    }
+
+    pub(crate) fn list_devices(&self) -> Result<Vec<Device>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT device_id, room, status, firmware, last_seen, created_at
+             FROM devices ORDER BY status ASC, device_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Device {
+                device_id: row.get(0)?,
+                room: row.get(1)?,
+                status: row.get(2)?,
+                firmware: row.get(3)?,
+                last_seen_millis: row.get(4)?,
+                created_millis: row.get(5)?,
+            })
+        })?;
+        let mut devices = Vec::new();
+        for row in rows {
+            devices.push(row?);
+        }
+        Ok(devices)
+    }
+
+    /// Put a pod in a room. A pod without a live token gets a fresh one,
+    /// held until the pod next enrols.
+    pub(crate) fn assign_device(
+        &self,
+        device_id: &str,
+        room: &str,
+        actor: &str,
+    ) -> Result<(), FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let status: Option<String> = transaction
+            .query_row(
+                "SELECT status FROM devices WHERE device_id = ?1",
+                params![device_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(status) = status else {
+            return Err(FacilitatorError::UnknownDevice(device_id.to_string()));
+        };
+        if status == "active" {
+            transaction.execute(
+                "UPDATE devices SET room = ?1 WHERE device_id = ?2",
+                params![room, device_id],
+            )?;
+        } else {
+            let token = crate::auth::random_token();
+            transaction.execute(
+                "UPDATE devices SET room = ?1, status = 'active', token_hash = ?2, pending_token = ?3
+                 WHERE device_id = ?4",
+                params![room, crate::auth::token_digest(&token), token, device_id],
+            )?;
+        }
+        append_audit(
+            &transaction,
+            actor,
+            "device_assigned",
+            None,
+            None,
+            None,
+            &format!("{device_id} -> {room}"),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn revoke_device(
+        &self,
+        device_id: &str,
+        actor: &str,
+    ) -> Result<(), FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE devices SET status = 'revoked', token_hash = NULL, pending_token = NULL
+             WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        if changed == 0 {
+            return Err(FacilitatorError::UnknownDevice(device_id.to_string()));
+        }
+        append_audit(
+            &transaction,
+            actor,
+            "device_revoked",
+            None,
+            None,
+            None,
+            device_id,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Resolve an active device token and mark the device as seen.
+    pub(crate) fn verify_device(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<DeviceIdentity>, FacilitatorError> {
+        let connection = self.lock()?;
+        let identity: Option<DeviceIdentity> = connection
+            .query_row(
+                "SELECT device_id, room FROM devices
+                 WHERE token_hash = ?1 AND status = 'active' AND room IS NOT NULL",
+                params![token_hash],
+                |row| {
+                    Ok(DeviceIdentity {
+                        device_id: row.get(0)?,
+                        room: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?;
+        if let Some(identity) = &identity {
+            connection.execute(
+                "UPDATE devices SET last_seen = ?1 WHERE device_id = ?2",
+                params![unix_millis(), identity.device_id],
+            )?;
+        }
+        Ok(identity)
     }
 }
 

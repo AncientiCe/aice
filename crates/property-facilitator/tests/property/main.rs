@@ -2,4 +2,5 @@
 
 mod common;
 mod desk_auth;
+mod devices;
 mod loop_tests;

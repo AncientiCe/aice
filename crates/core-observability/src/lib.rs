@@ -12,7 +12,8 @@ pub use log::init_json_logging;
 pub use metrics::{
     record_air_quality_skill, record_app_switcher_skill, record_backend_audio_chunk,
     record_backend_audio_finalize, record_backend_audio_session_timeout,
-    record_backend_dependency_request, record_backend_dependency_request_duration,
+    record_backend_auth_rejection, record_backend_dependency_request,
+    record_backend_dependency_request_duration, record_backend_device_auth_duration,
     record_backend_http_request, record_backend_llm_provider_duration,
     record_backend_skill_execute, record_backend_skill_execute_duration,
     record_backend_stt_flush_duration, record_backend_turn_cancellation,
@@ -25,13 +26,14 @@ pub use metrics::{
     record_cancellation_success, record_computer_skill, record_currency_skill,
     record_dictionary_skill, record_distance_skill, record_email_skill,
     record_endpointing_wait_duration, record_error, record_first_audio_latency,
-    record_first_token_latency, record_frontend_rpc_duration, record_frontend_skill_duration,
-    record_frontend_tts_playback_duration, record_intent_classifier, record_intent_routed,
-    record_intent_validation_rejected, record_interruption, record_journal_skill,
-    record_llm_first_token_latency, record_llm_stream_tail_duration, record_location_contract,
-    record_location_contract_duration, record_location_preload, record_media_execute,
-    record_media_execute_duration, record_media_skill, record_meeting_notes_skill,
-    record_memory_fact_recall, record_memory_fact_recall_duration, record_memory_fact_store,
+    record_first_token_latency, record_fleet_provisioning, record_frontend_rpc_duration,
+    record_frontend_skill_duration, record_frontend_tts_playback_duration,
+    record_intent_classifier, record_intent_routed, record_intent_validation_rejected,
+    record_interruption, record_journal_skill, record_llm_first_token_latency,
+    record_llm_stream_tail_duration, record_location_contract, record_location_contract_duration,
+    record_location_preload, record_media_execute, record_media_execute_duration,
+    record_media_skill, record_meeting_notes_skill, record_memory_fact_recall,
+    record_memory_fact_recall_duration, record_memory_fact_store,
     record_memory_fact_store_duration, record_memory_load, record_memory_load_duration,
     record_memory_load_error, record_memory_save, record_memory_save_duration,
     record_memory_save_error, record_message_skill, record_mic_to_stt_duration,
@@ -123,6 +125,9 @@ mod tests {
         record_property_mcp_error("upstream");
         record_property_mcp_duration("tools_call", Duration::from_millis(5));
         record_property_auth_attempt("login", "accepted");
+        super::record_fleet_provisioning("assigned");
+        super::record_backend_auth_rejection("missing");
+        super::record_backend_device_auth_duration("accepted", Duration::from_millis(2));
         record_property_audit_event("ticket_status");
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -223,6 +228,9 @@ mod tests {
                         && payload.contains("property_mcp_duration_seconds")
                         && payload.contains("property_auth_attempts_total")
                         && payload.contains("property_audit_events_total")
+                        && payload.contains("fleet_provisioning_total")
+                        && payload.contains("backend_auth_rejections_total")
+                        && payload.contains("backend_device_auth_duration_seconds")
                     {
                         break;
                     }

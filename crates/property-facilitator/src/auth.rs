@@ -71,7 +71,7 @@ pub fn random_token() -> String {
 }
 
 /// Tokens are stored and compared as SHA-256 digests, never in the clear.
-pub(crate) fn token_digest(token: &str) -> String {
+pub fn token_digest(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 

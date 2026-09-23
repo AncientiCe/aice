@@ -17,19 +17,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use core_observability::{
-    record_property_auth_attempt, record_property_mcp_duration, record_property_mcp_error,
-    record_property_request,
+    record_fleet_provisioning, record_property_auth_attempt, record_property_mcp_duration,
+    record_property_mcp_error, record_property_request,
 };
 use core_policy::decide_ward_tool;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub use auth::{random_token, Role, MIN_PASSWORD_CHARS};
+pub use auth::{random_token, token_digest, Role, MIN_PASSWORD_CHARS};
 pub use cli::{run_pack, PASSWORD_ENV};
 pub use core_policy::WARD_NON_CLINICAL_TOOLS as WARD_TOOLS;
 pub use pack::Pack;
 pub use phone::resolve_place;
-pub use store::{AuditEvent, Ticket, TicketStatus};
+pub use store::{AuditEvent, Device, DeviceIdentity, Ticket, TicketStatus};
 
 use store::TicketStore;
 
@@ -67,6 +67,8 @@ pub enum FacilitatorError {
     UnknownUser(String),
     #[error("service token: {0}")]
     ServiceToken(String),
+    #[error("device '{0}' is not enrolled")]
+    UnknownDevice(String),
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +292,25 @@ pub fn remove_user(database_path: &Path, username: &str) -> Result<(), Facilitat
     TicketStore::open(database_path)?.remove_user(username.trim())
 }
 
+/// Put an enrolled pod in a room (the CLI and installers use this).
+pub fn assign_device(
+    database_path: &Path,
+    device_id: &str,
+    room: &str,
+) -> Result<(), FacilitatorError> {
+    TicketStore::open(database_path)?.assign_device(device_id.trim(), room.trim(), "admin")
+}
+
+/// Revoke a pod's token.
+pub fn revoke_device(database_path: &Path, device_id: &str) -> Result<(), FacilitatorError> {
+    TicketStore::open(database_path)?.revoke_device(device_id.trim(), "admin")
+}
+
+/// Enrolled pods.
+pub fn list_devices(database_path: &Path) -> Result<Vec<Device>, FacilitatorError> {
+    TicketStore::open(database_path)?.list_devices()
+}
+
 /// Desk accounts, sorted by name.
 pub fn list_users(database_path: &Path) -> Result<Vec<(String, Role)>, FacilitatorError> {
     TicketStore::open(database_path)?.list_users()
@@ -394,6 +415,58 @@ impl Facilitator {
 
     pub(crate) fn service_token_matches(&self, presented: &str) -> bool {
         auth::service_token_matches(&self.settings.service_token, presented)
+    }
+
+    pub(crate) fn enroll_device(
+        &self,
+        device_id: &str,
+        nonce: &str,
+        firmware: &str,
+    ) -> Result<store::EnrollOutcome, FacilitatorError> {
+        let outcome = self
+            .store
+            .enroll_device(device_id, &auth::token_digest(nonce), firmware)?;
+        record_fleet_provisioning(match &outcome {
+            store::EnrollOutcome::Pending => "pending",
+            store::EnrollOutcome::Active { token: Some(_), .. } => "token_delivered",
+            store::EnrollOutcome::Active { token: None, .. } => "active",
+            store::EnrollOutcome::Revoked => "revoked",
+            store::EnrollOutcome::NonceMismatch => "nonce_mismatch",
+            store::EnrollOutcome::TooManyPending => "too_many_pending",
+        });
+        Ok(outcome)
+    }
+
+    pub fn list_devices(&self) -> Result<Vec<Device>, FacilitatorError> {
+        self.store.list_devices()
+    }
+
+    pub(crate) fn assign_device(
+        &self,
+        device_id: &str,
+        room: &str,
+        actor: &str,
+    ) -> Result<(), FacilitatorError> {
+        self.store.assign_device(device_id, room, actor)?;
+        record_fleet_provisioning("assigned");
+        Ok(())
+    }
+
+    pub(crate) fn revoke_device(
+        &self,
+        device_id: &str,
+        actor: &str,
+    ) -> Result<(), FacilitatorError> {
+        self.store.revoke_device(device_id, actor)?;
+        record_fleet_provisioning("revoked");
+        Ok(())
+    }
+
+    pub(crate) fn verify_device(
+        &self,
+        token: &str,
+    ) -> Result<Option<DeviceIdentity>, FacilitatorError> {
+        self.store.verify_device(&auth::token_digest(token))
     }
 
     pub(crate) fn has_users(&self) -> Result<bool, FacilitatorError> {
@@ -835,6 +908,7 @@ impl LoginOutcome {
 pub struct PropertyClient {
     http: reqwest::Client,
     mcp_url: String,
+    base_url: String,
     service_token: String,
 }
 
@@ -847,11 +921,53 @@ impl PropertyClient {
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        let mcp_url = mcp_url.into();
+        let base_url = mcp_url
+            .trim_end_matches('/')
+            .trim_end_matches("/mcp")
+            .to_string();
         Ok(Self {
             http,
-            mcp_url: mcp_url.into(),
+            mcp_url,
+            base_url,
             service_token: service_token.into(),
         })
+    }
+
+    /// Ask the facilitator which pod and room a device token belongs to.
+    /// `Ok(None)` means the token is unknown or revoked.
+    pub async fn verify_device(
+        &self,
+        token: &str,
+    ) -> Result<Option<DeviceIdentity>, FacilitatorError> {
+        let response = self
+            .http
+            .post(format!("{}/api/devices/verify", self.base_url))
+            .bearer_auth(&self.service_token)
+            .json(&json!({ "token": token }))
+            .send()
+            .await
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        match response.status() {
+            reqwest::StatusCode::OK => {
+                let value: Value = response
+                    .json()
+                    .await
+                    .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+                let field =
+                    |name: &str| value.get(name).and_then(Value::as_str).map(str::to_string);
+                match (field("device_id"), field("room")) {
+                    (Some(device_id), Some(room)) => Ok(Some(DeviceIdentity { device_id, room })),
+                    _ => Err(FacilitatorError::Http(
+                        "verify response is missing fields".to_string(),
+                    )),
+                }
+            }
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status => Err(FacilitatorError::Http(format!(
+                "device verify returned {status}"
+            ))),
+        }
     }
 
     pub async fn list_tools(&self) -> Result<Vec<String>, FacilitatorError> {
