@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use core_observability::{record_property_auth_attempt, record_property_mcp_error};
+use core_observability::{
+    record_fleet_firmware_download, record_property_auth_attempt, record_property_mcp_error,
+};
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
 use hyper::header::HeaderValue;
@@ -154,6 +156,7 @@ const MAX_BODY_BYTES: usize = 256 * 1024;
 struct DeskRequest {
     method: Method,
     path: String,
+    query: String,
     content_type: String,
     authorization: Option<String>,
     cookie: Option<String>,
@@ -171,6 +174,7 @@ async fn read_request(request: Request<Incoming>) -> Result<DeskRequest, Respons
     };
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    let query = request.uri().query().unwrap_or("").to_string();
     let content_type = header(hyper::header::CONTENT_TYPE).unwrap_or_default();
     let authorization = header(hyper::header::AUTHORIZATION);
     let cookie = header(hyper::header::COOKIE);
@@ -192,6 +196,7 @@ async fn read_request(request: Request<Incoming>) -> Result<DeskRequest, Respons
     Ok(DeskRequest {
         method,
         path,
+        query,
         content_type,
         authorization,
         cookie,
@@ -274,6 +279,9 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
     }
     if method == Method::POST && path == "/api/devices/verify" {
         return verify_device(state, &incoming);
+    }
+    if method == Method::GET && path.starts_with("/api/firmware/") {
+        return firmware_api(state, &incoming);
     }
     if method == Method::POST && path == "/api/devices/heartbeat" {
         return device_heartbeat(state, &incoming);
@@ -583,7 +591,11 @@ fn enroll_device(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<B
             json!({"error": "device_id, nonce (16+ chars) and firmware are required"}),
         );
     }
-    match state.enroll_device(device_id, nonce, firmware) {
+    let lost_token = body
+        .get("lost_token")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match state.enroll_device(device_id, nonce, firmware, lost_token) {
         Ok(EnrollOutcome::Pending) => {
             json_response(StatusCode::ACCEPTED, json!({"status": "pending"}))
         }
@@ -633,6 +645,77 @@ fn verify_device(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<B
         }
         Err(error) => internal_error(&error),
     }
+}
+
+/// Pods ask for updates and download images with their device token.
+fn firmware_api(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {
+    let identity = match incoming.bearer().map(|token| state.verify_device(token)) {
+        Some(Ok(Some(identity))) => identity,
+        Some(Err(error)) => return internal_error(&error),
+        Some(Ok(None)) | None => {
+            record_property_auth_attempt("device_token", "rejected");
+            return json_response(
+                StatusCode::UNAUTHORIZED,
+                json!({"error": "device token required"}),
+            );
+        }
+    };
+    if incoming.path == "/api/firmware/manifest" {
+        let current = form_urlencoded::parse(incoming.query.as_bytes())
+            .find(|(key, _)| key == "current")
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_default();
+        return match state.firmware_offer(&identity.device_id, current.trim()) {
+            Ok(Some(release)) => json_response(
+                StatusCode::OK,
+                json!({
+                    "version": release.version,
+                    "size": release.size,
+                    "sha256_hex": release.sha256_hex,
+                    "signature_hex": release.signature_hex,
+                    "url": format!("/api/firmware/{}.bin", release.version),
+                }),
+            ),
+            Ok(None) => empty_response(StatusCode::NO_CONTENT),
+            Err(error) => internal_error(&error),
+        };
+    }
+    let Some(version) = incoming
+        .path
+        .strip_prefix("/api/firmware/")
+        .and_then(|rest| rest.strip_suffix(".bin"))
+    else {
+        return not_found();
+    };
+    match state.firmware_image(version) {
+        Ok(Some(bytes)) => {
+            record_fleet_firmware_download(version);
+            bytes_response(bytes)
+        }
+        Ok(None) => not_found(),
+        Err(error) => internal_error(&error),
+    }
+}
+
+fn empty_response(status: StatusCode) -> Response<BoxBody> {
+    let mut response = Response::new(Full::new(Bytes::new()).boxed());
+    *response.status_mut() = status;
+    response
+}
+
+fn bytes_response(bytes: Vec<u8>) -> Response<BoxBody> {
+    let length = bytes.len();
+    let mut response = Response::new(Full::new(Bytes::from(bytes)).boxed());
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&length.to_string()) {
+        response
+            .headers_mut()
+            .insert(hyper::header::CONTENT_LENGTH, value);
+    }
+    response
 }
 
 fn device_heartbeat(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {

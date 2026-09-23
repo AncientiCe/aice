@@ -203,3 +203,52 @@ async fn only_supervisors_manage_devices() {
     assert_eq!(unauthenticated, StatusCode::UNAUTHORIZED);
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn a_pod_that_lost_its_token_gets_a_new_one_with_its_nonce() {
+    let db = temp_db("rotate");
+    let running = match serve(hotels(db.clone(), None, Vec::new())).await {
+        Ok(running) => running,
+        Err(error) => panic!("serve failed: {error}"),
+    };
+    let _ = enroll(&running.url, "pod-gg07", "nonce-seven-0123456789").await;
+    if let Err(error) = property_facilitator::assign_device(&db, "pod-gg07", "8") {
+        panic!("assign: {error}");
+    }
+    let (_, first) = enroll(&running.url, "pod-gg07", "nonce-seven-0123456789").await;
+    let old = first["token"].as_str().unwrap_or("").to_string();
+
+    let rotate = |nonce: &'static str| {
+        let base = running.url.clone();
+        async move {
+            match client()
+                .post(format!("{base}/api/devices/enroll"))
+                .json(&json!({ "device_id": "pod-gg07", "nonce": nonce, "firmware": "1.4.0", "lost_token": true }))
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    (status, response.json::<Value>().await.unwrap_or(Value::Null))
+                }
+                Err(error) => panic!("enroll: {error}"),
+            }
+        }
+    };
+    let (status, _) = rotate("someone-else-0123456789").await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "only the nonce holder can rotate"
+    );
+    let (status, body) = rotate("nonce-seven-0123456789").await;
+    assert_eq!(status, StatusCode::OK);
+    let new = body["token"].as_str().unwrap_or("").to_string();
+    assert!(new.len() >= 32 && new != old);
+    assert_eq!(
+        verify(&running.url, TOKEN, &old).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(verify(&running.url, TOKEN, &new).await.0, StatusCode::OK);
+    let _ = std::fs::remove_file(db);
+}

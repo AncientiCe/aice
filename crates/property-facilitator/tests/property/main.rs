@@ -4,6 +4,7 @@ mod alerts;
 mod common;
 mod desk_auth;
 mod devices;
+mod firmware;
 mod fleet;
 mod loop_tests;
 mod stays;

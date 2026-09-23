@@ -70,13 +70,16 @@ impl AudioTranscriber for HeardTowels {
     }
 }
 
-/// Explicit test double: 64 bytes of PCM per character, so the pod can check
-/// it received exactly the synthesized answer.
+/// Explicit test double: 512 bytes of PCM per character, so the pod can check
+/// it received exactly the synthesized answer (22 characters = 11 KiB,
+/// more than the pod's six 2 KiB playback slots).
 struct CountingSpeech;
+
+const BYTES_PER_CHAR: usize = 512;
 
 impl Speech for CountingSpeech {
     fn synthesize(&self, text: &str) -> Result<Vec<u8>, String> {
-        Ok(vec![7u8; text.chars().count() * 64])
+        Ok(vec![7u8; text.chars().count() * BYTES_PER_CHAR])
     }
 }
 
@@ -260,10 +263,12 @@ async fn a_spoken_request_is_answered_through_the_pod_speaker() {
         send(&mut socket, &frame(0)).await;
     }
 
+    let expected = ANSWER.chars().count() * BYTES_PER_CHAR;
     let mut audio_bytes = 0usize;
     let mut saw_thinking = false;
     let mut saw_speaking = false;
-    loop {
+    let mut first_audio_at = None;
+    while audio_bytes < expected {
         match next(&mut socket).await {
             Some(GatewayToPod::Led {
                 state: LedState::Thinking,
@@ -272,21 +277,32 @@ async fn a_spoken_request_is_answered_through_the_pod_speaker() {
                 state: LedState::Speaking,
             }) => saw_speaking = true,
             Some(GatewayToPod::Audio { payload }) => {
+                assert!(saw_speaking, "speaking LED comes first");
                 assert!(
                     payload.0.len() <= 2048,
                     "chunks fit the pod's playback slots"
                 );
+                first_audio_at.get_or_insert_with(std::time::Instant::now);
                 audio_bytes += payload.0.len();
             }
-            Some(GatewayToPod::Led {
-                state: LedState::Listening,
-            }) if saw_speaking => break,
             Some(other) => panic!("unexpected message: {other:?}"),
             None => panic!("gateway closed the pod connection"),
         }
     }
     assert!(saw_thinking && saw_speaking);
-    assert_eq!(audio_bytes, ANSWER.chars().count() * 64);
+    assert_eq!(audio_bytes, expected);
+    // Six chunks: three at once, then 64 ms apart, so the last arrives ~128 ms later.
+    let spread = first_audio_at.map(|at| at.elapsed()).unwrap_or_default();
+    assert!(
+        spread >= Duration::from_millis(110),
+        "audio is paced for the pod's small queue: {spread:?}"
+    );
+    assert!(
+        timeout(Duration::from_millis(300), socket.next())
+            .await
+            .is_err(),
+        "no listening LED while the pod is still playing"
+    );
     let rooms = stack
         .engine
         .rooms

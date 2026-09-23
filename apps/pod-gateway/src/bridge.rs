@@ -38,6 +38,11 @@ const PROTOCOL_VERSION: u16 = 1;
 pub const MAX_AUDIO_PAYLOAD_BYTES: usize = 64 * 1024;
 /// Largest audio chunk sent to a pod (its playback slots are 2 KiB).
 const POD_AUDIO_CHUNK_BYTES: usize = 2048;
+/// Audio time in one full chunk: 1024 samples at 16 kHz.
+const POD_AUDIO_CHUNK_TIME: Duration = Duration::from_millis(64);
+/// Chunks sent ahead of real time. The pod queues six; three keeps it fed
+/// without overflowing.
+const POD_AUDIO_LEAD_CHUNKS: u32 = 3;
 
 /// Text in, 16 kHz mono PCM16 little-endian bytes out.
 pub trait Speech: Send + Sync + 'static {
@@ -240,6 +245,9 @@ where
     let mut turn_counter: u64 = 0;
     let mut turn_started_at = Instant::now();
     let (spoken_tx, mut spoken_rx) = mpsc::channel::<Result<Vec<u8>, String>>(1);
+    // True between turn_done and the answer; a cancelled turn's answer is dropped.
+    let mut awaiting_answer = false;
+    let mut speaking: Option<tokio::task::JoinHandle<()>> = None;
 
     let result: Result<(), DynError> = async {
         loop {
@@ -294,12 +302,17 @@ where
                                         backend_tx
                                             .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::TurnDone)?))
                                             .await?;
+                                        awaiting_answer = true;
                                         push(GatewayToPod::Led { state: LedState::Thinking });
                                     }
                                 }
                             }
                         }
                         PodToGateway::TapActivate => {
+                            if let Some(task) = speaking.take() {
+                                task.abort();
+                            }
+                            awaiting_answer = false;
                             push(GatewayToPod::StopAudio);
                             if turn.cancel() {
                                 backend_tx
@@ -323,6 +336,10 @@ where
                         TurnStreamServerEvent::Token { text, .. } => answer.push_str(&text),
                         TurnStreamServerEvent::Done { .. } => {
                             let text = std::mem::take(&mut answer);
+                            if !awaiting_answer {
+                                continue;
+                            }
+                            awaiting_answer = false;
                             if text.trim().is_empty() {
                                 record_pod_bridge_turn("no_answer");
                                 turn.listen();
@@ -364,21 +381,18 @@ where
                     let Some(spoken) = spoken else { continue };
                     match spoken {
                         Ok(pcm) => {
-                            push(GatewayToPod::Led { state: LedState::Speaking });
-                            for chunk in pcm.chunks(POD_AUDIO_CHUNK_BYTES) {
-                                record_pod_tts_chunk(&device_label, chunk.len());
-                                push(GatewayToPod::Audio { payload: AudioPayload(chunk.to_vec()) });
-                            }
                             record_pod_bridge_turn("answered");
+                            // The pod returns to listening on its own when playback ends.
+                            speaking = Some(tokio::spawn(speak(out_tx.clone(), device_label.clone(), pcm)));
                         }
                         Err(error) => {
                             warn!(device = %device_label, %error, "speech synthesis failed");
                             record_pod_bridge_turn("speech_failed");
+                            push(GatewayToPod::Led { state: LedState::Listening });
                         }
                     }
                     record_pod_bridge_turn_duration(turn_started_at.elapsed());
                     turn.listen();
-                    push(GatewayToPod::Led { state: LedState::Listening });
                 }
             }
         }
@@ -387,10 +401,43 @@ where
     .await;
 
     record_pod_disconnect(&device_label);
+    if let Some(task) = speaking.take() {
+        task.abort();
+    }
     drop(out_tx);
     let _ = writer.await;
     let _ = backend_tx.close().await;
     result
+}
+
+/// Send an answer at the pace the pod plays it, a few chunks ahead.
+async fn speak(out: mpsc::Sender<GatewayToPod>, device_label: String, pcm: Vec<u8>) {
+    if out
+        .send(GatewayToPod::Led {
+            state: LedState::Speaking,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let started = tokio::time::Instant::now();
+    for (index, chunk) in pcm.chunks(POD_AUDIO_CHUNK_BYTES).enumerate() {
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        if index >= POD_AUDIO_LEAD_CHUNKS {
+            tokio::time::sleep_until(
+                started + POD_AUDIO_CHUNK_TIME * (index - POD_AUDIO_LEAD_CHUNKS),
+            )
+            .await;
+        }
+        record_pod_tts_chunk(&device_label, chunk.len());
+        let audio = GatewayToPod::Audio {
+            payload: AudioPayload(chunk.to_vec()),
+        };
+        if out.send(audio).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Handshake callback that keeps the pod's bearer token.
