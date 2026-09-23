@@ -11,6 +11,7 @@ members = [
     "crates/core-observability",
     "crates/core-policy",
     "crates/core-search",
+    "crates/core-tls",
     "crates/core-runtime-protocol",
     "crates/pod-protocol",
     "apps/aice-backend",

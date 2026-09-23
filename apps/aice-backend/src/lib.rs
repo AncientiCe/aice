@@ -8,15 +8,15 @@ use chrono::{Datelike, NaiveDate, Utc};
 use core_config::{Config, WakeWordConfig};
 use core_llm::CradleLlmStream;
 use core_observability::{
-    record_air_quality_skill, record_backend_audio_chunk, record_backend_dependency_request,
-    record_backend_dependency_request_duration, record_backend_http_request,
-    record_backend_llm_provider_duration, record_backend_skill_execute,
-    record_backend_skill_execute_duration, record_backend_turn_cancellation,
-    record_backend_turn_duration, record_backend_turn_first_token_duration,
-    record_backend_turn_partial_transcript_duration, record_backend_turn_stage_duration,
-    record_backend_turn_total, record_briefing_skill, record_calculator_skill,
-    record_calendar_skill, record_currency_skill, record_dictionary_skill, record_email_skill,
-    record_journal_skill, record_meeting_notes_skill, record_model_preload,
+    record_air_quality_skill, record_backend_audio_chunk, record_backend_auth_rejection,
+    record_backend_dependency_request, record_backend_dependency_request_duration,
+    record_backend_http_request, record_backend_llm_provider_duration,
+    record_backend_skill_execute, record_backend_skill_execute_duration,
+    record_backend_turn_cancellation, record_backend_turn_duration,
+    record_backend_turn_first_token_duration, record_backend_turn_partial_transcript_duration,
+    record_backend_turn_stage_duration, record_backend_turn_total, record_briefing_skill,
+    record_calculator_skill, record_calendar_skill, record_currency_skill, record_dictionary_skill,
+    record_email_skill, record_journal_skill, record_meeting_notes_skill, record_model_preload,
     record_model_preload_duration, record_palace_add_memory, record_palace_error,
     record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
     record_palace_search, record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
@@ -315,24 +315,54 @@ pub fn property_client_from_config(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .map(std::path::Path::new);
+    let ca_file = property
+        .ca_file
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::Path::new);
     Some(
-        property_facilitator::client_service_token(token_file)
-            .and_then(|token| PropertyClient::new(url, token)),
+        property_facilitator::client_service_token(token_file).and_then(|token| match ca_file {
+            Some(ca) => PropertyClient::with_ca_file(url, token, ca),
+            None => PropertyClient::new(url, token),
+        }),
     )
 }
 
-/// Server options for this config. Fails when device tokens are required but
-/// no facilitator can verify them.
-pub fn server_options_from_config(config: &Config) -> Result<ServerOptions, DynError> {
+/// Server options for this config and bind. Fails when device tokens are
+/// required but no facilitator can verify them, or when a property backend
+/// would serve plain HTTP on the network.
+pub fn server_options_from_config(config: &Config, bind: &str) -> Result<ServerOptions, DynError> {
+    let tls = match &config.service.tls {
+        Some(files) => Some(core_tls::acceptor(
+            std::path::Path::new(&files.cert_file),
+            std::path::Path::new(&files.key_file),
+        )?),
+        None => None,
+    };
+    let loopback = property_facilitator::is_loopback_bind(bind);
+    if tls.is_none() && !loopback && config.property.is_configured() {
+        if config.service.allow_plaintext_lan {
+            warn!(%bind, "service.allow_plaintext_lan is set: room audio crosses the network unencrypted");
+        } else {
+            return Err(format!(
+                "refusing plain HTTP on {bind} for a property deployment; set service.tls or bind to 127.0.0.1"
+            )
+            .into());
+        }
+    }
     if !config.property.device_token_required() {
         if config.property.is_configured() {
             warn!("property.require_device_token is false: any client on the network can open a turn stream");
         }
-        return Ok(ServerOptions::default());
+        return Ok(ServerOptions {
+            device_auth: None,
+            tls,
+        });
     }
     match property_client_from_config(&config.property) {
         Some(Ok(client)) => Ok(ServerOptions {
             device_auth: Some(Arc::new(DeviceAuth::new(client))),
+            tls,
         }),
         Some(Err(error)) => Err(format!(
             "device tokens are required but the facilitator client failed: {error}"
@@ -348,6 +378,8 @@ pub struct ServerOptions {
     /// When set, `/turns/stream` needs a device token and the turn's device
     /// and room come from that token.
     pub device_auth: Option<Arc<DeviceAuth>>,
+    /// When set, every connection is TLS.
+    pub tls: Option<core_tls::TlsAcceptor>,
 }
 
 pub async fn spawn_server(
@@ -401,13 +433,13 @@ pub async fn spawn_server_with_options(
                     let Ok((stream, _)) = accepted else {
                         continue;
                     };
-                    let io = TokioIo::new(stream);
                     let engine = engine.clone();
                     let frontend_sessions = frontend_sessions.clone();
                     let transcriber = transcriber.clone();
                     let audio_config = audio_config.clone();
                     let options = options.clone();
                     tokio::spawn(async move {
+                        let acceptor = options.tls.clone();
                         let service = service_fn(move |req| {
                             let engine = engine.clone();
                             let frontend_sessions = frontend_sessions.clone();
@@ -426,11 +458,28 @@ pub async fn spawn_server_with_options(
                                 .await
                             }
                         });
-                        if let Err(error) = http1::Builder::new()
-                            .serve_connection(io, service)
-                            .with_upgrades()
-                            .await
-                        {
+                        let served = match acceptor {
+                            Some(acceptor) => match acceptor.accept(stream).await {
+                                Ok(tls) => {
+                                    http1::Builder::new()
+                                        .serve_connection(TokioIo::new(tls), service)
+                                        .with_upgrades()
+                                        .await
+                                }
+                                Err(error) => {
+                                    record_backend_auth_rejection("tls_handshake");
+                                    debug!(%error, "backend tls handshake failed");
+                                    return;
+                                }
+                            },
+                            None => {
+                                http1::Builder::new()
+                                    .serve_connection(TokioIo::new(stream), service)
+                                    .with_upgrades()
+                                    .await
+                            }
+                        };
+                        if let Err(error) = served {
                             warn!(%error, "backend connection failed");
                         }
                     });

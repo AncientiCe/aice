@@ -68,9 +68,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.stt.whisper_model_path.clone(),
         config.stt.preload_model_on_startup,
     )?);
-    let options = server_options_from_config(&config)?;
+    let options = server_options_from_config(&config, &bind)?;
     if options.device_auth.is_some() {
         info!("turn stream requires facilitator device tokens");
+    }
+    if options.tls.is_some() {
+        info!("backend serves TLS only");
     }
     let handle = spawn_server_with_options(
         &bind,

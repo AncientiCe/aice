@@ -69,6 +69,24 @@ pub enum FacilitatorError {
     ServiceToken(String),
     #[error("device '{0}' is not enrolled")]
     UnknownDevice(String),
+    #[error("tls: {0}")]
+    Tls(String),
+    #[error("refusing plain HTTP on {0}; configure tls or bind to 127.0.0.1")]
+    InsecureBind(String),
+}
+
+impl From<core_tls::TlsError> for FacilitatorError {
+    fn from(error: core_tls::TlsError) -> Self {
+        Self::Tls(error.to_string())
+    }
+}
+
+/// Server certificate, key, and (when known) the CA that signed them.
+#[derive(Clone, Debug)]
+pub struct TlsFiles {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    pub ca: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +103,18 @@ pub struct Settings {
     pub service_token: String,
     /// Prometheus exporter bind, for example `127.0.0.1:9791`.
     pub metrics_bind: Option<String>,
+    /// HTTPS for the desk and MCP. Required unless `bind` is loopback.
+    pub tls: Option<TlsFiles>,
+}
+
+/// True when `bind` only accepts connections from this machine.
+pub fn is_loopback_bind(bind: &str) -> bool {
+    match bind.parse::<std::net::SocketAddr>() {
+        Ok(addr) => addr.ip().is_loopback(),
+        Err(_) => bind
+            .rsplit_once(':')
+            .is_some_and(|(host, _)| host.eq_ignore_ascii_case("localhost")),
+    }
 }
 
 /// Env var that overrides the service token file.
@@ -112,6 +142,82 @@ struct SettingsFile {
     service_token_file: Option<String>,
     #[serde(default)]
     metrics_bind: Option<String>,
+    #[serde(default)]
+    tls: Option<TlsFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TlsFile {
+    /// `auto` (property CA beside the config), `files`, or `off`.
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    hostnames: Vec<String>,
+    #[serde(default)]
+    cert_file: Option<String>,
+    #[serde(default)]
+    key_file: Option<String>,
+    #[serde(default)]
+    ca_file: Option<String>,
+}
+
+fn resolve_tls(
+    base_dir: &Path,
+    bind: &str,
+    file: Option<TlsFile>,
+) -> Result<Option<TlsFiles>, FacilitatorError> {
+    let file = file.unwrap_or_default();
+    let loopback = is_loopback_bind(bind);
+    let mode = file
+        .mode
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or(if loopback { "off" } else { "auto" });
+    match mode {
+        "off" if loopback => Ok(None),
+        "off" => Err(FacilitatorError::InsecureBind(bind.to_string())),
+        "auto" => {
+            let dir = base_dir.join("tls");
+            let mut hostnames = file.hostnames;
+            for default in ["localhost", "127.0.0.1"] {
+                if !hostnames.iter().any(|name| name == default) {
+                    hostnames.push(default.to_string());
+                }
+            }
+            if let Ok(addr) = bind.parse::<std::net::SocketAddr>() {
+                if !addr.ip().is_unspecified() && !addr.ip().is_loopback() {
+                    hostnames.push(addr.ip().to_string());
+                }
+            }
+            let (cert, key) = core_tls::ensure_server_cert(&dir, &hostnames)?;
+            Ok(Some(TlsFiles {
+                cert,
+                key,
+                ca: Some(dir.join("ca.pem")),
+            }))
+        }
+        "files" => {
+            let required = |value: Option<String>, name: &str| {
+                value
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| relative_to(base_dir, &value))
+                    .ok_or_else(|| {
+                        FacilitatorError::Tls(format!("tls.{name} is required in files mode"))
+                    })
+            };
+            Ok(Some(TlsFiles {
+                cert: required(file.cert_file, "cert_file")?,
+                key: required(file.key_file, "key_file")?,
+                ca: file
+                    .ca_file
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| relative_to(base_dir, &value)),
+            }))
+        }
+        other => Err(FacilitatorError::Tls(format!(
+            "tls.mode must be auto, files, or off (got '{other}')"
+        ))),
+    }
 }
 
 impl Settings {
@@ -167,8 +273,10 @@ impl Settings {
                 None => None,
             },
         };
+        let tls = resolve_tls(&base_dir, &bind, file.tls)?;
         Ok(Self {
             pack,
+            tls,
             bind,
             database_path,
             property_mcp_url: file
@@ -194,6 +302,7 @@ impl Settings {
             extensions: HashMap::new(),
             service_token: random_token(),
             metrics_bind: None,
+            tls: None,
         }
     }
 }
@@ -857,6 +966,9 @@ impl Drop for Running {
 }
 
 pub async fn serve(settings: Settings) -> Result<Running, FacilitatorError> {
+    if settings.tls.is_none() && !is_loopback_bind(&settings.bind) {
+        return Err(FacilitatorError::InsecureBind(settings.bind.clone()));
+    }
     let facilitator = Facilitator::open(settings)?;
     facilitator.refresh_upstream_tools().await;
     http::listen(facilitator).await
@@ -921,17 +1033,39 @@ impl PropertyClient {
             .timeout(Duration::from_secs(2))
             .build()
             .map_err(|error| FacilitatorError::Http(error.to_string()))?;
-        let mcp_url = mcp_url.into();
+        Ok(Self::from_parts(http, mcp_url.into(), service_token.into()))
+    }
+
+    /// Client for an HTTPS facilitator whose certificate chains to `ca_file`.
+    pub fn with_ca_file(
+        mcp_url: impl Into<String>,
+        service_token: impl Into<String>,
+        ca_file: &Path,
+    ) -> Result<Self, FacilitatorError> {
+        let pem = std::fs::read(ca_file)?;
+        let ca = reqwest::Certificate::from_pem(&pem)
+            .map_err(|error| FacilitatorError::Tls(error.to_string()))?;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .use_rustls_tls()
+            .tls_built_in_root_certs(false)
+            .add_root_certificate(ca)
+            .build()
+            .map_err(|error| FacilitatorError::Http(error.to_string()))?;
+        Ok(Self::from_parts(http, mcp_url.into(), service_token.into()))
+    }
+
+    fn from_parts(http: reqwest::Client, mcp_url: String, service_token: String) -> Self {
         let base_url = mcp_url
             .trim_end_matches('/')
             .trim_end_matches("/mcp")
             .to_string();
-        Ok(Self {
+        Self {
             http,
             mcp_url,
             base_url,
-            service_token: service_token.into(),
-        })
+            service_token,
+        }
     }
 
     /// Ask the facilitator which pod and room a device token belongs to.

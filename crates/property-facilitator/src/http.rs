@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use core_observability::record_property_auth_attempt;
+use core_observability::{record_property_auth_attempt, record_property_mcp_error};
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
 use hyper::header::HeaderValue;
@@ -34,6 +34,11 @@ pub async fn listen(facilitator: Arc<Facilitator>) -> Result<Running, Facilitato
             bind: facilitator.settings.bind.clone(),
             message: error.to_string(),
         })?;
+    let acceptor = match &facilitator.settings.tls {
+        Some(files) => Some(core_tls::acceptor(&files.cert, &files.key)?),
+        None => None,
+    };
+    let scheme = if acceptor.is_some() { "https" } else { "http" };
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {
         loop {
@@ -47,15 +52,18 @@ pub async fn listen(facilitator: Arc<Facilitator>) -> Result<Running, Facilitato
                             continue;
                         }
                     };
-                    let io = TokioIo::new(stream);
                     let state = Arc::clone(&facilitator);
+                    let acceptor = acceptor.clone();
                     tokio::spawn(async move {
-                        let service = service_fn(move |request| {
-                            let state = Arc::clone(&state);
-                            async move { Ok::<_, Infallible>(route(state, request).await) }
-                        });
-                        if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
-                            tracing::warn!(%error, "property desk connection closed");
+                        match acceptor {
+                            Some(acceptor) => match acceptor.accept(stream).await {
+                                Ok(tls) => serve_connection(TokioIo::new(tls), state).await,
+                                Err(error) => {
+                                    record_property_mcp_error("tls_handshake");
+                                    tracing::debug!(%error, "property desk tls handshake failed");
+                                }
+                            },
+                            None => serve_connection(TokioIo::new(stream), state).await,
                         }
                     });
                 }
@@ -63,10 +71,23 @@ pub async fn listen(facilitator: Arc<Facilitator>) -> Result<Running, Facilitato
         }
     });
     Ok(Running {
-        url: format!("http://{addr}"),
+        url: format!("{scheme}://{addr}"),
         shutdown: Some(shutdown_tx),
         task: Some(task),
     })
+}
+
+async fn serve_connection<IO>(io: IO, state: Arc<Facilitator>)
+where
+    IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+{
+    let service = service_fn(move |request| {
+        let state = Arc::clone(&state);
+        async move { Ok::<_, Infallible>(route(state, request).await) }
+    });
+    if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
+        tracing::warn!(%error, "property desk connection closed");
+    }
 }
 
 struct FixedState {
@@ -233,6 +254,20 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
             _ => not_found(),
         };
     }
+    if method == Method::GET && path == "/api/tls/ca" {
+        return match state
+            .settings
+            .tls
+            .as_ref()
+            .and_then(|files| files.ca.as_ref())
+        {
+            Some(ca) => match std::fs::read_to_string(ca) {
+                Ok(pem) => text_response(StatusCode::OK, "application/x-pem-file", pem),
+                Err(error) => internal_error(&FacilitatorError::Io(error)),
+            },
+            None => not_found(),
+        };
+    }
     if method == Method::POST && path == "/api/devices/enroll" {
         return enroll_device(state, &incoming);
     }
@@ -361,9 +396,10 @@ async fn login(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<Box
             Err(error) => Err(FacilitatorError::Auth(error.to_string())),
         };
     match outcome {
-        Ok(LoginOutcome::Accepted { token }) => {
-            with_cookie(redirect("/desk"), &session_cookie(&token))
-        }
+        Ok(LoginOutcome::Accepted { token }) => with_cookie(
+            redirect("/desk"),
+            &session_cookie(&token, state.settings.tls.is_some()),
+        ),
         Ok(LoginOutcome::Rejected) => login_page(
             state,
             Some("Wrong username or password."),
@@ -557,11 +593,12 @@ fn ticket_action(path: &str) -> Option<(&str, &str)> {
     Some((id, action))
 }
 
-fn session_cookie(token: &str) -> String {
+fn session_cookie(token: &str, secure: bool) -> String {
     format!(
-        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+        "{}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
         auth::SESSION_COOKIE,
-        auth::SESSION_MILLIS / 1000
+        auth::SESSION_MILLIS / 1000,
+        if secure { "; Secure" } else { "" }
     )
 }
 
