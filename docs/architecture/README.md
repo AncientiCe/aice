@@ -75,40 +75,43 @@ flowchart LR
 
 ---
 
-## 4. Pod gateway (Signal Pod target, M5Stack experimental ingress/egress)
+## 4. Room bridge (pods ⇄ backend)
 
-**Purpose:** Pod devices capture mic audio, stream it as 16 kHz mono 16-bit PCM frames over WebSocket to the gateway, and receive TTS audio + LED state back. Signal Pod is the target runtime device; M5Stack ATOM Echo remains an experimental test path.
+**Purpose:** A pod in each room captures microphone audio and plays spoken answers. The room bridge (`pod-gateway`, `cargo aice-gateway`) decides where speech starts and ends, runs each utterance as one turn on the backend with the pod's device token, and speaks the answer back through the pod. The bridge never interprets what was said; the backend's LLM does.
 
 ```mermaid
 sequenceDiagram
-    participant Echo as ATOM Echo
-    participant GW as PodGateway
-    participant Pipeline as ConversationEngine/TTS
+    participant Pod as Room pod (ATOM Echo)
+    participant Bridge as Room bridge
+    participant Backend as aice-backend /turns/stream
+    participant Fac as Facilitator
 
-    Echo->>GW: hello {device_id, room}
-    GW->>Echo: hello_ack {protocol_version}
+    Pod->>Bridge: WSS upgrade, Authorization: Bearer <device token>
+    Pod->>Bridge: hello {device_id}
+    Bridge->>Backend: WSS upgrade with the same bearer token
+    Backend->>Fac: verify token → {device_id, room, memory_wing}
+    Bridge->>Pod: hello_ack, led listening
     loop every 40 ms
-        Echo->>GW: audio {payload: base64 PCM}
-        GW->>Pipeline: PodIngestEvent {device_id, pcm}
+        Pod->>Bridge: audio {base64 PCM16 16 kHz}
     end
-    Pipeline->>GW: PodEgressCommand::ToDevice Led{thinking}
-    GW->>Echo: led {state: "thinking"}
-    Pipeline->>GW: PodEgressCommand::ToDevice Audio{pcm}
-    GW->>Echo: audio {payload: base64 PCM}
-    Note over Echo: plays TTS on speaker
-    GW->>Echo: led {state: "listening"}
-    loop every 5 s
-        Echo->>GW: ping {seq}
-        GW->>Echo: pong {seq}
-    end
+    Note over Bridge: speech detected (energy over audio time)
+    Bridge->>Backend: turn_start, preroll + audio frames
+    Note over Bridge: 700 ms of quiet audio (or 15 s cap)
+    Bridge->>Backend: turn_done
+    Bridge->>Pod: led thinking
+    Backend-->>Bridge: token... done
+    Bridge->>Bridge: Piper text → PCM
+    Bridge->>Pod: led speaking, audio chunks (≤ 2 KiB), led listening
 ```
 
 **Notes:**
-- **Inputs:** WebSocket messages `hello`, `identify`, `audio`, `ping`, `tap_activate`.
-- **Outputs:** `PodIngestEvent { device_id, pcm }` to ingest channel; egress messages (`hello_ack`, `audio`, `stop_audio`, `led`, `pong`, `error`) to target sessions.
-- **Pod LED states:** blue blink = connecting, green = listening, amber = thinking, blue solid = speaking, red blink = error.
-- **Stop playback:** Say "Computer stop" (or "stop", "stop the music", etc.) when the mic is listening; it stops TTS and clears the pod queue. During playback the pod mic is off (I2S0 mode-switched to speaker; GPIO33 shared), so use the **pod button** to send `TapActivate` and stop mid-play.
-- **Failure paths:** Invalid JSON/binary frames emit `error` responses; oversized payloads (>64 KB) are rejected; session is removed on disconnect.
+- **Inputs:** pod messages `hello`, `identify`, `audio`, `ping`, `tap_activate`; config `pod_bind`, `pod_gateway.backend_url` (`ws://` or `wss://`), `pod_gateway.backend_ca_file`, `pod_gateway.tls` (serve pods over TLS), `pod_gateway.vad_start_level`, `pod_gateway.vad_end_silence_ms`, and `tts.piper_model_path`.
+- **Turn detection:** a turn opens after three frames above `vad_start_level` (mean absolute sample value) and includes the eight frames before it, so the first word is kept. It closes after `vad_end_silence_ms` of quiet audio or 15 s. Time is measured in audio samples, so buffered bursts are judged like live audio. The pod mic is off while it plays, so the bridge ignores audio until the answer has been sent.
+- **Outputs:** `hello_ack`, `led` (`listening`, `thinking`, `speaking`), `audio` chunks of at most 2 KiB (the pod's playback slots), `stop_audio`, `pong`, `error`.
+- **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`).
+- **Local skills:** pods have none; a `frontend_skill_intent` is answered with an error result so the backend replies instead of waiting.
+- **Failure paths:** the backend refuses the token → `error {code: unauthorized}` and the pod connection closes; backend unreachable → `error {code: backend_unavailable}`; invalid JSON → `invalid_message`; audio over 64 KiB → `payload_too_large`; binary frames → `binary_not_supported`; Piper failure → the turn ends without audio (`pod_bridge_turns_total{result="speech_failed"}`). A property deployment refuses plain WebSocket pods on a network bind unless `service.allow_plaintext_lan` is set.
+- **Metrics:** `pod_bridge_turns_total{result}` (`answered`, `no_answer`, `cancelled`, `backend_error`, `speech_failed`, `unauthorized`, `backend_unavailable`), `pod_bridge_turn_duration_seconds`, `pod_connections_total`, `pod_disconnects_total`, `pod_audio_frames_total`, `pod_tts_chunks_total`, `pod_egress_queue_drops_total`, `pod_egress_send_errors_total`.
 
 ---
 
@@ -645,7 +648,8 @@ sequenceDiagram
 - **Outputs:** A pending pod shows on the supervisor desk; after assignment the next enrol with the same nonce returns the device token once. A later enrol with a different nonce is refused (409) and audited.
 - **Backend:** `property.require_device_token` defaults to on whenever `property.facilitator_url` is set. The turn's `device_id` and `room` come from the token, overriding whatever the client sends.
 - **Failure paths:** missing/unknown token → 401; facilitator unreachable at connect with no recent verification → 503; facilitator unreachable mid-connection → the turn runs with memory off; revoked mid-connection → error event and the socket closes; more than 256 pods pending → 429.
-- **Metrics:** `fleet_provisioning_total{result}`, `backend_device_auth_duration_seconds{result}`, `backend_auth_rejections_total{reason}`.
+- **Heartbeats:** every 30 s the backend reports the pods with an open turn stream (`POST /api/devices/heartbeat`). An active pod silent for `device_offline_after_secs` (default 120) gets an escalated `device_offline` ticket for its room (paged like any ticket) and shows `OFFLINE` on the desk; the next sign of life clears it and is audited as `device_online`.
+- **Metrics:** `fleet_provisioning_total{result}`, `fleet_devices{status}` (`pending`, `online`, `offline`, `revoked`), `fleet_heartbeat_missed_total`, `backend_device_auth_duration_seconds{result}`, `backend_auth_rejections_total{reason}`.
 
 ---
 

@@ -6,4 +6,4 @@ pub mod piper;
 
 pub use error::TtsError;
 pub use fake::FakeTtsSink;
-pub use piper::PiperTtsSink;
+pub use piper::{PiperSynth, PiperTtsSink};

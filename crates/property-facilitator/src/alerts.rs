@@ -215,6 +215,7 @@ pub(crate) fn spawn(facilitator: Arc<Facilitator>) -> tokio::task::JoinHandle<()
 }
 
 async fn run_due(facilitator: &Arc<Facilitator>) -> Result<(), FacilitatorError> {
+    facilitator.check_fleet()?;
     let due = facilitator.store.due_alerts()?;
     for alert in due {
         handle(facilitator, alert).await?;

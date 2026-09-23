@@ -118,6 +118,8 @@ pub struct Device {
     pub firmware: String,
     pub last_seen_millis: i64,
     pub created_millis: i64,
+    /// Set while an active pod has stopped reporting.
+    pub offline_since_millis: Option<i64>,
 }
 
 /// A pod identity the backend can trust.
@@ -239,6 +241,7 @@ impl TicketStore {
                 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;",
         )?;
         add_column_if_missing(&connection, "tickets", "alert_tier", "INTEGER")?;
+        add_column_if_missing(&connection, "devices", "offline_since", "INTEGER")?;
         add_column_if_missing(&connection, "tickets", "next_alert_at", "INTEGER")?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS tickets_next_alert ON tickets(next_alert_at);",
@@ -723,7 +726,7 @@ impl TicketStore {
     pub(crate) fn list_devices(&self) -> Result<Vec<Device>, FacilitatorError> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT device_id, room, status, firmware, last_seen, created_at
+            "SELECT device_id, room, status, firmware, last_seen, created_at, offline_since
              FROM devices ORDER BY status ASC, device_id ASC",
         )?;
         let rows = statement.query_map([], |row| {
@@ -734,6 +737,7 @@ impl TicketStore {
                 firmware: row.get(3)?,
                 last_seen_millis: row.get(4)?,
                 created_millis: row.get(5)?,
+                offline_since_millis: row.get(6)?,
             })
         })?;
         let mut devices = Vec::new();
@@ -842,12 +846,85 @@ impl TicketStore {
             )
             .optional()?;
         if let Some(identity) = &identity {
-            connection.execute(
-                "UPDATE devices SET last_seen = ?1 WHERE device_id = ?2",
-                params![unix_millis(), identity.device_id],
-            )?;
+            mark_seen(&connection, &identity.device_id)?;
         }
         Ok(identity)
+    }
+
+    /// Pods the backend reports as connected are alive.
+    pub(crate) fn heartbeat(&self, device_ids: &[String]) -> Result<usize, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut seen = 0;
+        for device_id in device_ids {
+            if mark_seen(&connection, device_id)? {
+                seen += 1;
+            }
+        }
+        Ok(seen)
+    }
+
+    /// Active pods silent since `cutoff` that were not already flagged; flags them.
+    pub(crate) fn newly_offline(&self, cutoff: i64) -> Result<Vec<Device>, FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let mut devices = Vec::new();
+        {
+            let mut statement = transaction.prepare(
+                "SELECT device_id, room, status, firmware, last_seen, created_at, offline_since
+                 FROM devices
+                 WHERE status = 'active' AND offline_since IS NULL AND last_seen < ?1",
+            )?;
+            let rows = statement.query_map(params![cutoff], |row| {
+                Ok(Device {
+                    device_id: row.get(0)?,
+                    room: row.get(1)?,
+                    status: row.get(2)?,
+                    firmware: row.get(3)?,
+                    last_seen_millis: row.get(4)?,
+                    created_millis: row.get(5)?,
+                    offline_since_millis: row.get(6)?,
+                })
+            })?;
+            for row in rows {
+                devices.push(row?);
+            }
+        }
+        let now = unix_millis();
+        for device in &devices {
+            transaction.execute(
+                "UPDATE devices SET offline_since = ?1 WHERE device_id = ?2",
+                params![now, device.device_id],
+            )?;
+            append_audit(
+                &transaction,
+                &device.device_id,
+                "device_offline",
+                None,
+                None,
+                None,
+                device.room.as_deref().unwrap_or(""),
+            )?;
+        }
+        transaction.commit()?;
+        Ok(devices)
+    }
+
+    /// Device counts by fleet status: pending, online, offline, revoked.
+    pub(crate) fn fleet_counts(&self) -> Result<Vec<(String, i64)>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT CASE
+                WHEN status = 'active' AND offline_since IS NOT NULL THEN 'offline'
+                WHEN status = 'active' THEN 'online'
+                ELSE status END AS fleet_status, COUNT(*)
+             FROM devices GROUP BY fleet_status",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut counts = Vec::new();
+        for row in rows {
+            counts.push(row?);
+        }
+        Ok(counts)
     }
 }
 
@@ -1039,6 +1116,23 @@ fn ticket_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Ticket> {
         detail: row.get(6)?,
         created_millis: row.get(7)?,
     })
+}
+
+/// Record a sign of life; clears an offline flag and audits the recovery.
+/// Returns false for unknown or inactive devices.
+fn mark_seen(connection: &Connection, device_id: &str) -> Result<bool, FacilitatorError> {
+    let updated = connection.execute(
+        "UPDATE devices SET last_seen = ?1 WHERE device_id = ?2 AND status = 'active'",
+        params![unix_millis(), device_id],
+    )?;
+    let recovered = connection.execute(
+        "UPDATE devices SET offline_since = NULL WHERE device_id = ?1 AND offline_since IS NOT NULL",
+        params![device_id],
+    )?;
+    if recovered > 0 {
+        append_audit(connection, device_id, "device_online", None, None, None, "")?;
+    }
+    Ok(updated > 0)
 }
 
 fn add_column_if_missing(

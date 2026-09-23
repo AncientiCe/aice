@@ -1,5 +1,8 @@
-//! Pod gateway: accepts WebSocket connections from M5Stack pods and forwards audio.
+//! Room bridge between M5Stack pods and the aice backend.
 
-mod server;
+mod bridge;
 
-pub use server::{run_gateway, PodEgressCommand, PodIngestEvent, TapSender};
+pub use bridge::{
+    spawn_bridge, BridgeHandle, BridgeSettings, PiperSpeech, Speech, TurnDetector, TurnStep,
+    VadSettings, MAX_AUDIO_PAYLOAD_BYTES,
+};

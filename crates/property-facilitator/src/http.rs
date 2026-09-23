@@ -275,6 +275,9 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
     if method == Method::POST && path == "/api/devices/verify" {
         return verify_device(state, &incoming);
     }
+    if method == Method::POST && path == "/api/devices/heartbeat" {
+        return device_heartbeat(state, &incoming);
+    }
     if path == "/api/stays/purge-due"
         || (path.starts_with("/api/stays/") && path.ends_with("/purged"))
     {
@@ -628,6 +631,28 @@ fn verify_device(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<B
                 json!({"error": "unknown device token"}),
             )
         }
+        Err(error) => internal_error(&error),
+    }
+}
+
+fn device_heartbeat(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {
+    let authorized = incoming
+        .bearer()
+        .is_some_and(|token| state.service_token_matches(token));
+    if !authorized {
+        record_property_auth_attempt("service_token", "rejected");
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "service token required"}),
+        );
+    }
+    let device_ids: Vec<String> = serde_json::from_slice::<Value>(&incoming.body)
+        .ok()
+        .and_then(|body| body.get("device_ids").cloned())
+        .and_then(|ids| serde_json::from_value(ids).ok())
+        .unwrap_or_default();
+    match state.heartbeat(&device_ids) {
+        Ok(seen) => json_response(StatusCode::OK, json!({"seen": seen})),
         Err(error) => internal_error(&error),
     }
 }

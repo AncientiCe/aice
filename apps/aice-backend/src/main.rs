@@ -2,9 +2,9 @@ use aice_backend::discovery_broadcast::{
     resolve_discovery_udp_port, spawn_udp_discovery_responder, DEFAULT_DISCOVERY_UDP_PORT,
 };
 use aice_backend::{
-    property_client_from_config, server_options_from_config, spawn_memory_retention,
-    spawn_server_with_options, AiceBackendEngine, AudioIngressConfig, BackendEngine,
-    WhisperAudioTranscriber,
+    property_client_from_config, server_options_from_config, spawn_device_heartbeats,
+    spawn_memory_retention, spawn_server_with_options, AiceBackendEngine, AudioIngressConfig,
+    BackendEngine, WhisperAudioTranscriber, HEARTBEAT_INTERVAL,
 };
 use core_config::Config;
 use core_observability::{
@@ -85,9 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.stt.preload_model_on_startup,
     )?);
     let options = server_options_from_config(&config, &bind)?;
-    if options.device_auth.is_some() {
+    let heartbeats = options.device_auth.as_ref().map(|auth| {
         info!("turn stream requires facilitator device tokens");
-    }
+        spawn_device_heartbeats(Arc::clone(auth), HEARTBEAT_INTERVAL)
+    });
     if options.tls.is_some() {
         info!("backend serves TLS only");
     }
@@ -123,6 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::signal::ctrl_c().await?;
     if let Some(retention) = retention {
         retention.abort();
+    }
+    if let Some(heartbeats) = heartbeats {
+        heartbeats.abort();
     }
     udp_handle.abort();
     let _ = udp_handle.await;

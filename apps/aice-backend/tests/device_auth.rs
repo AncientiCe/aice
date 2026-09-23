@@ -352,3 +352,62 @@ async fn each_turn_uses_the_rooms_current_stay() {
     handle.shutdown().await;
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn connected_pods_are_reported_as_alive() {
+    let (running, db, token) = facilitator_with_pod("heartbeat", "204").await;
+    let client = PropertyClient::new(format!("{}/mcp", running.url), SERVICE_TOKEN)
+        .unwrap_or_else(|error| panic!("client failed: {error}"));
+    let auth = Arc::new(DeviceAuth::new(client));
+    let engine: Arc<dyn BackendEngine> = Arc::new(RecordingEngine::default());
+    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(StaticTranscriber);
+    let handle = spawn_server_with_options(
+        "127.0.0.1:0",
+        engine,
+        transcriber,
+        AudioIngressConfig::default(),
+        ServerOptions {
+            device_auth: Some(Arc::clone(&auth)),
+            tls: None,
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("backend failed: {error}"));
+    assert!(auth.connected_devices().is_empty());
+
+    let (ws, _) = connect_async(ws_request(&handle.bind, Some(&token)))
+        .await
+        .unwrap_or_else(|error| panic!("ws connect failed: {error}"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while auth.connected_devices().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(auth.connected_devices(), vec!["pod-204".to_string()]);
+    let before = property_facilitator::list_devices(&db)
+        .unwrap_or_default()
+        .first()
+        .map(|device| device.last_seen_millis)
+        .unwrap_or(0);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        auth.report_heartbeat()
+            .await
+            .unwrap_or_else(|error| panic!("heartbeat: {error}")),
+        1
+    );
+    let after = property_facilitator::list_devices(&db)
+        .unwrap_or_default()
+        .first()
+        .map(|device| device.last_seen_millis)
+        .unwrap_or(0);
+    assert!(after > before, "heartbeat refreshed last_seen");
+
+    drop(ws);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !auth.connected_devices().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(auth.connected_devices().is_empty(), "disconnect is tracked");
+    handle.shutdown().await;
+    let _ = std::fs::remove_file(db);
+}
