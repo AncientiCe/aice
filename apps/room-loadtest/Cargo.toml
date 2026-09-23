@@ -1,0 +1,26 @@
+[package]
+name = "room-loadtest"
+version = "0.1.0"
+edition = "2021"
+description = "Simulated room pods for measuring aice capacity end to end"
+
+[[bin]]
+name = "room-loadtest"
+path = "src/main.rs"
+
+[dependencies]
+core-tls = { path = "../../crates/core-tls" }
+futures-util = "0.3"
+pod-protocol = { path = "../../crates/pod-protocol" }
+property-facilitator = { path = "../../crates/property-facilitator" }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-manual-roots"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+
+[dev-dependencies]
+aice-backend = { path = "../aice-backend" }
+async-trait = "0.1"
+core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
+pod-gateway = { path = "../pod-gateway" }
