@@ -191,6 +191,9 @@ pub struct Settings {
     pub tls: Option<TlsFiles>,
     /// What happens to a stay's memory at checkout.
     pub memory_retention: MemoryRetention,
+    /// Consent assumed when check-in does not say (hotels: booking terms;
+    /// care homes and wards: ask each resident or patient).
+    pub memory_consent_default: bool,
     /// Who is paged, and when unacknowledged tickets escalate.
     pub alerts: AlertSettings,
     /// An active pod silent this long raises a `device_offline` ticket.
@@ -243,6 +246,8 @@ struct SettingsFile {
     alerts: Option<alerts::AlertsFile>,
     #[serde(default)]
     device_offline_after_secs: Option<u64>,
+    #[serde(default)]
+    memory_consent_default: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -377,6 +382,7 @@ impl Settings {
         let alerts = alerts::resolve_alerts(pack, &base_dir, file.alerts)?;
         Ok(Self {
             pack,
+            memory_consent_default: file.memory_consent_default.unwrap_or(pack == Pack::Hotels),
             alerts,
             device_offline_after: file
                 .device_offline_after_secs
@@ -413,6 +419,7 @@ impl Settings {
             memory_retention: MemoryRetention::default_for(pack),
             alerts: AlertSettings::default_for(pack),
             device_offline_after: DEFAULT_DEVICE_OFFLINE_AFTER,
+            memory_consent_default: pack == Pack::Hotels,
         }
     }
 }
@@ -535,8 +542,14 @@ pub fn open_stay(
     database_path: &Path,
     room: &str,
     continue_from: Option<&str>,
+    memory_consent: bool,
 ) -> Result<Stay, FacilitatorError> {
-    let stay = TicketStore::open(database_path)?.open_stay(room.trim(), continue_from, "admin")?;
+    let stay = TicketStore::open(database_path)?.open_stay(
+        room.trim(),
+        continue_from,
+        memory_consent,
+        "admin",
+    )?;
     record_memory_stay_transition("opened");
     Ok(stay)
 }
@@ -687,6 +700,10 @@ impl Facilitator {
 
     pub fn pack(&self) -> Pack {
         self.settings.pack
+    }
+
+    pub(crate) fn memory_consent_default(&self) -> bool {
+        self.settings.memory_consent_default
     }
 
     pub(crate) fn service_token_matches(&self, presented: &str) -> bool {
@@ -850,13 +867,30 @@ impl Facilitator {
         &self,
         room: &str,
         continue_from: Option<&str>,
+        memory_consent: Option<bool>,
         actor: &str,
     ) -> Result<Stay, FacilitatorError> {
-        let stay = self.store.open_stay(room, continue_from, actor)?;
+        let consent = memory_consent.unwrap_or(self.settings.memory_consent_default);
+        let stay = self.store.open_stay(room, continue_from, consent, actor)?;
         record_memory_stay_transition(if continue_from.is_some() {
             "continued"
         } else {
             "opened"
+        });
+        Ok(stay)
+    }
+
+    pub(crate) fn set_stay_consent(
+        &self,
+        id: &str,
+        memory_consent: bool,
+        actor: &str,
+    ) -> Result<Stay, FacilitatorError> {
+        let stay = self.store.set_stay_consent(id, memory_consent, actor)?;
+        record_memory_stay_transition(if memory_consent {
+            "consent_given"
+        } else {
+            "consent_withdrawn"
         });
         Ok(stay)
     }

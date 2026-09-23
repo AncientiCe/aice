@@ -9,7 +9,7 @@
 //! aice-<pack> <property.json> device assign <id> <room>
 //! aice-<pack> <property.json> device revoke <id>
 //! aice-<pack> <property.json> stay list              list stays
-//! aice-<pack> <property.json> stay open <room> [<continue-from-stay>]
+//! aice-<pack> <property.json> stay open <room> [--consent|--no-consent] [<continue-from-stay>]
 //! aice-<pack> <property.json> stay close <stay>
 //! aice-<pack> <property.json> tls fingerprint        print the CA pin for pods
 //! aice-<pack> <property.json> tls issue <cert> <key> <host>...
@@ -191,14 +191,26 @@ fn stay_command(settings: &Settings, args: &[String]) -> Result<(), FacilitatorE
             }
             Ok(())
         }
-        [action, room] if action == "open" => {
-            let stay = open_stay(db, room, None)?;
-            println!("{}\t{}", stay.id, stay.room);
-            Ok(())
-        }
-        [action, room, previous] if action == "open" => {
-            let stay = open_stay(db, room, Some(previous.trim()))?;
-            println!("{}\t{}\tcontinues {}", stay.id, stay.room, previous.trim());
+        [action, room, rest @ ..] if action == "open" && rest.len() <= 2 => {
+            let mut consent = settings.memory_consent_default;
+            let mut previous = None;
+            for arg in rest {
+                match arg.as_str() {
+                    "--consent" => consent = true,
+                    "--no-consent" => consent = false,
+                    other => previous = Some(other.trim()),
+                }
+            }
+            let stay = open_stay(db, room, previous, consent)?;
+            println!(
+                "{}\t{}\tmemory {}{}",
+                stay.id,
+                stay.room,
+                if stay.memory_consent { "on" } else { "off" },
+                previous
+                    .map(|p| format!("\tcontinues {p}"))
+                    .unwrap_or_default()
+            );
             Ok(())
         }
         [action, id] if action == "close" => {
@@ -259,7 +271,7 @@ fn usage(pack: Pack, problem: &str) -> FacilitatorError {
         aice-{name} <property.json> device assign <id> <room>\n  \
         aice-{name} <property.json> device revoke <id>\n  \
         aice-{name} <property.json> stay list\n  \
-        aice-{name} <property.json> stay open <room> [<continue-from-stay>]\n  \
+        aice-{name} <property.json> stay open <room> [--consent|--no-consent] [<continue-from-stay>]\n  \
         aice-{name} <property.json> stay close <stay>\n  \
         aice-{name} <property.json> tls fingerprint\n  \
         aice-{name} <property.json> tls issue <cert> <key> <host>...\n  \

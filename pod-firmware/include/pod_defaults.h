@@ -50,6 +50,11 @@
 #define HELP_PRESS_MS 1500
 #endif
 
+// Two taps within this window toggle the privacy mute.
+#ifndef DOUBLE_TAP_MS
+#define DOUBLE_TAP_MS 400
+#endif
+
 // Hold the button this long while booting to forget the pod's identity.
 #ifndef FACTORY_RESET_HOLD_MS
 #define FACTORY_RESET_HOLD_MS 5000

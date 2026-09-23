@@ -58,8 +58,8 @@ async fn a_wiped_stay_loses_its_drawers_and_facts_and_nothing_else() {
     let client = PropertyClient::new(format!("{}/mcp", running.url), SERVICE_TOKEN)
         .unwrap_or_else(|error| panic!("client failed: {error}"));
 
-    let leaving = open_stay(&db, "4B", None).unwrap_or_else(|error| panic!("open: {error}"));
-    let staying = open_stay(&db, "5C", None).unwrap_or_else(|error| panic!("open: {error}"));
+    let leaving = open_stay(&db, "4B", None, true).unwrap_or_else(|error| panic!("open: {error}"));
+    let staying = open_stay(&db, "5C", None, true).unwrap_or_else(|error| panic!("open: {error}"));
 
     let palace = Palace::open_in_memory().unwrap_or_else(|error| panic!("palace: {error}"));
     add_drawer(&palace, "d1", &leaving.memory_wing);

@@ -2,6 +2,7 @@
 
 mod alerts;
 mod common;
+mod consent;
 mod desk_auth;
 mod devices;
 mod firmware;
