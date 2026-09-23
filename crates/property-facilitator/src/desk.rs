@@ -93,6 +93,7 @@ pub(crate) fn desk_html(
     } else {
         String::new()
     };
+    let stays = stays_html(state, &csrf_field)?;
     let devices = if session.role == Role::Supervisor {
         devices_html(state, &csrf_field)?
     } else {
@@ -105,9 +106,41 @@ pub(crate) fn desk_html(
         <form class=\"inline who\" method=\"post\" action=\"/logout\">{csrf_field}\
         {} ({}) <button>Log out</button></form><h1>{title}</h1>\
         <table><tr><th>Room</th><th>Request</th><th>Status</th><th></th></tr>{rows}</table>\
-        {devices}{audit}</body></html>",
+        {stays}{devices}{audit}</body></html>",
         escape_html(&session.username),
         session.role.as_str(),
+    ))
+}
+
+fn stays_html(state: &Facilitator, csrf_field: &str) -> Result<String, FacilitatorError> {
+    let mut rows = String::new();
+    for stay in state.list_stays()? {
+        let id = escape_html(&stay.id);
+        let status = match (stay.closed_millis, stay.purged_millis) {
+            (None, _) => "open",
+            (Some(_), Some(_)) => "memory deleted",
+            (Some(_), None) if stay.purge_after_millis.is_some() => "closed (memory to delete)",
+            (Some(_), None) => "closed (memory kept)",
+        };
+        let close = if stay.closed_millis.is_none() {
+            format!(
+                "<form class=\"inline\" method=\"post\" action=\"/api/stays/{id}/close\">\
+                {csrf_field}<button>Check out</button></form>"
+            )
+        } else {
+            String::new()
+        };
+        rows.push_str(&format!(
+            "<tr><td>{}</td><td>{id}</td><td>{status}</td><td>{close}</td></tr>",
+            escape_html(&stay.room)
+        ));
+    }
+    Ok(format!(
+        "<h2>Stays</h2><form method=\"post\" action=\"/api/stays\">{csrf_field}\
+        <label>Room <input name=\"room\" size=\"6\" required></label> \
+        <label>Continue memory of stay <input name=\"continue_from\" size=\"24\"></label> \
+        <button>Check in</button></form>\
+        <table><tr><th>Room</th><th>Stay</th><th>Status</th><th></th></tr>{rows}</table>"
     ))
 }
 

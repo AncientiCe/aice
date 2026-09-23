@@ -157,6 +157,9 @@ const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
 const PROPERTY_AUTH_ATTEMPTS_TOTAL: &str = "property_auth_attempts_total";
 const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
 const FLEET_PROVISIONING_TOTAL: &str = "fleet_provisioning_total";
+const MEMORY_STAY_TRANSITIONS_TOTAL: &str = "memory_stay_transitions_total";
+const MEMORY_RECALL_SCOPED_TOTAL: &str = "memory_recall_scoped_total";
+const MEMORY_RETENTION_PURGES_TOTAL: &str = "memory_retention_purges_total";
 const BACKEND_AUTH_REJECTIONS_TOTAL: &str = "backend_auth_rejections_total";
 const BACKEND_DEVICE_AUTH_DURATION_SECONDS: &str = "backend_device_auth_duration_seconds";
 
@@ -363,6 +366,9 @@ pub fn register_metrics() {
     );
     counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 0, "action" => "unknown");
     counter!(FLEET_PROVISIONING_TOTAL, 0, "result" => "unknown");
+    counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 0, "action" => "unknown");
+    counter!(MEMORY_RECALL_SCOPED_TOTAL, 0, "scope" => "unknown");
+    counter!(MEMORY_RETENTION_PURGES_TOTAL, 0, "result" => "unknown");
     counter!(BACKEND_AUTH_REJECTIONS_TOTAL, 0, "reason" => "unknown");
     histogram!(
         BACKEND_DEVICE_AUTH_DURATION_SECONDS,
@@ -1145,4 +1151,19 @@ pub fn record_backend_device_auth_duration(result: &str, duration: Duration) {
         duration.as_secs_f64(),
         "result" => result.to_string()
     );
+}
+
+/// Stays opened, continued, closed, and purged.
+pub fn record_memory_stay_transition(action: &str) {
+    counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 1, "action" => action.to_string());
+}
+
+/// Memory reads by scope: `global` (home), `stay`, or `disabled` (room without a stay).
+pub fn record_memory_recall_scoped(scope: &str) {
+    counter!(MEMORY_RECALL_SCOPED_TOTAL, 1, "scope" => scope.to_string());
+}
+
+/// Stay memory wings deleted by the retention job, by result.
+pub fn record_memory_retention_purge(result: &str) {
+    counter!(MEMORY_RETENTION_PURGES_TOTAL, 1, "result" => result.to_string());
 }

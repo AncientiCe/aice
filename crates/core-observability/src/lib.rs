@@ -35,8 +35,9 @@ pub use metrics::{
     record_media_skill, record_meeting_notes_skill, record_memory_fact_recall,
     record_memory_fact_recall_duration, record_memory_fact_store,
     record_memory_fact_store_duration, record_memory_load, record_memory_load_duration,
-    record_memory_load_error, record_memory_save, record_memory_save_duration,
-    record_memory_save_error, record_message_skill, record_mic_to_stt_duration,
+    record_memory_load_error, record_memory_recall_scoped, record_memory_retention_purge,
+    record_memory_save, record_memory_save_duration, record_memory_save_error,
+    record_memory_stay_transition, record_message_skill, record_mic_to_stt_duration,
     record_model_preload, record_model_preload_duration, record_news_summary_chunk,
     record_news_summary_duration, record_palace_add_memory, record_palace_error,
     record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
@@ -127,6 +128,9 @@ mod tests {
         record_property_auth_attempt("login", "accepted");
         super::record_fleet_provisioning("assigned");
         super::record_backend_auth_rejection("missing");
+        super::record_memory_stay_transition("opened");
+        super::record_memory_recall_scoped("stay");
+        super::record_memory_retention_purge("purged");
         super::record_backend_device_auth_duration("accepted", Duration::from_millis(2));
         record_property_audit_event("ticket_status");
 
@@ -230,6 +234,9 @@ mod tests {
                         && payload.contains("property_audit_events_total")
                         && payload.contains("fleet_provisioning_total")
                         && payload.contains("backend_auth_rejections_total")
+                        && payload.contains("memory_stay_transitions_total")
+                        && payload.contains("memory_recall_scoped_total")
+                        && payload.contains("memory_retention_purges_total")
                         && payload.contains("backend_device_auth_duration_seconds")
                     {
                         break;

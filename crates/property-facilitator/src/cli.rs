@@ -8,6 +8,9 @@
 //! aice-<pack> <property.json> device list            list room pods
 //! aice-<pack> <property.json> device assign <id> <room>
 //! aice-<pack> <property.json> device revoke <id>
+//! aice-<pack> <property.json> stay list              list stays
+//! aice-<pack> <property.json> stay open <room> [<continue-from-stay>]
+//! aice-<pack> <property.json> stay close <stay>
 //! aice-<pack> <property.json> tls fingerprint        print the CA pin for pods
 //! aice-<pack> <property.json> tls issue <cert> <key> <host>...
 //! ```
@@ -18,8 +21,8 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::{
-    add_user, assign_device, list_devices, list_users, remove_user, revoke_device, serve,
-    FacilitatorError, Pack, Role, Settings,
+    add_user, assign_device, close_stay, list_devices, list_stays, list_users, open_stay,
+    remove_user, revoke_device, serve, FacilitatorError, Pack, Role, Settings,
 };
 
 /// Env var `user add` reads the new password from (for scripted installs).
@@ -37,6 +40,7 @@ pub async fn run_pack(pack: Pack) -> Result<(), FacilitatorError> {
         Some("user") => user_command(&settings, &args[2..]),
         Some("device") => device_command(&settings, &args[2..]),
         Some("tls") => tls_command(&settings, &args[2..]),
+        Some("stay") => stay_command(&settings, &args[2..]),
         Some(other) => Err(usage(pack, &format!("unknown command '{other}'"))),
     }
 }
@@ -112,6 +116,39 @@ fn device_command(settings: &Settings, args: &[String]) -> Result<(), Facilitato
     }
 }
 
+fn stay_command(settings: &Settings, args: &[String]) -> Result<(), FacilitatorError> {
+    let db = settings.database_path.as_path();
+    match args {
+        [action] if action == "list" => {
+            for stay in list_stays(db)? {
+                let status = match (stay.closed_millis, stay.purged_millis) {
+                    (None, _) => "open",
+                    (Some(_), Some(_)) => "purged",
+                    (Some(_), None) => "closed",
+                };
+                println!("{}\t{}\t{status}", stay.id, stay.room);
+            }
+            Ok(())
+        }
+        [action, room] if action == "open" => {
+            let stay = open_stay(db, room, None)?;
+            println!("{}\t{}", stay.id, stay.room);
+            Ok(())
+        }
+        [action, room, previous] if action == "open" => {
+            let stay = open_stay(db, room, Some(previous.trim()))?;
+            println!("{}\t{}\tcontinues {}", stay.id, stay.room, previous.trim());
+            Ok(())
+        }
+        [action, id] if action == "close" => {
+            let stay = close_stay(db, id, settings.memory_retention)?;
+            println!("closed {} ({})", stay.id, settings.memory_retention.label());
+            Ok(())
+        }
+        _ => Err(usage(settings.pack, "unknown stay command")),
+    }
+}
+
 fn tls_command(settings: &Settings, args: &[String]) -> Result<(), FacilitatorError> {
     let ca = settings
         .tls
@@ -160,6 +197,9 @@ fn usage(pack: Pack, problem: &str) -> FacilitatorError {
         aice-{name} <property.json> device list\n  \
         aice-{name} <property.json> device assign <id> <room>\n  \
         aice-{name} <property.json> device revoke <id>\n  \
+        aice-{name} <property.json> stay list\n  \
+        aice-{name} <property.json> stay open <room> [<continue-from-stay>]\n  \
+        aice-{name} <property.json> stay close <stay>\n  \
         aice-{name} <property.json> tls fingerprint\n  \
         aice-{name} <property.json> tls issue <cert> <key> <host>..."
     ))

@@ -1,6 +1,7 @@
 pub mod device_auth;
 pub mod discovery_broadcast;
 pub mod llm_adapters;
+pub mod memory_scope;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -16,11 +17,11 @@ use core_observability::{
     record_backend_turn_first_token_duration, record_backend_turn_partial_transcript_duration,
     record_backend_turn_stage_duration, record_backend_turn_total, record_briefing_skill,
     record_calculator_skill, record_calendar_skill, record_currency_skill, record_dictionary_skill,
-    record_email_skill, record_journal_skill, record_meeting_notes_skill, record_model_preload,
-    record_model_preload_duration, record_palace_add_memory, record_palace_error,
-    record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
-    record_palace_search, record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
-    record_unit_conversion_skill,
+    record_email_skill, record_journal_skill, record_meeting_notes_skill,
+    record_memory_recall_scoped, record_model_preload, record_model_preload_duration,
+    record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_kg_add,
+    record_palace_kg_query, record_palace_open, record_palace_search, record_palace_wake_up,
+    record_screen_ocr_skill, record_translate_skill, record_unit_conversion_skill,
 };
 use core_orchestrator::{
     intent_classifier_few_shots_for_skills,
@@ -301,6 +302,9 @@ impl ServerHandle {
 }
 
 pub use device_auth::{DeviceAuth, DeviceAuthError};
+pub use memory_scope::{
+    purge_stay_memory, run_memory_retention_once, spawn_memory_retention, MemoryScope,
+};
 
 /// Facilitator client for this config, or `None` when no facilitator is configured.
 pub fn property_client_from_config(
@@ -370,6 +374,13 @@ pub fn server_options_from_config(config: &Config, bind: &str) -> Result<ServerO
         .into()),
         None => Err("property.require_device_token needs property.facilitator_url".into()),
     }
+}
+
+/// A turn-stream connection whose pod token was verified.
+struct AuthenticatedDevice {
+    auth: Arc<DeviceAuth>,
+    token: String,
+    identity: property_facilitator::DeviceIdentity,
 }
 
 /// Optional server behaviour beyond the voice loop itself.
@@ -723,6 +734,9 @@ struct WsTurnState {
     device_id: Option<String>,
     /// Room of the authenticated device; `None` when device auth is off.
     room: Option<String>,
+    /// `Some(Some(wing))`: the room's stay; `Some(None)`: authenticated room
+    /// without a stay (no memory); `None`: device auth is off (shared memory).
+    memory: Option<Option<String>>,
     turn_id: String,
     supported_frontend_intents: Vec<String>,
     samples: Vec<i16>,
@@ -744,6 +758,7 @@ impl WsTurnState {
         session_id: String,
         device_id: Option<String>,
         room: Option<String>,
+        memory: Option<Option<String>>,
         turn_id: String,
         supported_frontend_intents: Vec<String>,
     ) -> Self {
@@ -751,6 +766,7 @@ impl WsTurnState {
             session_id,
             device_id,
             room,
+            memory,
             turn_id,
             supported_frontend_intents,
             samples: Vec::new(),
@@ -876,6 +892,21 @@ fn spawn_speculative_turn(
     }
     if let Some(room) = &state.room {
         context.insert("room".to_string(), serde_json::json!(room));
+    }
+    match &state.memory {
+        Some(Some(wing)) => {
+            context.insert(
+                memory_scope::CONTEXT_MEMORY_WING.to_string(),
+                serde_json::json!(wing),
+            );
+        }
+        Some(None) => {
+            context.insert(
+                memory_scope::CONTEXT_MEMORY_DISABLED.to_string(),
+                serde_json::json!(true),
+            );
+        }
+        None => {}
     }
     let context = (!context.is_empty()).then_some(serde_json::Value::Object(context));
     let request = TurnRequest {
@@ -1016,7 +1047,7 @@ async fn handle_turn_stream_socket(
     transcriber: Arc<dyn AudioTranscriber>,
     frontend_sessions: FrontendSessions,
     audio_config: Arc<AudioIngressConfig>,
-    identity: Option<property_facilitator::DeviceIdentity>,
+    mut device: Option<AuthenticatedDevice>,
 ) -> Result<(), DynError> {
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TurnStreamInternalEvent>();
     let mut turn: Option<WsTurnState> = None;
@@ -1084,12 +1115,40 @@ async fn handle_turn_stream_socket(
                                             task.abort();
                                         }
                                     }
+                                    // Re-check the pod every turn: revocation and the
+                                    // room's stay (guest) can change mid-connection.
+                                    if let Some(authenticated) = device.as_mut() {
+                                        match authenticated
+                                            .auth
+                                            .authenticate(Some(&authenticated.token))
+                                            .await
+                                        {
+                                            Ok(identity) => authenticated.identity = identity,
+                                            Err(DeviceAuthError::Unavailable(reason)) => {
+                                                warn!(%reason, "device re-check unavailable; memory off for this turn");
+                                                authenticated.identity.memory_wing = None;
+                                            }
+                                            Err(error) => {
+                                                emit_turn_stream_event(
+                                                    &mut ws,
+                                                    &TurnStreamServerEvent::Error {
+                                                        turn_id: Some(turn_id.clone()),
+                                                        message: error.to_string(),
+                                                    },
+                                                )
+                                                .await?;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let identity = device.as_ref().map(|authenticated| &authenticated.identity);
                                     // An authenticated pod cannot claim another device or room.
-                                    let device_id = match &identity {
+                                    let device_id = match identity {
                                         Some(identity) => Some(identity.device_id.clone()),
                                         None => device_id,
                                     };
-                                    let room = identity.as_ref().map(|identity| identity.room.clone());
+                                    let room = identity.map(|identity| identity.room.clone());
+                                    let memory = identity.map(|identity| identity.memory_wing.clone());
                                     let dev = device_id.clone().unwrap_or_else(|| "unknown".to_string());
                                     register_ws_session(
                                         &frontend_sessions,
@@ -1107,7 +1166,7 @@ async fn handle_turn_stream_socket(
                                         supported_frontend_intents = intents.len(),
                                         "turn_start"
                                     );
-                                    turn = Some(WsTurnState::new(session_id, device_id, room, turn_id, intents));
+                                    turn = Some(WsTurnState::new(session_id, device_id, room, memory, turn_id, intents));
                                 }
                                 TurnStreamClientMessage::TurnDone => {
                                     let raw_since_turn_start_ms = turn
@@ -1488,32 +1547,35 @@ async fn handle_request(
                 ),
             ));
         };
-        let identity = match &options.device_auth {
-            Some(device_auth) => {
-                let bearer = req
-                    .headers()
-                    .get(hyper::header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.strip_prefix("Bearer "));
-                match device_auth.authenticate(bearer).await {
-                    Ok(identity) => Some(identity),
-                    Err(error) => {
-                        let status = match error {
-                            DeviceAuthError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-                            DeviceAuthError::Missing | DeviceAuthError::Rejected => {
-                                StatusCode::UNAUTHORIZED
-                            }
-                        };
-                        warn!(%error, "turn stream refused");
-                        return Ok(with_backend_http_metrics(
-                            &method,
-                            "/turns/stream",
-                            request_started_at,
-                            json_response(status, json!({"error": error.to_string()})),
-                        ));
-                    }
+        let bearer = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::to_string);
+        let device = match &options.device_auth {
+            Some(device_auth) => match device_auth.authenticate(bearer.as_deref()).await {
+                Ok(identity) => Some(AuthenticatedDevice {
+                    auth: Arc::clone(device_auth),
+                    token: bearer.unwrap_or_default(),
+                    identity,
+                }),
+                Err(error) => {
+                    let status = match error {
+                        DeviceAuthError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+                        DeviceAuthError::Missing | DeviceAuthError::Rejected => {
+                            StatusCode::UNAUTHORIZED
+                        }
+                    };
+                    warn!(%error, "turn stream refused");
+                    return Ok(with_backend_http_metrics(
+                        &method,
+                        "/turns/stream",
+                        request_started_at,
+                        json_response(status, json!({"error": error.to_string()})),
+                    ));
                 }
-            }
+            },
             None => None,
         };
         let accept_key = derive_accept_key(ws_key.as_bytes());
@@ -1543,7 +1605,7 @@ async fn handle_request(
                 ws_transcriber,
                 ws_sessions,
                 ws_audio_config,
-                identity,
+                device,
             )
             .await
             {
@@ -1598,6 +1660,8 @@ pub struct AiceBackendEngine {
     property_client: Option<PropertyClient>,
     discovered_property_tools: Vec<String>,
     palace_memory_settings: PalaceMemorySettings,
+    /// Memory scope of turns waiting for a frontend skill result.
+    turn_scopes: std::sync::Mutex<HashMap<String, MemoryScope>>,
 }
 
 /// LLM-backed intent classifier reused by backend and compatibility wrappers.
@@ -1843,6 +1907,7 @@ impl AiceBackendEngine {
             property_client,
             discovered_property_tools,
             palace_memory_settings: PalaceMemorySettings::from_config(config),
+            turn_scopes: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1904,8 +1969,40 @@ impl AiceBackendEngine {
         .await
     }
 
-    async fn build_memory_context(&self, transcript: &str) -> Option<String> {
-        if self.palace_memory_settings.recall_max_chars == 0 {
+    /// The palace this engine reads and writes (the retention job purges it).
+    pub fn palace_handle(&self) -> Arc<std::sync::Mutex<Palace>> {
+        self.palace.clone()
+    }
+
+    /// A property never uses the shared palace: turns without a stay remember nothing.
+    fn effective_scope(&self, scope: MemoryScope) -> MemoryScope {
+        match scope {
+            MemoryScope::Shared if self.property_client.is_some() => MemoryScope::Disabled,
+            other => other,
+        }
+    }
+
+    fn remember_turn_scope(&self, turn_id: &str, scope: &MemoryScope) {
+        if let Ok(mut scopes) = self.turn_scopes.lock() {
+            if scopes.len() >= 1024 {
+                scopes.clear();
+            }
+            scopes.insert(turn_id.to_string(), scope.clone());
+        }
+    }
+
+    fn take_turn_scope(&self, turn_id: &str) -> MemoryScope {
+        let remembered = self
+            .turn_scopes
+            .lock()
+            .ok()
+            .and_then(|mut scopes| scopes.remove(turn_id));
+        self.effective_scope(remembered.unwrap_or(MemoryScope::Shared))
+    }
+
+    async fn build_memory_context(&self, transcript: &str, scope: &MemoryScope) -> Option<String> {
+        record_memory_recall_scoped(scope.label());
+        if self.palace_memory_settings.recall_max_chars == 0 || *scope == MemoryScope::Disabled {
             return None;
         }
 
@@ -1933,11 +2030,18 @@ impl AiceBackendEngine {
         let palace = self.palace.clone();
         let settings = self.palace_memory_settings.clone();
         let transcript = transcript.to_string();
+        let scope = scope.clone();
         let context = tokio::task::spawn_blocking(move || {
             let mut palace = palace
                 .lock()
                 .map_err(|error| -> DynError { format!("palace lock: {error}").into() })?;
-            build_palace_memory_context(&mut palace, &transcript, &settings, &focus_entities)
+            build_palace_memory_context(
+                &mut palace,
+                &transcript,
+                &settings,
+                &focus_entities,
+                &scope,
+            )
         })
         .await
         .map_err(|error| -> DynError { format!("palace memory context task: {error}").into() })
@@ -2050,11 +2154,20 @@ impl AiceBackendEngine {
         .await
     }
 
-    fn schedule_palace_ingest_and_kg(&self, user_text: String, assistant_text: String) {
+    fn schedule_palace_ingest_and_kg(
+        &self,
+        user_text: String,
+        assistant_text: String,
+        scope: &MemoryScope,
+    ) {
+        if *scope == MemoryScope::Disabled {
+            return;
+        }
         schedule_palace_ingest(
             self.palace.clone(),
             user_text.clone(),
             assistant_text.clone(),
+            scope.clone(),
         );
         if self.palace_memory_settings.kg_enabled {
             schedule_palace_kg_extract(
@@ -2063,6 +2176,7 @@ impl AiceBackendEngine {
                 user_text,
                 assistant_text,
                 self.classifier_num_ctx,
+                scope.clone(),
             );
         }
     }
@@ -2072,6 +2186,7 @@ impl AiceBackendEngine {
         user_text: &str,
         outcome: BackendEngineDecision,
         memory_context: Option<&str>,
+        scope: &MemoryScope,
     ) -> Result<BackendEngineDecision, DynError> {
         let finalized = match outcome {
             BackendEngineDecision::BackendSkill(context) => {
@@ -2082,11 +2197,11 @@ impl AiceBackendEngine {
                     self.compose_skill_answer(user_text, &context, memory_context)
                         .await?
                 };
-                self.schedule_palace_ingest_and_kg(user_text.to_string(), answer.clone());
+                self.schedule_palace_ingest_and_kg(user_text.to_string(), answer.clone(), scope);
                 BackendEngineDecision::BackendSkill(answer)
             }
             BackendEngineDecision::Chat(text) => {
-                self.schedule_palace_ingest_and_kg(user_text.to_string(), text.clone());
+                self.schedule_palace_ingest_and_kg(user_text.to_string(), text.clone(), scope);
                 BackendEngineDecision::Chat(text)
             }
             BackendEngineDecision::FrontendSkillIntent(intent) => {
@@ -2190,16 +2305,28 @@ fn build_palace_memory_context(
     transcript: &str,
     settings: &PalaceMemorySettings,
     focus_entities: &[String],
+    scope: &MemoryScope,
 ) -> Result<String, DynError> {
+    let wing = match scope {
+        MemoryScope::Stay(wing) => Some(wing.as_str()),
+        MemoryScope::Shared => None,
+        MemoryScope::Disabled => return Ok(String::new()),
+    };
     let wake_started = Instant::now();
-    let wake_context = palace.wake_up(None);
+    let wake_context = palace.wake_up(wing);
     record_palace_wake_up("success", wake_started.elapsed());
 
     let recall_results = if settings.recall_results == 0 {
         Vec::new()
     } else {
         let search_started = Instant::now();
-        match palace.search(transcript, settings.recall_results) {
+        let searched = match wing {
+            Some(wing) => {
+                palace.search_filtered(transcript, Some(wing), None, settings.recall_results)
+            }
+            None => palace.search(transcript, settings.recall_results),
+        };
+        match searched {
             Ok(results) => {
                 record_palace_search("success", search_started.elapsed());
                 record_backend_turn_stage_duration("palace_recall", search_started.elapsed());
@@ -2221,11 +2348,22 @@ fn build_palace_memory_context(
     let mut kg_facts = Vec::new();
     if settings.kg_enabled {
         for entity in focus_entities.iter().take(KG_FOCUS_MAX_ENTITIES) {
+            let Some(scoped) = scope.entity(entity) else {
+                continue;
+            };
             let kg_started = Instant::now();
-            match palace.kg_query(entity) {
+            match palace.kg_query(&scoped) {
                 Ok(triples) => {
                     record_palace_kg_query("success", kg_started.elapsed());
                     if !triples.is_empty() {
+                        let triples = triples
+                            .into_iter()
+                            .map(|mut triple| {
+                                triple.subject = scope.display(&triple.subject).to_string();
+                                triple.object = scope.display(&triple.object).to_string();
+                                triple
+                            })
+                            .collect();
                         kg_facts.push((entity.clone(), triples));
                     }
                 }
@@ -2299,27 +2437,50 @@ fn truncate_to_char_limit(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn persist_kg_triples(palace: &Palace, triples: &[ExtractedKgTriple]) -> Result<usize, DynError> {
+fn persist_kg_triples(
+    palace: &Palace,
+    triples: &[ExtractedKgTriple],
+    scope: &MemoryScope,
+) -> Result<usize, DynError> {
     let mut added = 0usize;
     for triple in triples {
+        let (Some(subject), Some(object)) =
+            (scope.entity(&triple.subject), scope.entity(&triple.object))
+        else {
+            continue;
+        };
         palace
-            .kg_add_triple(
-                &triple.subject,
-                &triple.predicate,
-                &triple.object,
-                triple.confidence,
-            )
+            .kg_add_triple(&subject, &triple.predicate, &object, triple.confidence)
             .map_err(|error| -> DynError { error.into() })?;
         added += 1;
     }
     Ok(added)
 }
 
-fn schedule_palace_ingest(palace: PalaceHandle, user_text: String, assistant_text: String) {
+fn schedule_palace_ingest(
+    palace: PalaceHandle,
+    user_text: String,
+    assistant_text: String,
+    scope: MemoryScope,
+) {
     tokio::task::spawn_blocking(move || {
         let ingest_started = Instant::now();
-        match palace.lock() {
-            Ok(palace) => match palace.ingest_turn(&user_text, &assistant_text) {
+        let ingested = palace.lock().map(|palace| match &scope {
+            // A stay keeps its conversation in its own wing only.
+            MemoryScope::Stay(wing) => palace
+                .add_memory(
+                    wing,
+                    "conversation",
+                    &format!("User: {user_text}\nAssistant: {assistant_text}"),
+                    "voice_turn",
+                    3.0,
+                )
+                .map(|_| ()),
+            MemoryScope::Shared => palace.ingest_turn(&user_text, &assistant_text),
+            MemoryScope::Disabled => Ok(()),
+        });
+        match ingested {
+            Ok(result) => match result {
                 Ok(()) => {
                     record_palace_ingest("success", ingest_started.elapsed());
                 }
@@ -2343,6 +2504,7 @@ fn schedule_palace_kg_extract(
     user_text: String,
     assistant_text: String,
     num_ctx: Option<u32>,
+    scope: MemoryScope,
 ) {
     tokio::spawn(async move {
         let combined = format!("User: {user_text}\nAssistant: {assistant_text}");
@@ -2383,7 +2545,7 @@ fn schedule_palace_kg_extract(
             let palace = palace
                 .lock()
                 .map_err(|error| -> DynError { format!("palace lock: {error}").into() })?;
-            persist_kg_triples(&palace, &triples)
+            persist_kg_triples(&palace, &triples, &scope)
         })
         .await
         .map_err(|error| -> DynError { format!("palace kg persist task: {error}").into() })
@@ -2724,7 +2886,12 @@ impl BackendEngine for AiceBackendEngine {
             .clone()
             .unwrap_or_else(|| next_backend_turn_id(&self.turn_counter));
         let request_text = request.transcript.clone();
-        let available_skills = build_available_classifier_skills(request.context.as_ref());
+        let scope = self.effective_scope(MemoryScope::from_context(request.context.as_ref()));
+        let mut available_skills = build_available_classifier_skills(request.context.as_ref());
+        if scope != MemoryScope::Shared {
+            // The journal keeps entries in one shared store; rooms must not use it.
+            available_skills.retain(|skill| skill != "skill_journal");
+        }
         let available_skill_refs: Vec<&str> = available_skills.iter().map(String::as_str).collect();
 
         let classify_started = Instant::now();
@@ -2740,7 +2907,8 @@ impl BackendEngine for AiceBackendEngine {
         };
         let classify_elapsed = classify_started.elapsed();
         record_backend_turn_stage_duration("classify_intent", classify_elapsed);
-        let memory_context = self.build_memory_context(&request.transcript).await;
+        let memory_context = self.build_memory_context(&request.transcript, &scope).await;
+        self.remember_turn_scope(&request_turn_id, &scope);
 
         let build_frontend_intent = |intent: &str, slots: serde_json::Value| {
             BackendEngineDecision::FrontendSkillIntent(FrontendSkillIntent {
@@ -3521,16 +3689,17 @@ impl BackendEngine for AiceBackendEngine {
             }
         };
         let outcome = outcome?;
-        self.finalize_voice_outcome(&request_text, outcome, memory_context.as_deref())
+        self.finalize_voice_outcome(&request_text, outcome, memory_context.as_deref(), &scope)
             .await
     }
 
     async fn finalize_frontend_skill(
         &self,
-        _turn_id: &str,
+        turn_id: &str,
         intent_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError> {
+        let scope = self.take_turn_scope(turn_id);
         if request.status.eq_ignore_ascii_case("error") {
             if intent_id == "skill_screen_ocr" {
                 record_screen_ocr_skill("result_error");
@@ -3540,11 +3709,11 @@ impl BackendEngine for AiceBackendEngine {
 
         if intent_id == "skill_screen_ocr" {
             let answer = self.finalize_screen_ocr(&request).await?;
-            self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+            self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone(), &scope);
             return Ok(answer);
         }
 
-        let memory_context = self.build_memory_context(&request.user_text).await;
+        let memory_context = self.build_memory_context(&request.user_text, &scope).await;
         // Skill-agnostic: any non-empty structured context from the frontend is composed like backend skills.
         let context_opt = request
             .structured_result_context
@@ -3555,7 +3724,11 @@ impl BackendEngine for AiceBackendEngine {
             if self.skip_secondary_llm_for_skill_answers {
                 let answer = compose_direct_skill_answer(context)
                     .unwrap_or_else(|| "The action completed successfully.".to_string());
-                self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+                self.schedule_palace_ingest_and_kg(
+                    request.user_text.clone(),
+                    answer.clone(),
+                    &scope,
+                );
                 return Ok(answer);
             }
             let compose_started = Instant::now();
@@ -3566,12 +3739,12 @@ impl BackendEngine for AiceBackendEngine {
                 "frontend_skill_answer_compose",
                 compose_started.elapsed(),
             );
-            self.schedule_palace_ingest_and_kg(request.user_text.clone(), composed.clone());
+            self.schedule_palace_ingest_and_kg(request.user_text.clone(), composed.clone(), &scope);
             return Ok(composed);
         }
 
         let answer = compose_frontend_skill_success_echo(&request);
-        self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+        self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone(), &scope);
         Ok(answer)
     }
 }
@@ -3744,7 +3917,7 @@ mod tests {
         compose_frontend_skill_error_outcome, compose_frontend_skill_success_echo,
         compose_palace_memory_context, compose_time_answer, compose_weather_answer,
         journal_room_from_sentiment, parse_extracted_kg_triples, parse_focus_entities,
-        parse_validated_intent, persist_kg_triples, FRONTEND_CLASSIFIER_SKILLS,
+        parse_validated_intent, persist_kg_triples, MemoryScope, FRONTEND_CLASSIFIER_SKILLS,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -3843,7 +4016,7 @@ mod tests {
             Err(error) => panic!("expected in-memory palace, got {error}"),
         };
 
-        let added = match persist_kg_triples(&palace, &triples) {
+        let added = match persist_kg_triples(&palace, &triples, &MemoryScope::Shared) {
             Ok(value) => value,
             Err(error) => panic!("expected persisted triples, got {error}"),
         };
@@ -3856,6 +4029,35 @@ mod tests {
         assert_eq!(queried.len(), 1);
         assert_eq!(queried[0].predicate, "prefers");
         assert_eq!(queried[0].object, "quiet mornings");
+    }
+
+    #[test]
+    fn stay_scoped_kg_facts_are_invisible_outside_the_stay() {
+        let triples = parse_extracted_kg_triples(
+            r#"[{"subject":"Bob","predicate":"allergic to","object":"peanuts","confidence":0.9}]"#,
+        );
+        let palace = match Palace::open_in_memory() {
+            Ok(value) => value,
+            Err(error) => panic!("expected in-memory palace, got {error}"),
+        };
+        let stay = MemoryScope::Stay("stay-s1".to_string());
+        assert!(matches!(
+            persist_kg_triples(&palace, &triples, &MemoryScope::Disabled),
+            Ok(0)
+        ));
+        assert!(matches!(
+            persist_kg_triples(&palace, &triples, &stay),
+            Ok(1)
+        ));
+        assert!(palace
+            .kg_query("Bob")
+            .map(|t| t.is_empty())
+            .unwrap_or(false));
+        let scoped = palace
+            .kg_query(&stay.entity("Bob").unwrap_or_default())
+            .unwrap_or_default();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(stay.display(&scoped[0].object), "peanuts");
     }
 
     #[test]

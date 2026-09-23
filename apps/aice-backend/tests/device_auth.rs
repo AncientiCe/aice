@@ -13,7 +13,10 @@ use core_runtime_protocol::{
     FrontendSkillResultRequest, TurnRequest, TurnStreamClientMessage, TurnStreamServerEvent,
 };
 use futures_util::{SinkExt, StreamExt};
-use property_facilitator::{assign_device, serve, Pack, PropertyClient, Running, Settings};
+use property_facilitator::{
+    assign_device, close_stay, open_stay, serve, MemoryRetention, Pack, PropertyClient, Running,
+    Settings,
+};
 use serde_json::json;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::connect_async;
@@ -242,4 +245,110 @@ fn required_device_tokens_need_a_facilitator() {
         aice_backend::server_options_from_config(&config, "127.0.0.1:0").is_err(),
         "no service token means no verification"
     );
+}
+
+/// Run one turn on an open socket and return the context the engine saw.
+async fn run_turn<W, R>(
+    write: &mut W,
+    read: &mut R,
+    engine: &RecordingEngine,
+    turn_id: &str,
+) -> Option<serde_json::Value>
+where
+    W: futures_util::Sink<Message> + Unpin,
+    <W as futures_util::Sink<Message>>::Error: std::fmt::Debug,
+    R: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let start = TurnStreamClientMessage::TurnStart {
+        session_id: "s1".to_string(),
+        device_id: None,
+        turn_id: turn_id.to_string(),
+        supported_frontend_intents: vec![],
+        schema_version: None,
+    };
+    for message in [
+        Message::Text(serde_json::to_string(&start).unwrap_or_default()),
+        Message::Binary(vec![1, 0, 2, 0, 3, 0, 4, 0]),
+        Message::Text(
+            serde_json::to_string(&TurnStreamClientMessage::TurnDone).unwrap_or_default(),
+        ),
+    ] {
+        write
+            .send(message)
+            .await
+            .unwrap_or_else(|error| panic!("send failed: {error:?}"));
+    }
+    loop {
+        let next = timeout(Duration::from_secs(3), read.next())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {turn_id}"));
+        let Some(Ok(Message::Text(text))) = next else {
+            panic!("websocket closed during {turn_id}");
+        };
+        let event: TurnStreamServerEvent =
+            serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode failed: {error}"));
+        if matches!(event, TurnStreamServerEvent::Done { .. }) {
+            break;
+        }
+    }
+    engine
+        .requests
+        .lock()
+        .ok()
+        .and_then(|guard| guard.last().cloned())
+        .and_then(|request| request.context)
+}
+
+#[tokio::test]
+async fn each_turn_uses_the_rooms_current_stay() {
+    let (running, db, token) = facilitator_with_pod("stays", "204").await;
+    let engine = Arc::new(RecordingEngine::default());
+    let client = PropertyClient::new(format!("{}/mcp", running.url), SERVICE_TOKEN)
+        .unwrap_or_else(|error| panic!("client failed: {error}"));
+    let engine_dyn: Arc<dyn BackendEngine> = engine.clone();
+    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(StaticTranscriber);
+    let handle = spawn_server_with_options(
+        "127.0.0.1:0",
+        engine_dyn,
+        transcriber,
+        AudioIngressConfig::default(),
+        ServerOptions {
+            device_auth: Some(Arc::new(DeviceAuth::new(client))),
+            tls: None,
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("backend failed: {error}"));
+    let (ws, _) = connect_async(ws_request(&handle.bind, Some(&token)))
+        .await
+        .unwrap_or_else(|error| panic!("ws connect failed: {error}"));
+    let (mut write, mut read) = ws.split();
+
+    let empty_room = run_turn(&mut write, &mut read, &engine, "t-empty").await;
+    assert_eq!(
+        empty_room.as_ref().and_then(|c| c.get("memory_disabled")),
+        Some(&json!(true)),
+        "no stay means no memory: {empty_room:?}"
+    );
+
+    let first = open_stay(&db, "204", None).unwrap_or_else(|error| panic!("open: {error}"));
+    let during = run_turn(&mut write, &mut read, &engine, "t-first").await;
+    assert_eq!(
+        during.as_ref().and_then(|c| c.get("memory_wing")),
+        Some(&json!(first.memory_wing))
+    );
+
+    close_stay(&db, &first.id, MemoryRetention::Keep)
+        .unwrap_or_else(|error| panic!("close: {error}"));
+    let second = open_stay(&db, "204", None).unwrap_or_else(|error| panic!("open: {error}"));
+    let after = run_turn(&mut write, &mut read, &engine, "t-second").await;
+    assert_eq!(
+        after.as_ref().and_then(|c| c.get("memory_wing")),
+        Some(&json!(second.memory_wing)),
+        "the same open socket switches to the new guest's stay"
+    );
+    assert_ne!(first.memory_wing, second.memory_wing);
+
+    handle.shutdown().await;
+    let _ = std::fs::remove_file(db);
 }

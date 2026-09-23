@@ -101,10 +101,27 @@ pub struct Device {
 }
 
 /// A pod identity the backend can trust.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DeviceIdentity {
     pub device_id: String,
     pub room: String,
+    /// Memory Palace wing of the room's open stay; `None` means the room has
+    /// no guest or resident and nothing may be remembered.
+    #[serde(default)]
+    pub memory_wing: Option<String>,
+}
+
+/// One guest's or resident's time in a room.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct Stay {
+    pub id: String,
+    pub room: String,
+    pub memory_wing: String,
+    pub opened_millis: i64,
+    pub closed_millis: Option<i64>,
+    pub purge_after_millis: Option<i64>,
+    pub purged_millis: Option<i64>,
+    pub continued_from: Option<String>,
 }
 
 pub(crate) enum EnrollOutcome {
@@ -183,6 +200,17 @@ impl TicketStore {
                 last_seen INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS stays (
+                id TEXT PRIMARY KEY,
+                room TEXT NOT NULL,
+                memory_wing TEXT NOT NULL,
+                opened_at INTEGER NOT NULL,
+                closed_at INTEGER,
+                purge_after INTEGER,
+                purged_at INTEGER,
+                continued_from TEXT
+            );
+            CREATE INDEX IF NOT EXISTS stays_room_open ON stays(room, closed_at);
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events
                 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
@@ -753,13 +781,18 @@ impl TicketStore {
         let connection = self.lock()?;
         let identity: Option<DeviceIdentity> = connection
             .query_row(
-                "SELECT device_id, room FROM devices
-                 WHERE token_hash = ?1 AND status = 'active' AND room IS NOT NULL",
+                "SELECT d.device_id, d.room,
+                        (SELECT s.memory_wing FROM stays s
+                         WHERE s.room = d.room AND s.closed_at IS NULL
+                         ORDER BY s.opened_at DESC LIMIT 1)
+                 FROM devices d
+                 WHERE d.token_hash = ?1 AND d.status = 'active' AND d.room IS NOT NULL",
                 params![token_hash],
                 |row| {
                     Ok(DeviceIdentity {
                         device_id: row.get(0)?,
                         room: row.get(1)?,
+                        memory_wing: row.get(2)?,
                     })
                 },
             )
@@ -772,6 +805,183 @@ impl TicketStore {
         }
         Ok(identity)
     }
+}
+
+impl TicketStore {
+    /// Check a guest or resident into `room`. `continue_from` reuses the memory
+    /// of an earlier stay that has not been (and is not about to be) purged.
+    pub(crate) fn open_stay(
+        &self,
+        room: &str,
+        continue_from: Option<&str>,
+        actor: &str,
+    ) -> Result<Stay, FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let now = unix_millis();
+        let open: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM stays WHERE room = ?1 AND closed_at IS NULL",
+            params![room],
+            |row| row.get(0),
+        )?;
+        if open > 0 {
+            return Err(FacilitatorError::StayConflict(format!(
+                "room {room} already has an open stay"
+            )));
+        }
+        let id = format!("s{}-{}", now, &crate::auth::random_token()[..8]);
+        let memory_wing = match continue_from {
+            Some(previous) => {
+                let earlier = transaction
+                    .query_row(
+                        &format!("{STAY_COLUMNS} WHERE id = ?1"),
+                        params![previous],
+                        stay_from_row,
+                    )
+                    .optional()?;
+                let Some(earlier) = earlier else {
+                    return Err(FacilitatorError::UnknownStay(previous.to_string()));
+                };
+                let reusable = earlier.closed_millis.is_some()
+                    && earlier.purged_millis.is_none()
+                    && earlier.purge_after_millis.is_none_or(|due| due > now);
+                if !reusable {
+                    return Err(FacilitatorError::StayConflict(format!(
+                        "stay {previous} is open, purged, or due for purge"
+                    )));
+                }
+                // The wing lives on in the new stay, so the old stay must not purge it.
+                transaction.execute(
+                    "UPDATE stays SET purge_after = NULL WHERE id = ?1",
+                    params![previous],
+                )?;
+                earlier.memory_wing
+            }
+            None => format!("stay-{id}"),
+        };
+        transaction.execute(
+            "INSERT INTO stays (id, room, memory_wing, opened_at, closed_at, purge_after, purged_at, continued_from)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5)",
+            params![id, room, memory_wing, now, continue_from],
+        )?;
+        append_audit(
+            &transaction,
+            actor,
+            "stay_opened",
+            None,
+            None,
+            None,
+            &format!("{id} room {room}"),
+        )?;
+        let stay = transaction.query_row(
+            &format!("{STAY_COLUMNS} WHERE id = ?1"),
+            params![id],
+            stay_from_row,
+        )?;
+        transaction.commit()?;
+        Ok(stay)
+    }
+
+    pub(crate) fn close_stay(
+        &self,
+        id: &str,
+        retention: crate::MemoryRetention,
+        actor: &str,
+    ) -> Result<Stay, FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let now = unix_millis();
+        let changed = transaction.execute(
+            "UPDATE stays SET closed_at = ?1, purge_after = ?2 WHERE id = ?3 AND closed_at IS NULL",
+            params![now, retention.purge_after(now), id],
+        )?;
+        if changed == 0 {
+            return Err(FacilitatorError::UnknownStay(id.to_string()));
+        }
+        append_audit(
+            &transaction,
+            actor,
+            "stay_closed",
+            None,
+            None,
+            None,
+            &format!("{id} retention {}", retention.label()),
+        )?;
+        let stay = transaction.query_row(
+            &format!("{STAY_COLUMNS} WHERE id = ?1"),
+            params![id],
+            stay_from_row,
+        )?;
+        transaction.commit()?;
+        Ok(stay)
+    }
+
+    pub(crate) fn list_stays(&self) -> Result<Vec<Stay>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(&format!(
+            "{STAY_COLUMNS} ORDER BY closed_at IS NOT NULL, opened_at DESC LIMIT 200"
+        ))?;
+        let rows = statement.query_map([], stay_from_row)?;
+        let mut stays = Vec::new();
+        for row in rows {
+            stays.push(row?);
+        }
+        Ok(stays)
+    }
+
+    /// Closed stays whose memory wing should now be deleted.
+    pub(crate) fn purge_due(&self) -> Result<Vec<Stay>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(&format!(
+            "{STAY_COLUMNS} WHERE purged_at IS NULL AND purge_after IS NOT NULL AND purge_after <= ?1
+             ORDER BY purge_after ASC"
+        ))?;
+        let rows = statement.query_map(params![unix_millis()], stay_from_row)?;
+        let mut stays = Vec::new();
+        for row in rows {
+            stays.push(row?);
+        }
+        Ok(stays)
+    }
+
+    pub(crate) fn mark_stay_purged(&self, id: &str) -> Result<(), FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE stays SET purged_at = ?1 WHERE id = ?2 AND purge_after IS NOT NULL AND purged_at IS NULL",
+            params![unix_millis(), id],
+        )?;
+        if changed == 0 {
+            return Err(FacilitatorError::UnknownStay(id.to_string()));
+        }
+        append_audit(
+            &transaction,
+            "voice",
+            "stay_memory_purged",
+            None,
+            None,
+            None,
+            id,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+const STAY_COLUMNS: &str =
+    "SELECT id, room, memory_wing, opened_at, closed_at, purge_after, purged_at, continued_from FROM stays";
+
+fn stay_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stay> {
+    Ok(Stay {
+        id: row.get(0)?,
+        room: row.get(1)?,
+        memory_wing: row.get(2)?,
+        opened_millis: row.get(3)?,
+        closed_millis: row.get(4)?,
+        purge_after_millis: row.get(5)?,
+        purged_millis: row.get(6)?,
+        continued_from: row.get(7)?,
+    })
 }
 
 fn ticket_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Ticket> {
