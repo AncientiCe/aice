@@ -66,6 +66,26 @@ pub struct Ticket {
     pub arguments_json: String,
     pub status: String,
     pub detail: String,
+    pub created_millis: i64,
+}
+
+/// Everything needed to create a ticket.
+pub(crate) struct NewTicket<'a> {
+    pub pack: &'a str,
+    pub room: &'a str,
+    pub tool_name: &'a str,
+    pub arguments_json: &'a str,
+    pub status: TicketStatus,
+    pub detail: &'a str,
+    /// Schedule the first alert now.
+    pub arm_alert: bool,
+}
+
+/// A ticket whose next alert is due. `tier` is `None` before the first alert.
+#[derive(Clone, Debug)]
+pub(crate) struct DueAlert {
+    pub ticket: Ticket,
+    pub tier: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -218,6 +238,11 @@ impl TicketStore {
                 BEFORE DELETE ON audit_events
                 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;",
         )?;
+        add_column_if_missing(&connection, "tickets", "alert_tier", "INTEGER")?;
+        add_column_if_missing(&connection, "tickets", "next_alert_at", "INTEGER")?;
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS tickets_next_alert ON tickets(next_alert_at);",
+        )?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -229,22 +254,23 @@ impl TicketStore {
             .map_err(|_| FacilitatorError::LockPoisoned)
     }
 
-    pub fn insert(
-        &self,
-        pack: &str,
-        room: &str,
-        tool_name: &str,
-        arguments_json: &str,
-        status: TicketStatus,
-        detail: &str,
-    ) -> Result<Ticket, FacilitatorError> {
+    pub(crate) fn insert(&self, new: NewTicket<'_>) -> Result<Ticket, FacilitatorError> {
+        let NewTicket {
+            pack,
+            room,
+            tool_name,
+            arguments_json,
+            status,
+            detail,
+            arm_alert,
+        } = new;
         let id = next_ticket_id();
         let now = unix_millis();
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO tickets (id, pack, room, tool_name, arguments_json, status, detail, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO tickets (id, pack, room, tool_name, arguments_json, status, detail, created_at, updated_at, alert_tier, next_alert_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
             params![
                 id,
                 pack,
@@ -254,7 +280,8 @@ impl TicketStore {
                 status.as_str(),
                 detail,
                 now,
-                now
+                now,
+                arm_alert.then_some(now)
             ],
         )?;
         append_audit(
@@ -275,13 +302,14 @@ impl TicketStore {
             arguments_json: arguments_json.to_string(),
             status: status.as_str().to_string(),
             detail: detail.to_string(),
+            created_millis: now,
         })
     }
 
     pub fn list(&self) -> Result<Vec<Ticket>, FacilitatorError> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id, pack, room, tool_name, arguments_json, status, detail
+            "SELECT id, pack, room, tool_name, arguments_json, status, detail, created_at
              FROM tickets ORDER BY created_at ASC, id ASC",
         )?;
         let rows = statement.query_map([], ticket_from_row)?;
@@ -329,6 +357,22 @@ impl TicketStore {
             "UPDATE tickets SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![next.as_str(), now, id],
         )?;
+        match next {
+            TicketStatus::Acknowledged | TicketStatus::Done => {
+                transaction.execute(
+                    "UPDATE tickets SET next_alert_at = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            // A reopened ticket is announced again from the first tier.
+            TicketStatus::Open => {
+                transaction.execute(
+                    "UPDATE tickets SET next_alert_at = ?1, alert_tier = NULL WHERE id = ?2",
+                    params![now, id],
+                )?;
+            }
+            TicketStatus::Escalated => {}
+        }
         append_audit(
             &transaction,
             actor,
@@ -339,7 +383,7 @@ impl TicketStore {
             "",
         )?;
         let ticket = transaction.query_row(
-            "SELECT id, pack, room, tool_name, arguments_json, status, detail FROM tickets WHERE id = ?1",
+            "SELECT id, pack, room, tool_name, arguments_json, status, detail, created_at FROM tickets WHERE id = ?1",
             params![id],
             ticket_from_row,
         )?;
@@ -993,7 +1037,113 @@ fn ticket_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Ticket> {
         arguments_json: row.get(4)?,
         status: row.get(5)?,
         detail: row.get(6)?,
+        created_millis: row.get(7)?,
     })
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), FacilitatorError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(());
+        }
+    }
+    connection.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+    ))?;
+    Ok(())
+}
+
+impl TicketStore {
+    /// Open or escalated tickets whose next alert is due.
+    pub(crate) fn due_alerts(&self) -> Result<Vec<DueAlert>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, pack, room, tool_name, arguments_json, status, detail, created_at, alert_tier
+             FROM tickets
+             WHERE next_alert_at IS NOT NULL AND next_alert_at <= ?1
+               AND status IN ('open', 'escalated')
+             ORDER BY next_alert_at ASC LIMIT 100",
+        )?;
+        let rows = statement.query_map(params![unix_millis()], |row| {
+            let tier: Option<i64> = row.get(8)?;
+            Ok(DueAlert {
+                ticket: ticket_from_row(row)?,
+                tier: tier.and_then(|tier| usize::try_from(tier).ok()),
+            })
+        })?;
+        let mut due = Vec::new();
+        for row in rows {
+            due.push(row?);
+        }
+        Ok(due)
+    }
+
+    pub(crate) fn disarm_alert(&self, id: &str) -> Result<(), FacilitatorError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "UPDATE tickets SET next_alert_at = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn rearm_alert(
+        &self,
+        id: &str,
+        tier: Option<usize>,
+        next_in: std::time::Duration,
+    ) -> Result<(), FacilitatorError> {
+        let connection = self.lock()?;
+        let next_at = unix_millis() + i64::try_from(next_in.as_millis()).unwrap_or(i64::MAX / 2);
+        let tier = tier.and_then(|tier| i64::try_from(tier).ok());
+        // Only re-arm while the ticket still needs someone.
+        connection.execute(
+            "UPDATE tickets SET alert_tier = ?1, next_alert_at = ?2
+             WHERE id = ?3 AND status IN ('open', 'escalated')",
+            params![tier, next_at, id],
+        )?;
+        Ok(())
+    }
+
+    /// Nobody acknowledged in time: escalate an open ticket and audit the breach.
+    pub(crate) fn record_sla_breach(&self, id: &str, tier: &str) -> Result<(), FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let escalated = transaction.execute(
+            "UPDATE tickets SET status = 'escalated', updated_at = ?1 WHERE id = ?2 AND status = 'open'",
+            params![unix_millis(), id],
+        )?;
+        if escalated > 0 {
+            append_audit(
+                &transaction,
+                "sla",
+                "ticket_status",
+                Some(id),
+                Some("open"),
+                Some("escalated"),
+                "not acknowledged in time",
+            )?;
+        }
+        append_audit(
+            &transaction,
+            "sla",
+            "sla_breach",
+            Some(id),
+            None,
+            None,
+            tier,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 fn append_audit(

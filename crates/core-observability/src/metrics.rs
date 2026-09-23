@@ -158,6 +158,9 @@ const PROPERTY_AUTH_ATTEMPTS_TOTAL: &str = "property_auth_attempts_total";
 const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
 const FLEET_PROVISIONING_TOTAL: &str = "fleet_provisioning_total";
 const MEMORY_STAY_TRANSITIONS_TOTAL: &str = "memory_stay_transitions_total";
+const PROPERTY_ALERTS_SENT_TOTAL: &str = "property_alerts_sent_total";
+const PROPERTY_SLA_BREACHES_TOTAL: &str = "property_sla_breaches_total";
+const PROPERTY_TICKET_ACK_DURATION_SECONDS: &str = "property_ticket_ack_duration_seconds";
 const MEMORY_RECALL_SCOPED_TOTAL: &str = "memory_recall_scoped_total";
 const MEMORY_RETENTION_PURGES_TOTAL: &str = "memory_retention_purges_total";
 const BACKEND_AUTH_REJECTIONS_TOTAL: &str = "backend_auth_rejections_total";
@@ -367,6 +370,24 @@ pub fn register_metrics() {
     counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 0, "action" => "unknown");
     counter!(FLEET_PROVISIONING_TOTAL, 0, "result" => "unknown");
     counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 0, "action" => "unknown");
+    counter!(
+        PROPERTY_ALERTS_SENT_TOTAL,
+        0,
+        "channel" => "unknown",
+        "result" => "unknown"
+    );
+    counter!(
+        PROPERTY_SLA_BREACHES_TOTAL,
+        0,
+        "pack" => "unknown",
+        "tool" => "unknown"
+    );
+    histogram!(
+        PROPERTY_TICKET_ACK_DURATION_SECONDS,
+        0.0_f64,
+        "pack" => "unknown",
+        "tool" => "unknown"
+    );
     counter!(MEMORY_RECALL_SCOPED_TOTAL, 0, "scope" => "unknown");
     counter!(MEMORY_RETENTION_PURGES_TOTAL, 0, "result" => "unknown");
     counter!(BACKEND_AUTH_REJECTIONS_TOTAL, 0, "reason" => "unknown");
@@ -1166,4 +1187,34 @@ pub fn record_memory_recall_scoped(scope: &str) {
 /// Stay memory wings deleted by the retention job, by result.
 pub fn record_memory_retention_purge(result: &str) {
     counter!(MEMORY_RETENTION_PURGES_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Alerts handed to a channel, by channel name and result.
+pub fn record_property_alert_sent(channel: &str, result: &str) {
+    counter!(
+        PROPERTY_ALERTS_SENT_TOTAL,
+        1,
+        "channel" => channel.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Tickets nobody acknowledged within their rule's window.
+pub fn record_property_sla_breach(pack: &str, tool: &str) {
+    counter!(
+        PROPERTY_SLA_BREACHES_TOTAL,
+        1,
+        "pack" => pack.to_string(),
+        "tool" => tool.to_string()
+    );
+}
+
+/// Time from ticket creation to its first acknowledgement.
+pub fn record_property_ticket_ack_duration(pack: &str, tool: &str, duration: Duration) {
+    histogram!(
+        PROPERTY_TICKET_ACK_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "pack" => pack.to_string(),
+        "tool" => tool.to_string()
+    );
 }

@@ -676,3 +676,37 @@ flowchart TD
 - **Encryption at rest:** the palace and property databases are local SQLite files. Until the palace supports an encrypted store, run them on an encrypted volume (BitLocker, FileVault, or LUKS); see the deployment runbook.
 - **Failure paths:** a second open stay for a room → 409; continuing a purged or due stay → 409; unknown stay → 404; a failed purge stays due and is retried next pass (`memory_retention_purges_total{result="error"}`).
 - **Metrics:** `memory_stay_transitions_total{action}`, `memory_recall_scoped_total{scope}`, `memory_retention_purges_total{result}`.
+
+---
+
+## 27. Staff alerting and SLA re-escalation
+
+**Purpose:** Staff are paged when a request arrives, and a request nobody acknowledges in time escalates to the next tier until someone does.
+
+```mermaid
+sequenceDiagram
+    participant Voice as aice-backend
+    participant Fac as Facilitator
+    participant Loop as Alert loop (100 ms, SQLite-driven)
+    participant T0 as Tier 0 channels (staff)
+    participant T1 as Tier 1 channels (supervisor)
+    Voice->>Fac: tools/call report_fall
+    Fac->>Fac: ticket + next_alert_at = now
+    Loop->>T0: alert {reason: new, tier: staff}
+    Note over Loop: ack window (fall: 60 s)
+    alt acknowledged in time
+        Fac->>Fac: next_alert_at = NULL
+    else not acknowledged
+        Loop->>Fac: status escalated, audit actor "sla"
+        Loop->>T1: alert {reason: sla_breach, tier: supervisor}
+        Note over Loop: repeats, then stays on the last tier
+    end
+```
+
+**Notes:**
+- **Inputs:** `alerts` in `property.json`: `tiers` (default `staff`, `supervisor`, `on_call`), `channels` (`webhook` with `url` and optional `token_file` for a bearer token; `property_mcp` with a `tool` on the property's own MCP, for nurse call, DECT, or PMS paging), each with the `tiers` it serves; `rules` (`tools` list, `"*"` for all, and `ack_within_secs`; first match wins).
+- **Defaults:** care — fall and distress 60 s, bathroom help and pain 180 s, everything else 600 s; ward — `get_a_nurse` 120 s, else 900 s; hotels — 900 s. With no channels configured, escalations still show on the desk (which refreshes every 10 s).
+- **Outputs:** JSON alert `{ticket_id, pack, room, tool, status, tier, reason, created_millis, ack_within_secs}` to every channel of the tier; ticket status `escalated` on the first breach; audit rows `ticket_status` and `sla_breach` with actor `sla`.
+- **Restarts:** the schedule is stored on the ticket (`alert_tier`, `next_alert_at`), so a restarted pack resumes timers. Acknowledge or done clears the timer; a supervisor reopen re-announces from tier 0.
+- **Failure paths:** a failing channel is logged and counted but does not block the tier's other channels; if every channel of tier 0 fails, the first alert is retried every 5 s; a breach always advances so higher tiers are still paged.
+- **Metrics:** `property_alerts_sent_total{channel,result}`, `property_sla_breaches_total{pack,tool}`, `property_ticket_ack_duration_seconds{pack,tool}`.

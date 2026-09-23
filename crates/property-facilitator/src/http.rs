@@ -74,6 +74,7 @@ pub async fn listen(facilitator: Arc<Facilitator>) -> Result<Running, Facilitato
         url: format!("{scheme}://{addr}"),
         shutdown: Some(shutdown_tx),
         task: Some(task),
+        background: Vec::new(),
     })
 }
 

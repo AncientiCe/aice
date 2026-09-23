@@ -44,8 +44,9 @@ pub use metrics::{
     record_palace_search, record_palace_wake_up, record_pod_audio_frame, record_pod_connection,
     record_pod_disconnect, record_pod_egress_device_lock_poison, record_pod_egress_queue_drop,
     record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
-    record_property_audit_event, record_property_auth_attempt, record_property_mcp_duration,
-    record_property_mcp_error, record_property_request, record_reminder_skill,
+    record_property_alert_sent, record_property_audit_event, record_property_auth_attempt,
+    record_property_mcp_duration, record_property_mcp_error, record_property_request,
+    record_property_sla_breach, record_property_ticket_ack_duration, record_reminder_skill,
     record_screen_ocr_skill, record_screenshot_skill, record_session_start,
     record_shopping_list_skill, record_shutdown_signal, record_skill_duration,
     record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
@@ -129,6 +130,9 @@ mod tests {
         super::record_fleet_provisioning("assigned");
         super::record_backend_auth_rejection("missing");
         super::record_memory_stay_transition("opened");
+        super::record_property_alert_sent("pager", "delivered");
+        super::record_property_sla_breach("care", "report_fall");
+        super::record_property_ticket_ack_duration("care", "report_fall", Duration::from_secs(30));
         super::record_memory_recall_scoped("stay");
         super::record_memory_retention_purge("purged");
         super::record_backend_device_auth_duration("accepted", Duration::from_millis(2));
@@ -235,6 +239,9 @@ mod tests {
                         && payload.contains("fleet_provisioning_total")
                         && payload.contains("backend_auth_rejections_total")
                         && payload.contains("memory_stay_transitions_total")
+                        && payload.contains("property_alerts_sent_total")
+                        && payload.contains("property_sla_breaches_total")
+                        && payload.contains("property_ticket_ack_duration_seconds")
                         && payload.contains("memory_recall_scoped_total")
                         && payload.contains("memory_retention_purges_total")
                         && payload.contains("backend_device_auth_duration_seconds")

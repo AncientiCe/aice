@@ -102,7 +102,7 @@ pub(crate) fn desk_html(
     let title = escape_html(state.pack().desk_title());
     Ok(format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{title}</title>\
-        <style>{STYLE}</style></head><body>\
+        <meta http-equiv=\"refresh\" content=\"10\"><style>{STYLE}</style></head><body>\
         <form class=\"inline who\" method=\"post\" action=\"/logout\">{csrf_field}\
         {} ({}) <button>Log out</button></form><h1>{title}</h1>\
         <table><tr><th>Room</th><th>Request</th><th>Status</th><th></th></tr>{rows}</table>\
