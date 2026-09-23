@@ -2,8 +2,8 @@ use aice_backend::discovery_broadcast::{
     resolve_discovery_udp_port, spawn_udp_discovery_responder, DEFAULT_DISCOVERY_UDP_PORT,
 };
 use aice_backend::{
-    spawn_server_with_audio, AiceBackendEngine, AudioIngressConfig, BackendEngine,
-    WhisperAudioTranscriber,
+    server_options_from_config, spawn_server_with_options, AiceBackendEngine, AudioIngressConfig,
+    BackendEngine, WhisperAudioTranscriber,
 };
 use core_config::Config;
 use core_observability::{
@@ -68,11 +68,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.stt.whisper_model_path.clone(),
         config.stt.preload_model_on_startup,
     )?);
-    let handle = spawn_server_with_audio(
+    let options = server_options_from_config(&config)?;
+    if options.device_auth.is_some() {
+        info!("turn stream requires facilitator device tokens");
+    }
+    let handle = spawn_server_with_options(
         &bind,
         engine,
         transcriber,
         AudioIngressConfig::from_config(&config),
+        options,
     )
     .await?;
     info!(bind = %handle.bind, "aice-backend started");

@@ -1,3 +1,4 @@
+pub mod device_auth;
 pub mod discovery_broadcast;
 pub mod llm_adapters;
 
@@ -299,6 +300,56 @@ impl ServerHandle {
     }
 }
 
+pub use device_auth::{DeviceAuth, DeviceAuthError};
+
+/// Facilitator client for this config, or `None` when no facilitator is configured.
+pub fn property_client_from_config(
+    property: &core_config::PropertyConfig,
+) -> Option<Result<PropertyClient, property_facilitator::FacilitatorError>> {
+    let url = property
+        .facilitator_url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())?;
+    let token_file = property
+        .service_token_file
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::Path::new);
+    Some(
+        property_facilitator::client_service_token(token_file)
+            .and_then(|token| PropertyClient::new(url, token)),
+    )
+}
+
+/// Server options for this config. Fails when device tokens are required but
+/// no facilitator can verify them.
+pub fn server_options_from_config(config: &Config) -> Result<ServerOptions, DynError> {
+    if !config.property.device_token_required() {
+        if config.property.is_configured() {
+            warn!("property.require_device_token is false: any client on the network can open a turn stream");
+        }
+        return Ok(ServerOptions::default());
+    }
+    match property_client_from_config(&config.property) {
+        Some(Ok(client)) => Ok(ServerOptions {
+            device_auth: Some(Arc::new(DeviceAuth::new(client))),
+        }),
+        Some(Err(error)) => Err(format!(
+            "device tokens are required but the facilitator client failed: {error}"
+        )
+        .into()),
+        None => Err("property.require_device_token needs property.facilitator_url".into()),
+    }
+}
+
+/// Optional server behaviour beyond the voice loop itself.
+#[derive(Clone, Default)]
+pub struct ServerOptions {
+    /// When set, `/turns/stream` needs a device token and the turn's device
+    /// and room come from that token.
+    pub device_auth: Option<Arc<DeviceAuth>>,
+}
+
 pub async fn spawn_server(
     bind: &str,
     engine: Arc<dyn BackendEngine>,
@@ -317,6 +368,23 @@ pub async fn spawn_server_with_audio(
     engine: Arc<dyn BackendEngine>,
     transcriber: Arc<dyn AudioTranscriber>,
     audio_config: AudioIngressConfig,
+) -> Result<ServerHandle, DynError> {
+    spawn_server_with_options(
+        bind,
+        engine,
+        transcriber,
+        audio_config,
+        ServerOptions::default(),
+    )
+    .await
+}
+
+pub async fn spawn_server_with_options(
+    bind: &str,
+    engine: Arc<dyn BackendEngine>,
+    transcriber: Arc<dyn AudioTranscriber>,
+    audio_config: AudioIngressConfig,
+    options: ServerOptions,
 ) -> Result<ServerHandle, DynError> {
     let listener = TcpListener::bind(bind).await?;
     let local = listener.local_addr()?;
@@ -338,12 +406,14 @@ pub async fn spawn_server_with_audio(
                     let frontend_sessions = frontend_sessions.clone();
                     let transcriber = transcriber.clone();
                     let audio_config = audio_config.clone();
+                    let options = options.clone();
                     tokio::spawn(async move {
                         let service = service_fn(move |req| {
                             let engine = engine.clone();
                             let frontend_sessions = frontend_sessions.clone();
                             let transcriber = transcriber.clone();
                             let audio_config = audio_config.clone();
+                            let options = options.clone();
                             async move {
                                 handle_request(
                                     req,
@@ -351,6 +421,7 @@ pub async fn spawn_server_with_audio(
                                     frontend_sessions,
                                     transcriber,
                                     audio_config,
+                                    options,
                                 )
                                 .await
                             }
@@ -601,6 +672,8 @@ fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> Strin
 struct WsTurnState {
     session_id: String,
     device_id: Option<String>,
+    /// Room of the authenticated device; `None` when device auth is off.
+    room: Option<String>,
     turn_id: String,
     supported_frontend_intents: Vec<String>,
     samples: Vec<i16>,
@@ -621,12 +694,14 @@ impl WsTurnState {
     fn new(
         session_id: String,
         device_id: Option<String>,
+        room: Option<String>,
         turn_id: String,
         supported_frontend_intents: Vec<String>,
     ) -> Self {
         Self {
             session_id,
             device_id,
+            room,
             turn_id,
             supported_frontend_intents,
             samples: Vec::new(),
@@ -743,13 +818,17 @@ fn spawn_speculative_turn(
         since_turn_start_ms = state.started_at.elapsed().as_millis(),
         "calling_llm_for_classification"
     );
-    let context = if state.supported_frontend_intents.is_empty() {
-        None
-    } else {
-        Some(serde_json::json!({
-            "frontend_supported_intents": state.supported_frontend_intents,
-        }))
-    };
+    let mut context = serde_json::Map::new();
+    if !state.supported_frontend_intents.is_empty() {
+        context.insert(
+            "frontend_supported_intents".to_string(),
+            serde_json::json!(state.supported_frontend_intents),
+        );
+    }
+    if let Some(room) = &state.room {
+        context.insert("room".to_string(), serde_json::json!(room));
+    }
+    let context = (!context.is_empty()).then_some(serde_json::Value::Object(context));
     let request = TurnRequest {
         session_id: state.session_id.clone(),
         device_id: state.device_id.clone(),
@@ -888,6 +967,7 @@ async fn handle_turn_stream_socket(
     transcriber: Arc<dyn AudioTranscriber>,
     frontend_sessions: FrontendSessions,
     audio_config: Arc<AudioIngressConfig>,
+    identity: Option<property_facilitator::DeviceIdentity>,
 ) -> Result<(), DynError> {
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TurnStreamInternalEvent>();
     let mut turn: Option<WsTurnState> = None;
@@ -955,6 +1035,12 @@ async fn handle_turn_stream_socket(
                                             task.abort();
                                         }
                                     }
+                                    // An authenticated pod cannot claim another device or room.
+                                    let device_id = match &identity {
+                                        Some(identity) => Some(identity.device_id.clone()),
+                                        None => device_id,
+                                    };
+                                    let room = identity.as_ref().map(|identity| identity.room.clone());
                                     let dev = device_id.clone().unwrap_or_else(|| "unknown".to_string());
                                     register_ws_session(
                                         &frontend_sessions,
@@ -972,7 +1058,7 @@ async fn handle_turn_stream_socket(
                                         supported_frontend_intents = intents.len(),
                                         "turn_start"
                                     );
-                                    turn = Some(WsTurnState::new(session_id, device_id, turn_id, intents));
+                                    turn = Some(WsTurnState::new(session_id, device_id, room, turn_id, intents));
                                 }
                                 TurnStreamClientMessage::TurnDone => {
                                     let raw_since_turn_start_ms = turn
@@ -1298,6 +1384,7 @@ async fn handle_request(
     frontend_sessions: FrontendSessions,
     transcriber: Arc<dyn AudioTranscriber>,
     audio_config: Arc<AudioIngressConfig>,
+    options: ServerOptions,
 ) -> Result<Response<RespBody>, Infallible> {
     let request_started_at = Instant::now();
     let method = req.method().clone();
@@ -1352,6 +1439,34 @@ async fn handle_request(
                 ),
             ));
         };
+        let identity = match &options.device_auth {
+            Some(device_auth) => {
+                let bearer = req
+                    .headers()
+                    .get(hyper::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "));
+                match device_auth.authenticate(bearer).await {
+                    Ok(identity) => Some(identity),
+                    Err(error) => {
+                        let status = match error {
+                            DeviceAuthError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+                            DeviceAuthError::Missing | DeviceAuthError::Rejected => {
+                                StatusCode::UNAUTHORIZED
+                            }
+                        };
+                        warn!(%error, "turn stream refused");
+                        return Ok(with_backend_http_metrics(
+                            &method,
+                            "/turns/stream",
+                            request_started_at,
+                            json_response(status, json!({"error": error.to_string()})),
+                        ));
+                    }
+                }
+            }
+            None => None,
+        };
         let accept_key = derive_accept_key(ws_key.as_bytes());
         let on_upgrade = hyper::upgrade::on(req);
         let ws_engine = engine.clone();
@@ -1379,6 +1494,7 @@ async fn handle_request(
                 ws_transcriber,
                 ws_sessions,
                 ws_audio_config,
+                identity,
             )
             .await
             {
@@ -1623,25 +1739,13 @@ impl AiceBackendEngine {
             &llm_arc,
         )));
 
-        let property_client = match config.property.facilitator_url.as_deref() {
-            Some(url) if !url.trim().is_empty() => {
-                let token_file = config
-                    .property
-                    .service_token_file
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .map(std::path::Path::new);
-                match property_facilitator::client_service_token(token_file)
-                    .and_then(|token| PropertyClient::new(url, token))
-                {
-                    Ok(client) => Some(client),
-                    Err(error) => {
-                        tracing::warn!(%error, "property facilitator client was not created");
-                        None
-                    }
-                }
+        let property_client = match property_client_from_config(&config.property) {
+            Some(Ok(client)) => Some(client),
+            Some(Err(error)) => {
+                tracing::warn!(%error, "property facilitator client was not created");
+                None
             }
-            _ => None,
+            None => None,
         };
         let discovered_property_tools = if let Some(client) = &property_client {
             match client.list_tools().await {

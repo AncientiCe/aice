@@ -710,6 +710,24 @@ pub struct PropertyConfig {
     /// beside its `property.json`). `AICE_PROPERTY_SERVICE_TOKEN` overrides it.
     #[serde(default)]
     pub service_token_file: Option<String>,
+    /// Require a facilitator-issued device token on `/turns/stream`.
+    /// Defaults to on whenever `facilitator_url` is set.
+    #[serde(default)]
+    pub require_device_token: Option<bool>,
+}
+
+impl PropertyConfig {
+    /// True when a facilitator URL is configured.
+    pub fn is_configured(&self) -> bool {
+        self.facilitator_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+    }
+
+    /// Whether `/turns/stream` must carry a device token.
+    pub fn device_token_required(&self) -> bool {
+        self.require_device_token.unwrap_or(self.is_configured())
+    }
 }
 
 impl Config {
@@ -1115,6 +1133,25 @@ mod tests {
             config.property.service_token_file.as_deref(),
             Some("/etc/aice/service.token")
         );
+        assert!(config.property.device_token_required());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn device_tokens_default_on_only_for_property_deployments() {
+        let home = super::PropertyConfig::default();
+        assert!(!home.is_configured());
+        assert!(!home.device_token_required());
+        let opted_out = super::PropertyConfig {
+            facilitator_url: Some("http://127.0.0.1:8791/mcp".to_string()),
+            require_device_token: Some(false),
+            ..super::PropertyConfig::default()
+        };
+        assert!(!opted_out.device_token_required());
+        let forced = super::PropertyConfig {
+            require_device_token: Some(true),
+            ..super::PropertyConfig::default()
+        };
+        assert!(forced.device_token_required());
     }
 }

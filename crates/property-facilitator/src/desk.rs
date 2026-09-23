@@ -93,6 +93,11 @@ pub(crate) fn desk_html(
     } else {
         String::new()
     };
+    let devices = if session.role == Role::Supervisor {
+        devices_html(state, &csrf_field)?
+    } else {
+        String::new()
+    };
     let title = escape_html(state.pack().desk_title());
     Ok(format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{title}</title>\
@@ -100,9 +105,37 @@ pub(crate) fn desk_html(
         <form class=\"inline who\" method=\"post\" action=\"/logout\">{csrf_field}\
         {} ({}) <button>Log out</button></form><h1>{title}</h1>\
         <table><tr><th>Room</th><th>Request</th><th>Status</th><th></th></tr>{rows}</table>\
-        {audit}</body></html>",
+        {devices}{audit}</body></html>",
         escape_html(&session.username),
         session.role.as_str(),
+    ))
+}
+
+fn devices_html(state: &Facilitator, csrf_field: &str) -> Result<String, FacilitatorError> {
+    let mut rows = String::new();
+    for device in state.list_devices()? {
+        let id = escape_html(&device.device_id);
+        let room = escape_html(device.room.as_deref().unwrap_or(""));
+        let revoke = if device.status == "revoked" {
+            String::new()
+        } else {
+            format!(
+                "<form class=\"inline\" method=\"post\" action=\"/api/devices/{id}/revoke\">\
+                {csrf_field}<button>Revoke</button></form>"
+            )
+        };
+        rows.push_str(&format!(
+            "<tr><td>{id}</td><td>{}</td><td>{room}</td><td>{}</td><td>{}</td><td>\
+            <form class=\"inline\" method=\"post\" action=\"/api/devices/{id}/assign\">{csrf_field}\
+            <input name=\"room\" value=\"{room}\" size=\"6\" required><button>Assign room</button></form>{revoke}</td></tr>",
+            escape_html(&device.status),
+            escape_html(&device.firmware),
+            device.last_seen_millis,
+        ));
+    }
+    Ok(format!(
+        "<h2>Room devices</h2><table><tr><th>Device</th><th>Status</th><th>Room</th>\
+        <th>Firmware</th><th>Last seen (ms)</th><th></th></tr>{rows}</table>"
     ))
 }
 

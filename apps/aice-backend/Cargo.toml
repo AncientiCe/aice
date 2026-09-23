@@ -32,6 +32,7 @@ core-observability = { path = "../../crates/core-observability" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
 property-facilitator = { path = "../../crates/property-facilitator" }
+thiserror = "1.0"
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "ccf156ce4b4f9c95ce65b5f1c367c90ca6bb22c5", default-features = false, features = ["core-common", "hotel"] }
 skill-chain = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "ccf156ce4b4f9c95ce65b5f1c367c90ca6bb22c5" }

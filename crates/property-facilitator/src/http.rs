@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 
 use crate::auth::{self, Role};
 use crate::desk;
-use crate::store::{StaffSession, TicketStatus};
+use crate::store::{EnrollOutcome, StaffSession, TicketStatus};
 use crate::{Facilitator, FacilitatorError, FixedMcp, LoginOutcome, Running};
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
@@ -233,6 +233,12 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
             _ => not_found(),
         };
     }
+    if method == Method::POST && path == "/api/devices/enroll" {
+        return enroll_device(state, &incoming);
+    }
+    if method == Method::POST && path == "/api/devices/verify" {
+        return verify_device(state, &incoming);
+    }
     if method == Method::GET
         && path == "/api/tickets"
         && incoming
@@ -283,15 +289,28 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
                 Err(error) => internal_error(&error),
             }
         }
-        (&Method::POST, _) => match ticket_action(&path) {
-            Some((id, action)) => {
+        (&Method::GET, "/api/devices") => match state.list_devices() {
+            Ok(devices) => json_response(StatusCode::OK, json!(devices)),
+            Err(error) => internal_error(&error),
+        },
+        (&Method::POST, _) => {
+            if let Some((id, action)) = ticket_action(&path) {
                 if !incoming.csrf_matches(&session.csrf) {
                     return forbidden("csrf token mismatch");
                 }
-                change_ticket(state, &incoming, &session, id, action)
+                return change_ticket(state, &incoming, &session, id, action);
             }
-            None => not_found(),
-        },
+            if let Some((id, action)) = device_action(&path) {
+                if session.role != Role::Supervisor {
+                    return forbidden("supervisor role required");
+                }
+                if !incoming.csrf_matches(&session.csrf) {
+                    return forbidden("csrf token mismatch");
+                }
+                return change_device(state, &incoming, &session, id, action);
+            }
+            not_found()
+        }
         _ => not_found(),
     }
 }
@@ -407,6 +426,126 @@ fn change_ticket(
         }
         Err(error) => internal_error(&error),
     }
+}
+
+fn enroll_device(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {
+    let body: Value = serde_json::from_slice(&incoming.body).unwrap_or(Value::Null);
+    let field = |name: &str| body.get(name).and_then(Value::as_str).unwrap_or("").trim();
+    let device_id = field("device_id");
+    let nonce = field("nonce");
+    let firmware = field("firmware");
+    if !valid_device_id(device_id) || nonce.len() < 16 || nonce.len() > 256 || firmware.len() > 64 {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "device_id, nonce (16+ chars) and firmware are required"}),
+        );
+    }
+    match state.enroll_device(device_id, nonce, firmware) {
+        Ok(EnrollOutcome::Pending) => {
+            json_response(StatusCode::ACCEPTED, json!({"status": "pending"}))
+        }
+        Ok(EnrollOutcome::Active { room, token }) => json_response(
+            StatusCode::OK,
+            json!({"status": "active", "room": room, "token": token}),
+        ),
+        Ok(EnrollOutcome::Revoked) => {
+            json_response(StatusCode::FORBIDDEN, json!({"status": "revoked"}))
+        }
+        Ok(EnrollOutcome::NonceMismatch) => json_response(
+            StatusCode::CONFLICT,
+            json!({"error": "device is enrolled with a different nonce"}),
+        ),
+        Ok(EnrollOutcome::TooManyPending) => json_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            json!({"error": "too many pods are waiting for a room"}),
+        ),
+        Err(error) => internal_error(&error),
+    }
+}
+
+fn verify_device(state: &Arc<Facilitator>, incoming: &DeskRequest) -> Response<BoxBody> {
+    let authorized = incoming
+        .bearer()
+        .is_some_and(|token| state.service_token_matches(token));
+    if !authorized {
+        record_property_auth_attempt("service_token", "rejected");
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({"error": "service token required"}),
+        );
+    }
+    let body: Value = serde_json::from_slice(&incoming.body).unwrap_or(Value::Null);
+    let token = body.get("token").and_then(Value::as_str).unwrap_or("");
+    match state.verify_device(token) {
+        Ok(Some(identity)) => {
+            record_property_auth_attempt("device_token", "accepted");
+            json_response(StatusCode::OK, json!(identity))
+        }
+        Ok(None) => {
+            record_property_auth_attempt("device_token", "rejected");
+            json_response(
+                StatusCode::NOT_FOUND,
+                json!({"error": "unknown device token"}),
+            )
+        }
+        Err(error) => internal_error(&error),
+    }
+}
+
+fn change_device(
+    state: &Arc<Facilitator>,
+    incoming: &DeskRequest,
+    session: &StaffSession,
+    id: &str,
+    action: &str,
+) -> Response<BoxBody> {
+    let result = match action {
+        "assign" => {
+            let room = if incoming.is_form() {
+                incoming.form_field("room").unwrap_or_default()
+            } else {
+                serde_json::from_slice::<Value>(&incoming.body)
+                    .ok()
+                    .and_then(|body| body.get("room").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_default()
+            };
+            let room = room.trim();
+            if room.is_empty() || room.len() > 32 || room.chars().any(char::is_control) {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error": "room must be 1-32 printable characters"}),
+                );
+            }
+            state.assign_device(id, room, &session.username)
+        }
+        "revoke" => state.revoke_device(id, &session.username),
+        _ => return not_found(),
+    };
+    match result {
+        Ok(()) if incoming.is_form() => redirect("/desk"),
+        Ok(()) => json_response(StatusCode::OK, json!({"device_id": id})),
+        Err(FacilitatorError::UnknownDevice(missing)) => {
+            json_response(StatusCode::NOT_FOUND, json!({"error": missing}))
+        }
+        Err(error) => internal_error(&error),
+    }
+}
+
+fn valid_device_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+}
+
+fn device_action(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/api/devices/")?;
+    let (id, action) = rest.split_once('/')?;
+    if !valid_device_id(id) || action.is_empty() || action.contains('/') {
+        return None;
+    }
+    Some((id, action))
 }
 
 fn ticket_action(path: &str) -> Option<(&str, &str)> {
