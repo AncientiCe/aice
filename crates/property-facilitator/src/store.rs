@@ -233,6 +233,14 @@ impl TicketStore {
                 continued_from TEXT
             );
             CREATE INDEX IF NOT EXISTS stays_room_open ON stays(room, closed_at);
+            CREATE TABLE IF NOT EXISTS firmware_releases (
+                version TEXT PRIMARY KEY,
+                size INTEGER NOT NULL,
+                sha256_hex TEXT NOT NULL,
+                signature_hex TEXT NOT NULL,
+                rollout_percent INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             CREATE TRIGGER IF NOT EXISTS audit_events_no_update
                 BEFORE UPDATE ON audit_events
                 BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
@@ -249,6 +257,15 @@ impl TicketStore {
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    /// Run `f` with the connection locked (for sibling modules).
+    pub(crate) fn with_connection<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, FacilitatorError>,
+    ) -> Result<T, FacilitatorError> {
+        let connection = self.lock()?;
+        f(&connection)
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, FacilitatorError> {
@@ -632,11 +649,14 @@ impl TicketStore {
 }
 
 impl TicketStore {
+    /// `lost_token`: the pod (proven by its nonce) no longer has its token;
+    /// an active pod then gets a fresh one and the old token stops working.
     pub(crate) fn enroll_device(
         &self,
         device_id: &str,
         nonce_hash: &str,
         firmware: &str,
+        lost_token: bool,
     ) -> Result<EnrollOutcome, FacilitatorError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
@@ -697,6 +717,26 @@ impl TicketStore {
                     params![firmware, now, device_id],
                 )?;
                 match (status.as_str(), room) {
+                    ("active", Some(room)) if pending_token.is_none() && lost_token => {
+                        let token = crate::auth::random_token();
+                        transaction.execute(
+                            "UPDATE devices SET token_hash = ?1 WHERE device_id = ?2",
+                            params![crate::auth::token_digest(&token), device_id],
+                        )?;
+                        append_audit(
+                            &transaction,
+                            device_id,
+                            "device_token_rotated",
+                            None,
+                            None,
+                            None,
+                            &room,
+                        )?;
+                        EnrollOutcome::Active {
+                            room,
+                            token: Some(token),
+                        }
+                    }
                     ("active", Some(room)) => {
                         if pending_token.is_some() {
                             append_audit(
@@ -1240,7 +1280,7 @@ impl TicketStore {
     }
 }
 
-fn append_audit(
+pub(crate) fn append_audit(
     connection: &Connection,
     actor: &str,
     action: &str,

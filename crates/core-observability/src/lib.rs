@@ -26,8 +26,9 @@ pub use metrics::{
     record_cancellation_success, record_computer_skill, record_currency_skill,
     record_dictionary_skill, record_distance_skill, record_email_skill,
     record_endpointing_wait_duration, record_error, record_first_audio_latency,
-    record_first_token_latency, record_fleet_devices, record_fleet_heartbeat_missed,
-    record_fleet_provisioning, record_frontend_rpc_duration, record_frontend_skill_duration,
+    record_first_token_latency, record_fleet_devices, record_fleet_firmware_download,
+    record_fleet_firmware_manifest, record_fleet_heartbeat_missed, record_fleet_provisioning,
+    record_frontend_rpc_duration, record_frontend_skill_duration,
     record_frontend_tts_playback_duration, record_intent_classifier, record_intent_routed,
     record_intent_validation_rejected, record_interruption, record_journal_skill,
     record_llm_first_token_latency, record_llm_stream_tail_duration, record_location_contract,
@@ -134,6 +135,8 @@ mod tests {
         super::record_pod_bridge_turn("answered");
         super::record_fleet_heartbeat_missed();
         super::record_fleet_devices("online", 3);
+        super::record_fleet_firmware_manifest("offered");
+        super::record_fleet_firmware_download("1.1.0");
         super::record_pod_bridge_turn_duration(Duration::from_millis(900));
         super::record_property_sla_breach("care", "report_fall");
         super::record_property_ticket_ack_duration("care", "report_fall", Duration::from_secs(30));
@@ -246,6 +249,8 @@ mod tests {
                         && payload.contains("property_alerts_sent_total")
                         && payload.contains("pod_bridge_turns_total")
                         && payload.contains("fleet_heartbeat_missed_total")
+                        && payload.contains("fleet_firmware_manifest_total")
+                        && payload.contains("fleet_firmware_downloads_total")
                         && payload.contains("fleet_devices")
                         && payload.contains("pod_bridge_turn_duration_seconds")
                         && payload.contains("property_sla_breaches_total")

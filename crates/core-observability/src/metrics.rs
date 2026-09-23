@@ -158,6 +158,8 @@ const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
 const FLEET_PROVISIONING_TOTAL: &str = "fleet_provisioning_total";
 const FLEET_HEARTBEAT_MISSED_TOTAL: &str = "fleet_heartbeat_missed_total";
 const FLEET_DEVICES: &str = "fleet_devices";
+const FLEET_FIRMWARE_MANIFEST_TOTAL: &str = "fleet_firmware_manifest_total";
+const FLEET_FIRMWARE_DOWNLOADS_TOTAL: &str = "fleet_firmware_downloads_total";
 const MEMORY_STAY_TRANSITIONS_TOTAL: &str = "memory_stay_transitions_total";
 const PROPERTY_ALERTS_SENT_TOTAL: &str = "property_alerts_sent_total";
 const POD_BRIDGE_TURNS_TOTAL: &str = "pod_bridge_turns_total";
@@ -373,6 +375,8 @@ pub fn register_metrics() {
     counter!(FLEET_PROVISIONING_TOTAL, 0, "result" => "unknown");
     counter!(FLEET_HEARTBEAT_MISSED_TOTAL, 0);
     gauge!(FLEET_DEVICES, 0.0, "status" => "unknown");
+    counter!(FLEET_FIRMWARE_MANIFEST_TOTAL, 0, "result" => "unknown");
+    counter!(FLEET_FIRMWARE_DOWNLOADS_TOTAL, 0, "version" => "unknown");
     counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 0, "action" => "unknown");
     counter!(POD_BRIDGE_TURNS_TOTAL, 0, "result" => "unknown");
     histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, 0.0_f64);
@@ -1235,4 +1239,14 @@ pub fn record_fleet_heartbeat_missed() {
 /// Pods by fleet status (`pending`, `online`, `offline`, `revoked`).
 pub fn record_fleet_devices(status: &str, count: i64) {
     gauge!(FLEET_DEVICES, count as f64, "status" => status.to_string());
+}
+
+/// Pod update checks, by result (`offered`, `up_to_date`, `not_in_cohort`, `no_release`).
+pub fn record_fleet_firmware_manifest(result: &str) {
+    counter!(FLEET_FIRMWARE_MANIFEST_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Firmware images served to pods.
+pub fn record_fleet_firmware_download(version: &str) {
+    counter!(FLEET_FIRMWARE_DOWNLOADS_TOTAL, 1, "version" => version.to_string());
 }

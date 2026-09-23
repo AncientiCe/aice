@@ -7,6 +7,7 @@ mod alerts;
 mod auth;
 mod cli;
 mod desk;
+mod firmware;
 mod http;
 mod pack;
 mod phone;
@@ -18,9 +19,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use core_observability::{
-    record_fleet_devices, record_fleet_heartbeat_missed, record_fleet_provisioning,
-    record_memory_stay_transition, record_property_auth_attempt, record_property_mcp_duration,
-    record_property_mcp_error, record_property_request, record_property_ticket_ack_duration,
+    record_fleet_devices, record_fleet_firmware_manifest, record_fleet_heartbeat_missed,
+    record_fleet_provisioning, record_memory_stay_transition, record_property_auth_attempt,
+    record_property_mcp_duration, record_property_mcp_error, record_property_request,
+    record_property_ticket_ack_duration,
 };
 use core_policy::decide_ward_tool;
 use serde::Deserialize;
@@ -30,6 +32,10 @@ pub use alerts::{AlertChannel, AlertChannelKind, AlertRule, AlertSettings};
 pub use auth::{random_token, token_digest, Role, MIN_PASSWORD_CHARS};
 pub use cli::{run_pack, PASSWORD_ENV};
 pub use core_policy::WARD_NON_CLINICAL_TOOLS as WARD_TOOLS;
+pub use firmware::{
+    firmware_keygen, firmware_public_key, pod_trust_header, publish_firmware, set_firmware_rollout,
+    verify_firmware_signature, FirmwareRelease,
+};
 pub use pack::Pack;
 pub use phone::resolve_place;
 pub use store::{AuditEvent, Device, DeviceIdentity, Stay, Ticket, TicketStatus};
@@ -76,6 +82,8 @@ pub enum FacilitatorError {
     Tls(String),
     #[error("alerts: {0}")]
     Alert(String),
+    #[error("firmware: {0}")]
+    Firmware(String),
     #[error("stay '{0}' does not exist or is already closed")]
     UnknownStay(String),
     #[error("{0}")]
@@ -690,10 +698,14 @@ impl Facilitator {
         device_id: &str,
         nonce: &str,
         firmware: &str,
+        lost_token: bool,
     ) -> Result<store::EnrollOutcome, FacilitatorError> {
-        let outcome = self
-            .store
-            .enroll_device(device_id, &auth::token_digest(nonce), firmware)?;
+        let outcome = self.store.enroll_device(
+            device_id,
+            &auth::token_digest(nonce),
+            firmware,
+            lost_token,
+        )?;
         record_fleet_provisioning(match &outcome {
             store::EnrollOutcome::Pending => "pending",
             store::EnrollOutcome::Active { token: Some(_), .. } => "token_delivered",
@@ -711,6 +723,45 @@ impl Facilitator {
 
     pub(crate) fn heartbeat(&self, device_ids: &[String]) -> Result<usize, FacilitatorError> {
         self.store.heartbeat(device_ids)
+    }
+
+    /// The release to offer this pod, if any. Records the pod's current version.
+    pub(crate) fn firmware_offer(
+        &self,
+        device_id: &str,
+        current: &str,
+    ) -> Result<Option<FirmwareRelease>, FacilitatorError> {
+        if !current.is_empty() {
+            self.store.record_device_firmware(device_id, current)?;
+        }
+        let Some(release) = self.store.latest_firmware()? else {
+            record_fleet_firmware_manifest("no_release");
+            return Ok(None);
+        };
+        if release.version == current {
+            record_fleet_firmware_manifest("up_to_date");
+            return Ok(None);
+        }
+        if firmware::cohort(device_id, &release.version) >= release.rollout_percent {
+            record_fleet_firmware_manifest("not_in_cohort");
+            return Ok(None);
+        }
+        record_fleet_firmware_manifest("offered");
+        Ok(Some(release))
+    }
+
+    /// Image bytes for a published release.
+    pub(crate) fn firmware_image(
+        &self,
+        version: &str,
+    ) -> Result<Option<Vec<u8>>, FacilitatorError> {
+        if !self.store.firmware_exists(version)? {
+            return Ok(None);
+        }
+        Ok(Some(std::fs::read(firmware::image_path(
+            &self.settings.database_path,
+            version,
+        ))?))
     }
 
     /// Open an escalated ticket for every pod that just went silent.

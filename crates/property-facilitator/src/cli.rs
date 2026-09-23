@@ -13,6 +13,10 @@
 //! aice-<pack> <property.json> stay close <stay>
 //! aice-<pack> <property.json> tls fingerprint        print the CA pin for pods
 //! aice-<pack> <property.json> tls issue <cert> <key> <host>...
+//! aice-<pack> <property.json> firmware keygen <key>  create the image signing key
+//! aice-<pack> <property.json> firmware publish <key> <image.bin> <version> [<percent>]
+//! aice-<pack> <property.json> firmware rollout <version> <percent>
+//! aice-<pack> <property.json> firmware pod-header <key> <facilitator-url>
 //! ```
 //!
 //! `user add` reads the password from `AICE_PROPERTY_PASSWORD`, or prompts twice.
@@ -21,8 +25,9 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::{
-    add_user, assign_device, close_stay, list_devices, list_stays, list_users, open_stay,
-    remove_user, revoke_device, serve, FacilitatorError, Pack, Role, Settings,
+    add_user, assign_device, close_stay, firmware_keygen, firmware_public_key, list_devices,
+    list_stays, list_users, open_stay, pod_trust_header, publish_firmware, remove_user,
+    revoke_device, serve, set_firmware_rollout, FacilitatorError, Pack, Role, Settings,
 };
 
 /// Env var `user add` reads the new password from (for scripted installs).
@@ -41,6 +46,7 @@ pub async fn run_pack(pack: Pack) -> Result<(), FacilitatorError> {
         Some("device") => device_command(&settings, &args[2..]),
         Some("tls") => tls_command(&settings, &args[2..]),
         Some("stay") => stay_command(&settings, &args[2..]),
+        Some("firmware") => firmware_command(&settings, &args[2..]),
         Some(other) => Err(usage(pack, &format!("unknown command '{other}'"))),
     }
 }
@@ -113,6 +119,61 @@ fn device_command(settings: &Settings, args: &[String]) -> Result<(), Facilitato
             Ok(())
         }
         _ => Err(usage(settings.pack, "unknown device command")),
+    }
+}
+
+fn parse_percent(pack: Pack, value: &str) -> Result<u8, FacilitatorError> {
+    value
+        .trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|percent| *percent <= 100)
+        .ok_or_else(|| usage(pack, "percent must be 0-100"))
+}
+
+fn firmware_command(settings: &Settings, args: &[String]) -> Result<(), FacilitatorError> {
+    let db = settings.database_path.as_path();
+    let pack = settings.pack;
+    match args {
+        [action, key] if action == "keygen" => {
+            let public_key = firmware_keygen(Path::new(key))?;
+            println!("public key {public_key}");
+            Ok(())
+        }
+        [action, key, image, version, rest @ ..] if action == "publish" && rest.len() <= 1 => {
+            let percent = match rest.first() {
+                Some(value) => parse_percent(pack, value)?,
+                None => 10,
+            };
+            let release = publish_firmware(db, Path::new(key), Path::new(image), version, percent)?;
+            println!(
+                "published {} ({} bytes, sha256 {}) to {}% of pods",
+                release.version, release.size, release.sha256_hex, release.rollout_percent
+            );
+            Ok(())
+        }
+        [action, version, percent] if action == "rollout" => {
+            let percent = parse_percent(pack, percent)?;
+            set_firmware_rollout(db, version, percent)?;
+            println!("{} now offered to {percent}% of pods", version.trim());
+            Ok(())
+        }
+        [action, key, url] if action == "pod-header" => {
+            let ca = settings
+                .tls
+                .as_ref()
+                .and_then(|files| files.ca.clone())
+                .ok_or_else(|| {
+                    FacilitatorError::Tls("no property CA: set tls.mode to auto".to_string())
+                })?;
+            let pem = std::fs::read_to_string(ca)?;
+            print!(
+                "{}",
+                pod_trust_header(&pem, &firmware_public_key(Path::new(key))?, url)
+            );
+            Ok(())
+        }
+        _ => Err(usage(pack, "unknown firmware command")),
     }
 }
 
@@ -201,6 +262,10 @@ fn usage(pack: Pack, problem: &str) -> FacilitatorError {
         aice-{name} <property.json> stay open <room> [<continue-from-stay>]\n  \
         aice-{name} <property.json> stay close <stay>\n  \
         aice-{name} <property.json> tls fingerprint\n  \
-        aice-{name} <property.json> tls issue <cert> <key> <host>..."
+        aice-{name} <property.json> tls issue <cert> <key> <host>...\n  \
+        aice-{name} <property.json> firmware keygen <key>\n  \
+        aice-{name} <property.json> firmware publish <key> <image.bin> <version> [<percent>]\n  \
+        aice-{name} <property.json> firmware rollout <version> <percent>\n  \
+        aice-{name} <property.json> firmware pod-header <key> <facilitator-url>"
     ))
 }
