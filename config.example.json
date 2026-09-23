@@ -41,11 +41,17 @@
     "metrics_bind": "127.0.0.1:9001",
     "restart_backoff_secs": 3,
     "audio_session_idle_timeout_ms": 5000,
-    "audio_session_max_duration_ms": 20000
+    "audio_session_max_duration_ms": 20000,
+    "tls": null,
+    "allow_plaintext_lan": false
   },
   "wake_word": {
     "enabled": true,
-    "phrases": ["computer", "assistant", "word"],
+    "phrases": [
+      "computer",
+      "assistant",
+      "word"
+    ],
     "sensitivity": 0.5,
     "cooldown_secs": 6
   },
@@ -88,5 +94,11 @@
     "palace_recall_max_chars": 1500,
     "palace_journal_mirror_enabled": true,
     "palace_kg_enabled": true
+  },
+  "property": {
+    "facilitator_url": null,
+    "service_token_file": null,
+    "ca_file": null,
+    "require_device_token": null
   }
 }
