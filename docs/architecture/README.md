@@ -579,10 +579,100 @@ flowchart LR
 ```
 
 **Notes:**
-- **Inputs:** Spoken request classified as `skill_hotel` with `hik` and `hsl`. Room comes from the tool argument `room`, a pod room, or a phone `extension` mapped in the property file. `config.property.facilitator_url` points at `http://<host>:<port>/mcp`.
+- **Inputs:** Spoken request classified as `skill_hotel` with `hik` and `hsl`. Room comes from the pod's device token (section 25), or a phone `extension` mapped in the property file. `config.property.facilitator_url` points at `https://<host>:<port>/mcp`; the backend authenticates with the service token (section 24).
 - **Outputs:** A ticket on the local staff desk (`open`, `acknowledged`, `done`, `escalated`) and a short spoken confirmation. Delegated tools also call the property MCP once.
 - **Packs:** `aice-hotels` (rooms and serviced apartments), `aice-care` (distress and fall always escalate), `aice-ward` (non-clinical tools only; anything else is denied by `core-policy` and escalated).
 - **Live tools:** `tools/list` is the classifier `hik` enum. Extra tools from the property MCP are included. Built-in hotel kinds remain when the facilitator is not connected.
 - **Failure paths:** Property MCP down, unknown extension, or a denied ward tool still leaves an escalated ticket. See [aice-hotels](../skills/aice-hotels.md), [aice-care](../skills/aice-care.md), and [aice-ward](../skills/aice-ward.md).
 - **Metrics:** `property_requests_total{pack,tool,status}`, `property_mcp_errors_total{kind}`, `property_mcp_duration_seconds{operation}`.
 - **Pipeline:** `cargo test --workspace` starts each pack binary and checks a live ticket (`apps/aice-hotels/tests/smoke.rs`, `apps/aice-care/tests/smoke.rs`, `apps/aice-ward/tests/smoke.rs`). The OS build matrix and the macOS release smoke build `aice-hotels`, `aice-care`, and `aice-ward` beside `aice-backend`. The release archive includes those three binaries.
+
+---
+
+## 24. Property security (desk login, service token, TLS)
+
+**Purpose:** Nothing on a property network can read requests, change tickets, or open a room's turn stream without credentials, and nothing crosses the network in the clear.
+
+```mermaid
+flowchart LR
+    Staff[Staff browser] -->|HTTPS + session cookie + CSRF| Desk["/desk, /api/tickets, /api/stays"]
+    Backend[aice-backend] -->|HTTPS + bearer service token| Mcp["/mcp, /api/devices/verify, /api/stays/purge-due"]
+    Pod[Room pod] -->|WSS + bearer device token| Turns["backend /turns/stream"]
+    Desk --> Facilitator[(property.sqlite)]
+    Mcp --> Facilitator
+    Facilitator --> Audit[Append-only audit log]
+    CA["Property CA (tls/ca.pem)"] -.signs.-> DeskCert[facilitator cert]
+    CA -.signs.-> BackendCert[backend cert]
+```
+
+**Notes:**
+- **Staff accounts:** `aice-<pack> property.json user add <name> staff|supervisor` (password from `AICE_PROPERTY_PASSWORD` or a prompt, 12+ characters, argon2). Staff acknowledge, finish, and escalate tickets and check stays in and out; supervisors also reopen done tickets, manage pods, and read the audit log. Sessions last 12 hours in an `HttpOnly; SameSite=Strict` cookie (`Secure` over TLS). Five wrong passwords lock the account for five minutes.
+- **CSRF:** desk forms carry a per-session `csrf` field; API calls send `X-CSRF-Token`.
+- **Service token:** the pack writes a random `service.token` beside `property.json` on first start (or reads `AICE_PROPERTY_SERVICE_TOKEN`). The backend reads it through `property.service_token_file`. It unlocks `/mcp`, device verification, stay purge, and read-only `GET /api/tickets` for integrations; it cannot change tickets.
+- **TLS:** `tls.mode` is `auto` (default on any non-loopback bind: a property CA in `tls/` signs the facilitator certificate), `files` (operator-supplied `cert_file`/`key_file`/`ca_file`), or `off` (loopback only). `tls fingerprint` prints the CA pin for pods; `tls issue <cert> <key> <host>...` signs the backend's certificate, configured under `service.tls`. `GET /api/tls/ca` serves the CA certificate.
+- **Refusals:** the facilitator will not serve plain HTTP off loopback. A property backend (`property.facilitator_url` set) will not serve plain HTTP on a network bind unless `service.allow_plaintext_lan` is true.
+- **Audit:** every ticket creation and status change, login, logout, lockout, user change, pod enrolment/assignment/revocation, and stay transition is appended to `audit_events`; SQLite triggers reject updates and deletes.
+- **Failure paths:** bad or missing credentials → 401; wrong role → 403; bad CSRF → 403; locked account → 429; body over 256 KiB → 413; TLS handshake failure → connection dropped and `property_mcp_errors_total{kind="tls_handshake"}` / `backend_auth_rejections_total{reason="tls_handshake"}`.
+- **Metrics:** `property_auth_attempts_total{method,result}`, `property_audit_events_total{action}`, `backend_auth_rejections_total{reason}`.
+
+---
+
+## 25. Room pod provisioning and device tokens
+
+**Purpose:** A pod's room is set by a supervisor, not by the pod, and the backend trusts only facilitator-issued device tokens.
+
+```mermaid
+sequenceDiagram
+    participant Pod
+    participant Fac as Facilitator
+    participant Sup as Supervisor desk
+    participant Backend as aice-backend
+    Pod->>Fac: POST /api/devices/enroll {device_id, nonce, firmware}
+    Fac-->>Pod: 202 pending
+    Sup->>Fac: assign room 204 (or CLI device assign)
+    Pod->>Fac: POST /api/devices/enroll (same nonce)
+    Fac-->>Pod: 200 {room, token} (token delivered once)
+    Pod->>Backend: WSS /turns/stream, Authorization: Bearer token
+    Backend->>Fac: POST /api/devices/verify (service token)
+    Fac-->>Backend: {device_id, room, memory_wing}
+    loop every turn_start
+        Backend->>Fac: verify again (revocation, current stay)
+    end
+```
+
+**Notes:**
+- **Inputs:** `device_id` (1-64 of `A-Za-z0-9._:-`), a pod-generated `nonce` of 16+ characters kept by the pod, `firmware` version.
+- **Outputs:** A pending pod shows on the supervisor desk; after assignment the next enrol with the same nonce returns the device token once. A later enrol with a different nonce is refused (409) and audited.
+- **Backend:** `property.require_device_token` defaults to on whenever `property.facilitator_url` is set. The turn's `device_id` and `room` come from the token, overriding whatever the client sends.
+- **Failure paths:** missing/unknown token → 401; facilitator unreachable at connect with no recent verification → 503; facilitator unreachable mid-connection → the turn runs with memory off; revoked mid-connection → error event and the socket closes; more than 256 pods pending → 429.
+- **Metrics:** `fleet_provisioning_total{result}`, `backend_device_auth_duration_seconds{result}`, `backend_auth_rejections_total{reason}`.
+
+---
+
+## 26. Stays and stay-scoped memory
+
+**Purpose:** Each guest or resident has private memory for their stay. The next person in the room never hears the last person's memories. What happens at checkout is configurable.
+
+```mermaid
+flowchart TD
+    CheckIn["Staff: check in room 204\n(optional: continue stay S1)"] --> Stay["Stay S2 → wing stay-S2\n(or S1's wing when continued)"]
+    Stay --> Verify["verify returns memory_wing"]
+    Verify --> Turn["Turn context: memory_wing"]
+    Turn --> Read["wake_up(wing), search_filtered(wing), KG '<wing>:<entity>'"]
+    Turn --> Write["add_memory(wing), KG '<wing>:<entity>'"]
+    NoStay["Room without an open stay"] --> Off["memory_disabled: no read, no write, journal hidden"]
+    CheckOut["Staff: check out"] --> Policy{memory_retention}
+    Policy -->|keep| Kept["Kept; a returning guest's stay can continue it"]
+    Policy -->|archive N days| Later["purge_after = closed + N days"]
+    Policy -->|wipe_on_close| Now["purge_after = closed"]
+    Later --> Job
+    Now --> Job["Backend retention job (every 60 s):\nGET /api/stays/purge-due → delete wing + facts → POST /purged"]
+```
+
+**Notes:**
+- **Inputs:** Desk check-in/out, `POST /api/stays`, `POST /api/stays/{id}/close`, or CLI `stay open <room> [<continue-from>]` / `stay close <id>`. `memory_retention` in `property.json`: `{"mode": "keep"}` (default for hotels and care), `{"mode": "archive", "archive_after_days": N}`, or `{"mode": "wipe_on_close"}` (default for wards).
+- **Scoping:** home installs keep the shared palace. In a property, a turn without a stay (or any unauthenticated turn) has memory off. Continuing a stay is allowed only while its memory still exists and is not due for purge; continuing clears the old stay's purge date because the wing lives on.
+- **Purge:** deletes the wing's drawers, BM25 rows, closets, tunnels, and every knowledge-graph entity/triple in the `<wing>:` namespace, then confirms to the facilitator. Non-stay wings can never be purged.
+- **Encryption at rest:** the palace and property databases are local SQLite files. Until the palace supports an encrypted store, run them on an encrypted volume (BitLocker, FileVault, or LUKS); see the deployment runbook.
+- **Failure paths:** a second open stay for a room → 409; continuing a purged or due stay → 409; unknown stay → 404; a failed purge stays due and is retried next pass (`memory_retention_purges_total{result="error"}`).
+- **Metrics:** `memory_stay_transitions_total{action}`, `memory_recall_scoped_total{scope}`, `memory_retention_purges_total{result}`.
