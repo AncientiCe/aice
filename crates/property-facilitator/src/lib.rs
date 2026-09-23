@@ -3,6 +3,7 @@
 //! The voice runtime calls this server. Every tool opens a staff ticket.
 //! Tools named in `delegated_tools` also call the property's own MCP once.
 
+mod alerts;
 mod auth;
 mod cli;
 mod desk;
@@ -19,11 +20,13 @@ use std::time::{Duration, Instant};
 use core_observability::{
     record_fleet_provisioning, record_memory_stay_transition, record_property_auth_attempt,
     record_property_mcp_duration, record_property_mcp_error, record_property_request,
+    record_property_ticket_ack_duration,
 };
 use core_policy::decide_ward_tool;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+pub use alerts::{AlertChannel, AlertChannelKind, AlertRule, AlertSettings};
 pub use auth::{random_token, token_digest, Role, MIN_PASSWORD_CHARS};
 pub use cli::{run_pack, PASSWORD_ENV};
 pub use core_policy::WARD_NON_CLINICAL_TOOLS as WARD_TOOLS;
@@ -71,6 +74,8 @@ pub enum FacilitatorError {
     UnknownDevice(String),
     #[error("tls: {0}")]
     Tls(String),
+    #[error("alerts: {0}")]
+    Alert(String),
     #[error("stay '{0}' does not exist or is already closed")]
     UnknownStay(String),
     #[error("{0}")]
@@ -178,6 +183,8 @@ pub struct Settings {
     pub tls: Option<TlsFiles>,
     /// What happens to a stay's memory at checkout.
     pub memory_retention: MemoryRetention,
+    /// Who is paged, and when unacknowledged tickets escalate.
+    pub alerts: AlertSettings,
 }
 
 /// True when `bind` only accepts connections from this machine.
@@ -219,6 +226,8 @@ struct SettingsFile {
     tls: Option<TlsFile>,
     #[serde(default)]
     memory_retention: Option<RetentionFile>,
+    #[serde(default)]
+    alerts: Option<alerts::AlertsFile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -350,8 +359,10 @@ impl Settings {
         };
         let tls = resolve_tls(&base_dir, &bind, file.tls)?;
         let memory_retention = resolve_retention(pack, file.memory_retention)?;
+        let alerts = alerts::resolve_alerts(pack, &base_dir, file.alerts)?;
         Ok(Self {
             pack,
+            alerts,
             tls,
             memory_retention,
             bind,
@@ -381,11 +392,12 @@ impl Settings {
             metrics_bind: None,
             tls: None,
             memory_retention: MemoryRetention::default_for(pack),
+            alerts: AlertSettings::default_for(pack),
         }
     }
 }
 
-fn relative_to(base: &Path, name: &str) -> PathBuf {
+pub(crate) fn relative_to(base: &Path, name: &str) -> PathBuf {
     let candidate = PathBuf::from(name);
     if candidate.is_absolute() {
         candidate
@@ -616,7 +628,37 @@ impl Facilitator {
         status: TicketStatus,
         actor: &str,
     ) -> Result<Ticket, FacilitatorError> {
-        self.store.set_status(id, status, actor)
+        let ticket = self.store.set_status(id, status, actor)?;
+        if status == TicketStatus::Acknowledged {
+            let waited = store::unix_millis().saturating_sub(ticket.created_millis);
+            record_property_ticket_ack_duration(
+                &ticket.pack,
+                &ticket.tool_name,
+                Duration::from_millis(u64::try_from(waited).unwrap_or(0)),
+            );
+        }
+        Ok(ticket)
+    }
+
+    /// Create a ticket and arm its alert when a rule covers the tool.
+    fn new_ticket(
+        &self,
+        room: &str,
+        tool: &str,
+        arguments: &Value,
+        status: TicketStatus,
+        detail: &str,
+    ) -> Result<Ticket, FacilitatorError> {
+        let arguments_json = arguments.to_string();
+        self.store.insert(store::NewTicket {
+            pack: self.settings.pack.as_str(),
+            room,
+            tool_name: tool,
+            arguments_json: &arguments_json,
+            status,
+            detail,
+            arm_alert: self.settings.alerts.ack_within(tool).is_some(),
+        })
     }
 
     pub fn list_audit(&self, limit: u32) -> Result<Vec<AuditEvent>, FacilitatorError> {
@@ -789,11 +831,10 @@ impl Facilitator {
             Err(error) => {
                 record_property_mcp_error("place");
                 record_property_mcp_duration("tools_call", started.elapsed());
-                let ticket = self.store.insert(
-                    self.settings.pack.as_str(),
+                let ticket = self.new_ticket(
                     "unassigned",
                     name,
-                    &arguments.to_string(),
+                    arguments,
                     TicketStatus::Escalated,
                     &error.to_string(),
                 )?;
@@ -812,14 +853,8 @@ impl Facilitator {
             if let core_policy::PolicyDecision::Deny(reason) = decide_ward_tool(name) {
                 record_property_mcp_error("policy_deny");
                 record_property_mcp_duration("tools_call", started.elapsed());
-                let ticket = self.store.insert(
-                    self.settings.pack.as_str(),
-                    &place,
-                    name,
-                    &arguments.to_string(),
-                    TicketStatus::Escalated,
-                    &reason,
-                )?;
+                let ticket =
+                    self.new_ticket(&place, name, arguments, TicketStatus::Escalated, &reason)?;
                 record_property_request(self.settings.pack.as_str(), name, ticket.status.as_str());
                 return Ok(ToolResponse {
                     spoken: format!("I've alerted the staff for room {place}."),
@@ -834,11 +869,10 @@ impl Facilitator {
         if !known {
             record_property_mcp_error("unknown_tool");
             record_property_mcp_duration("tools_call", started.elapsed());
-            let ticket = self.store.insert(
-                self.settings.pack.as_str(),
+            let ticket = self.new_ticket(
                 &place,
                 name,
-                &arguments.to_string(),
+                arguments,
                 TicketStatus::Escalated,
                 "unknown tool",
             )?;
@@ -853,11 +887,10 @@ impl Facilitator {
 
         if self.settings.pack.always_escalates(name) {
             record_property_mcp_duration("tools_call", started.elapsed());
-            let ticket = self.store.insert(
-                self.settings.pack.as_str(),
+            let ticket = self.new_ticket(
                 &place,
                 name,
-                &arguments.to_string(),
+                arguments,
                 TicketStatus::Escalated,
                 "mandatory escalation",
             )?;
@@ -879,11 +912,10 @@ impl Facilitator {
             let Some(url) = self.settings.property_mcp_url.clone() else {
                 record_property_mcp_error("missing_upstream");
                 record_property_mcp_duration("tools_call", started.elapsed());
-                let ticket = self.store.insert(
-                    self.settings.pack.as_str(),
+                let ticket = self.new_ticket(
                     &place,
                     name,
-                    &arguments.to_string(),
+                    arguments,
                     TicketStatus::Escalated,
                     "delegated tool has no property MCP url",
                 )?;
@@ -909,14 +941,8 @@ impl Facilitator {
                     record_property_mcp_duration("upstream", upstream_started.elapsed());
                     record_property_mcp_duration("tools_call", started.elapsed());
                     let detail = format!("delegated: {text}");
-                    let ticket = self.store.insert(
-                        self.settings.pack.as_str(),
-                        &place,
-                        name,
-                        &arguments.to_string(),
-                        TicketStatus::Open,
-                        &detail,
-                    )?;
+                    let ticket =
+                        self.new_ticket(&place, name, arguments, TicketStatus::Open, &detail)?;
                     record_property_request(
                         self.settings.pack.as_str(),
                         name,
@@ -939,11 +965,10 @@ impl Facilitator {
                     record_property_mcp_duration("tools_call", started.elapsed());
                     record_property_mcp_error("upstream");
                     tracing::warn!(%error, tool = name, "property MCP tools/call failed");
-                    let ticket = self.store.insert(
-                        self.settings.pack.as_str(),
+                    let ticket = self.new_ticket(
                         &place,
                         name,
-                        &arguments.to_string(),
+                        arguments,
                         TicketStatus::Escalated,
                         &error.to_string(),
                     )?;
@@ -963,11 +988,10 @@ impl Facilitator {
         }
 
         record_property_mcp_duration("tools_call", started.elapsed());
-        let ticket = self.store.insert(
-            self.settings.pack.as_str(),
+        let ticket = self.new_ticket(
             &place,
             name,
-            &arguments.to_string(),
+            arguments,
             TicketStatus::Open,
             "logged on the staff desk",
         )?;
@@ -1077,6 +1101,8 @@ pub struct Running {
     pub url: String,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
+    /// Loops that live as long as the server (alert scheduler).
+    background: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Running {
@@ -1087,6 +1113,9 @@ impl Running {
     }
 
     async fn stop(&mut self) {
+        for task in self.background.drain(..) {
+            task.abort();
+        }
         if let Some(sender) = self.shutdown.take() {
             let _ = sender.send(());
         }
@@ -1098,6 +1127,9 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
+        for task in self.background.drain(..) {
+            task.abort();
+        }
         if let Some(sender) = self.shutdown.take() {
             let _ = sender.send(());
         }
@@ -1113,7 +1145,10 @@ pub async fn serve(settings: Settings) -> Result<Running, FacilitatorError> {
     }
     let facilitator = Facilitator::open(settings)?;
     facilitator.refresh_upstream_tools().await;
-    http::listen(facilitator).await
+    let alerts = alerts::spawn(Arc::clone(&facilitator));
+    let mut running = http::listen(facilitator).await?;
+    running.background.push(alerts);
+    Ok(running)
 }
 
 pub struct FixedMcp {
@@ -1411,7 +1446,7 @@ async fn list_upstream_tools(
     Ok(names)
 }
 
-async fn call_upstream(
+pub(crate) async fn call_upstream(
     http: &reqwest::Client,
     url: &str,
     token: Option<&str>,

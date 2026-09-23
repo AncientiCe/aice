@@ -59,6 +59,10 @@ A successful delegated call does not run a second local side effect. The ticket 
 - The desk needs a staff login; `/mcp` needs the service token; pods need a device token. See [architecture section 24](../architecture/README.md#24-property-security-desk-login-service-token-tls) and [25](../architecture/README.md#25-room-pod-provisioning-and-device-tokens).
 - Staff check guests and residents in and out under **Stays**. Memory exists only for an open stay and follows `memory_retention` at checkout ([section 26](../architecture/README.md#26-stays-and-stay-scoped-memory)). Default retention: `keep`.
 
+## Alerts
+
+New tickets page the first alert tier, and tickets not acknowledged within their rule's window escalate tier by tier ([architecture section 27](../architecture/README.md#27-staff-alerting-and-sla-re-escalation)).
+
 ## Metrics
 
 | Name | Kind | Labels |
@@ -70,3 +74,6 @@ A successful delegated call does not run a second local side effect. The ticket 
 | `property_audit_events_total` | counter | `action` |
 | `fleet_provisioning_total` | counter | `result` |
 | `memory_stay_transitions_total` | counter | `action` (`opened`, `continued`, `closed`, `purged`) |
+| `property_alerts_sent_total` | counter | `channel`, `result` |
+| `property_sla_breaches_total` | counter | `pack`, `tool` |
+| `property_ticket_ack_duration_seconds` | histogram | `pack`, `tool` |
