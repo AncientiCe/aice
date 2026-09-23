@@ -196,23 +196,26 @@ async fn acknowledging_in_time_stops_the_escalation() {
             webhook("desk", &staff.url, &["staff"]),
             webhook("duty-manager", &supervisor.url, &["supervisor"]),
         ],
-        rules: fast_rules(Duration::from_millis(600)),
+        rules: fast_rules(Duration::from_millis(1500)),
         ..AlertSettings::default_for(Pack::Hotels)
     };
     let running = match serve(hotel).await {
         Ok(running) => running,
         Err(error) => panic!("serve failed: {error}"),
     };
-    let created = call_tool(&running.url, "request_iron", json!({ "room": "9" })).await;
+    // Log in first: password hashing is slow in debug builds on CI and must
+    // not eat into the acknowledgement window.
     if let Err(error) = add_user(&db, "maria", PASSWORD, Role::Staff) {
         panic!("add user: {error}");
     }
     let desk = login(&running.url, "maria", PASSWORD).await;
+    let created = call_tool(&running.url, "request_iron", json!({ "room": "9" })).await;
     let (status, _) = desk
         .api_post(&format!("/api/tickets/{}/acknowledge", ticket_id(&created)))
         .await;
     assert_eq!(status, reqwest::StatusCode::OK);
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // Wait past the window: an armed timer would have paged the supervisor by now.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
     assert!(
         supervisor.bodies().is_empty(),
         "no escalation after acknowledge"
