@@ -8,6 +8,8 @@
 //! aice-<pack> <property.json> device list            list room pods
 //! aice-<pack> <property.json> device assign <id> <room>
 //! aice-<pack> <property.json> device revoke <id>
+//! aice-<pack> <property.json> tls fingerprint        print the CA pin for pods
+//! aice-<pack> <property.json> tls issue <cert> <key> <host>...
 //! ```
 //!
 //! `user add` reads the password from `AICE_PROPERTY_PASSWORD`, or prompts twice.
@@ -34,6 +36,7 @@ pub async fn run_pack(pack: Pack) -> Result<(), FacilitatorError> {
         None => run_server(settings).await,
         Some("user") => user_command(&settings, &args[2..]),
         Some("device") => device_command(&settings, &args[2..]),
+        Some("tls") => tls_command(&settings, &args[2..]),
         Some(other) => Err(usage(pack, &format!("unknown command '{other}'"))),
     }
 }
@@ -109,6 +112,30 @@ fn device_command(settings: &Settings, args: &[String]) -> Result<(), Facilitato
     }
 }
 
+fn tls_command(settings: &Settings, args: &[String]) -> Result<(), FacilitatorError> {
+    let ca = settings
+        .tls
+        .as_ref()
+        .and_then(|files| files.ca.clone())
+        .ok_or_else(|| FacilitatorError::Tls("no property CA: set tls.mode to auto".to_string()))?;
+    match args {
+        [action] if action == "fingerprint" => {
+            println!("{}", core_tls::fingerprint_sha256(&ca)?);
+            Ok(())
+        }
+        [action, cert, key, hosts @ ..] if action == "issue" && !hosts.is_empty() => {
+            let files = core_tls::CaFiles {
+                key_path: ca.with_file_name("ca.key"),
+                cert_path: ca,
+            };
+            core_tls::issue_server_cert(&files, hosts, Path::new(cert), Path::new(key))?;
+            println!("issued {cert} for {}", hosts.join(", "));
+            Ok(())
+        }
+        _ => Err(usage(settings.pack, "unknown tls command")),
+    }
+}
+
 fn read_new_password() -> Result<String, FacilitatorError> {
     if let Ok(value) = std::env::var(PASSWORD_ENV) {
         if !value.is_empty() {
@@ -132,6 +159,8 @@ fn usage(pack: Pack, problem: &str) -> FacilitatorError {
         aice-{name} <property.json> user list\n  \
         aice-{name} <property.json> device list\n  \
         aice-{name} <property.json> device assign <id> <room>\n  \
-        aice-{name} <property.json> device revoke <id>"
+        aice-{name} <property.json> device revoke <id>\n  \
+        aice-{name} <property.json> tls fingerprint\n  \
+        aice-{name} <property.json> tls issue <cert> <key> <host>..."
     ))
 }

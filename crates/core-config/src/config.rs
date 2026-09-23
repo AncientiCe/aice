@@ -343,6 +343,20 @@ pub struct ServiceConfig {
     /// Backend audio turn maximum duration in milliseconds.
     #[serde(default = "default_audio_session_max_duration_ms")]
     pub audio_session_max_duration_ms: u64,
+    /// Serve the backend over TLS with this certificate and key.
+    #[serde(default)]
+    pub tls: Option<ServiceTlsConfig>,
+    /// Allow plain HTTP on a network bind in a property deployment.
+    #[serde(default)]
+    pub allow_plaintext_lan: bool,
+}
+
+/// PEM files for the backend's TLS listener (for example issued with
+/// `aice-hotels property.json tls issue backend.pem backend.key <host>`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ServiceTlsConfig {
+    pub cert_file: String,
+    pub key_file: String,
 }
 
 impl Default for ServiceConfig {
@@ -354,6 +368,8 @@ impl Default for ServiceConfig {
             restart_backoff_secs: default_restart_backoff_secs(),
             audio_session_idle_timeout_ms: default_audio_session_idle_timeout_ms(),
             audio_session_max_duration_ms: default_audio_session_max_duration_ms(),
+            tls: None,
+            allow_plaintext_lan: false,
         }
     }
 }
@@ -710,6 +726,10 @@ pub struct PropertyConfig {
     /// beside its `property.json`). `AICE_PROPERTY_SERVICE_TOKEN` overrides it.
     #[serde(default)]
     pub service_token_file: Option<String>,
+    /// CA that signed an HTTPS facilitator's certificate (`tls/ca.pem` beside
+    /// `property.json` in auto mode).
+    #[serde(default)]
+    pub ca_file: Option<String>,
     /// Require a facilitator-issued device token on `/turns/stream`.
     /// Defaults to on whenever `facilitator_url` is set.
     #[serde(default)]
@@ -1119,7 +1139,11 @@ mod tests {
             br#"{
                 "property": {
                     "facilitator_url": "https://desk.local:8791/mcp",
-                    "service_token_file": "/etc/aice/service.token"
+                    "service_token_file": "/etc/aice/service.token",
+                    "ca_file": "/etc/aice/tls/ca.pem"
+                },
+                "service": {
+                    "tls": { "cert_file": "backend.pem", "key_file": "backend.key" }
                 }
             }"#,
         )
@@ -1134,6 +1158,14 @@ mod tests {
             Some("/etc/aice/service.token")
         );
         assert!(config.property.device_token_required());
+        assert_eq!(
+            config.property.ca_file.as_deref(),
+            Some("/etc/aice/tls/ca.pem")
+        );
+        let tls = config.service.tls.clone().must();
+        assert_eq!(tls.cert_file, "backend.pem");
+        assert_eq!(tls.key_file, "backend.key");
+        assert!(!config.service.allow_plaintext_lan);
         let _ = std::fs::remove_file(&path);
     }
 

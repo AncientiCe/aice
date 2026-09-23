@@ -9,13 +9,14 @@ argon2 = "0.5"
 bytes = "1"
 core-observability = { path = "../core-observability" }
 core-policy = { path = "../core-policy" }
+core-tls = { path = "../core-tls" }
 form_urlencoded = "1"
 hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 rand = "0.8"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-manual-roots"] }
 rpassword = "7"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -26,5 +27,6 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+core-tls = { path = "../core-tls" }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-manual-roots"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

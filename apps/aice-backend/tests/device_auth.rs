@@ -115,6 +115,7 @@ async fn backend(running: &Running, engine: Arc<RecordingEngine>) -> aice_backen
         AudioIngressConfig::default(),
         ServerOptions {
             device_auth: Some(Arc::new(DeviceAuth::new(client))),
+            tls: None,
         },
     )
     .await
@@ -227,16 +228,18 @@ async fn turn_uses_the_device_and_room_from_the_token_not_the_client() {
 #[test]
 fn required_device_tokens_need_a_facilitator() {
     let mut config = core_config::Config::default();
-    assert!(aice_backend::server_options_from_config(&config)
-        .map(|options| options.device_auth.is_none())
-        .unwrap_or(false));
+    assert!(
+        aice_backend::server_options_from_config(&config, "127.0.0.1:0")
+            .map(|options| options.device_auth.is_none())
+            .unwrap_or(false)
+    );
     config.property.require_device_token = Some(true);
-    assert!(aice_backend::server_options_from_config(&config).is_err());
+    assert!(aice_backend::server_options_from_config(&config, "127.0.0.1:0").is_err());
     config.property.facilitator_url = Some("http://127.0.0.1:8791/mcp".to_string());
     config.property.service_token_file = None;
     std::env::remove_var(property_facilitator::SERVICE_TOKEN_ENV);
     assert!(
-        aice_backend::server_options_from_config(&config).is_err(),
+        aice_backend::server_options_from_config(&config, "127.0.0.1:0").is_err(),
         "no service token means no verification"
     );
 }
