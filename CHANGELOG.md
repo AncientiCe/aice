@@ -23,6 +23,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Memory Palace moves from `mempalace-rust` `v0.1.0` to `palace-rs` `v0.14.2` (renamed repository `AncientiCe/palace-rs`, library `palace`). The default data directory is `~/.palace`; installs that only have `~/.mempalace` keep using it. Stay purges also clear the new wing registry, usage events, mined-file records, and feedback for the stay.
 - The facilitator refuses plain HTTP off loopback, and a property backend or bridge refuses plain HTTP/WebSocket on a network bind unless `service.allow_plaintext_lan` is set.
 - In a property deployment a turn without an open, consented stay remembers nothing, and the shared journal skill is hidden from rooms.
 - `pod-gateway` is no longer a logging stub; its old `run_gateway` library API is replaced by `spawn_bridge`.

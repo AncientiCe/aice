@@ -190,13 +190,13 @@ flowchart TD
 
 ## 7. Memory Palace (core persistent memory)
 
-**Purpose:** The Memory Palace (`mempalace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides structured, persistent, semantic memory for the voice journey. Every non-empty voice turn can enrich answer composition with wake-up context, semantic recall, and knowledge-graph facts; every spoken outcome is ingested for long-term recall. There is no `SkillMemory` intent — memory is infrastructure, while explicit user-controlled note-taking remains the [Journal](../skills/journal.md) skill.
+**Purpose:** The Memory Palace (`palace-rs`) is embedded as core infrastructure inside `aice-backend`. It provides structured, persistent, semantic memory for the voice journey. Every non-empty voice turn can enrich answer composition with wake-up context, semantic recall, and knowledge-graph facts; every spoken outcome is ingested for long-term recall. There is no `SkillMemory` intent — memory is infrastructure, while explicit user-controlled note-taking remains the [Journal](../skills/journal.md) skill.
 
 ```mermaid
 sequenceDiagram
     participant Mac as External macOS frontend
     participant Core as aice-backend
-    participant Palace as mempalace::Palace
+    participant Palace as palace::Palace
     participant LLM as Cradle LLM
 
     Core->>Palace: open_paths or open_in_memory
@@ -232,7 +232,7 @@ sequenceDiagram
 ```
 
 **Notes:**
-- **Inputs:** Config `memory.palace_db_path`, `memory.palace_identity_path`, `memory.palace_recall_results`, `memory.palace_recall_min_similarity`, `memory.palace_recall_max_chars`, `memory.palace_journal_mirror_enabled`, and `memory.palace_kg_enabled`; `mempalace` crate embedded via git dependency (`default-features = false`, no CLI).
+- **Inputs:** Config `memory.palace_db_path`, `memory.palace_identity_path`, `memory.palace_recall_results`, `memory.palace_recall_min_similarity`, `memory.palace_recall_max_chars`, `memory.palace_journal_mirror_enabled`, and `memory.palace_kg_enabled`; `palace-rs` crate (library `palace`, tag `v0.14.2`) embedded via git dependency (`default-features = false`, no CLI). Default data directory `~/.palace`; an install that only has the pre-rename `~/.mempalace` keeps using it.
 - **Outputs:** Per-turn memory context injected into answer composition for open dialogue, backend-owned skills, and frontend skill finalization; persistent SQLite-backed drawers tagged `added_by = "aice"`; optional Journal add mirroring into `wing = "journal"`; knowledge-graph triples extracted from spoken outcomes. Metrics: `palace_open_total`, `palace_wake_up_total/duration`, `palace_search_total/duration`, `palace_ingest_total/duration`, `palace_add_memory_total/duration`, `palace_kg_query_total/duration`, `palace_kg_add_total/duration`, `palace_errors_total{operation}`.
 - **Failure paths:** Palace open failure falls back to in-memory instance (logged + metered). Wake-up, recall, KG query, ingest, Journal mirroring, or KG extraction errors are logged and metered but do not fail the voice turn.
 - **Threading:** All Palace calls are synchronous (`rusqlite`); wrapped in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
