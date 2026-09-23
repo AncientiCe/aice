@@ -2,10 +2,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
+use crate::auth::Role;
 use crate::FacilitatorError;
+
+/// Failed logins allowed before an account is locked.
+pub(crate) const MAX_LOGIN_FAILURES: i64 = 5;
+/// How long a locked account stays locked.
+pub(crate) const LOCKOUT_MILLIS: i64 = 5 * 60 * 1000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TicketStatus {
@@ -35,6 +41,7 @@ impl TicketStatus {
         }
     }
 
+    /// `Done -> Open` is a reopen; the desk only offers it to supervisors.
     pub fn can_become(self, next: Self) -> bool {
         matches!(
             (self, next),
@@ -45,6 +52,7 @@ impl TicketStatus {
                 | (Self::Acknowledged, Self::Escalated)
                 | (Self::Escalated, Self::Acknowledged)
                 | (Self::Escalated, Self::Done)
+                | (Self::Done, Self::Open)
         )
     }
 }
@@ -58,6 +66,31 @@ pub struct Ticket {
     pub arguments_json: String,
     pub status: String,
     pub detail: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AuditEvent {
+    pub id: i64,
+    pub at_millis: i64,
+    pub actor: String,
+    pub action: String,
+    pub ticket_id: Option<String>,
+    pub from_status: Option<String>,
+    pub to_status: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StaffSession {
+    pub username: String,
+    pub role: Role,
+    pub csrf: String,
+}
+
+pub(crate) enum LoginState {
+    Unknown,
+    Locked,
+    Known { password_hash: String },
 }
 
 pub struct TicketStore {
@@ -83,11 +116,50 @@ impl TicketStore {
                 detail TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                csrf TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS login_failures (
+                username TEXT PRIMARY KEY,
+                failures INTEGER NOT NULL,
+                locked_until INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at_millis INTEGER NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                ticket_id TEXT,
+                from_status TEXT,
+                to_status TEXT,
+                detail TEXT NOT NULL
+            );
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+                BEFORE UPDATE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+                BEFORE DELETE ON audit_events
+                BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;",
         )?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, FacilitatorError> {
+        self.connection
+            .lock()
+            .map_err(|_| FacilitatorError::LockPoisoned)
     }
 
     pub fn insert(
@@ -101,11 +173,9 @@ impl TicketStore {
     ) -> Result<Ticket, FacilitatorError> {
         let id = next_ticket_id();
         let now = unix_millis();
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| FacilitatorError::LockPoisoned)?;
-        connection.execute(
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO tickets (id, pack, room, tool_name, arguments_json, status, detail, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -120,6 +190,16 @@ impl TicketStore {
                 now
             ],
         )?;
+        append_audit(
+            &transaction,
+            "voice",
+            "ticket_created",
+            Some(&id),
+            None,
+            Some(status.as_str()),
+            detail,
+        )?;
+        transaction.commit()?;
         Ok(Ticket {
             id,
             pack: pack.to_string(),
@@ -132,25 +212,12 @@ impl TicketStore {
     }
 
     pub fn list(&self) -> Result<Vec<Ticket>, FacilitatorError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| FacilitatorError::LockPoisoned)?;
+        let connection = self.lock()?;
         let mut statement = connection.prepare(
             "SELECT id, pack, room, tool_name, arguments_json, status, detail
              FROM tickets ORDER BY created_at ASC, id ASC",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok(Ticket {
-                id: row.get(0)?,
-                pack: row.get(1)?,
-                room: row.get(2)?,
-                tool_name: row.get(3)?,
-                arguments_json: row.get(4)?,
-                status: row.get(5)?,
-                detail: row.get(6)?,
-            })
-        })?;
+        let rows = statement.query_map([], ticket_from_row)?;
         let mut tickets = Vec::new();
         for row in rows {
             tickets.push(row?);
@@ -158,12 +225,16 @@ impl TicketStore {
         Ok(tickets)
     }
 
-    pub fn set_status(&self, id: &str, next: TicketStatus) -> Result<Ticket, FacilitatorError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| FacilitatorError::LockPoisoned)?;
-        let current: String = connection
+    /// Change a ticket's status and record who did it, in one transaction.
+    pub fn set_status(
+        &self,
+        id: &str,
+        next: TicketStatus,
+        actor: &str,
+    ) -> Result<Ticket, FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let current: String = transaction
             .query_row(
                 "SELECT status FROM tickets WHERE id = ?1",
                 params![id],
@@ -187,28 +258,301 @@ impl TicketStore {
             });
         }
         let now = unix_millis();
-        connection.execute(
+        transaction.execute(
             "UPDATE tickets SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![next.as_str(), now, id],
         )?;
-        connection
-            .query_row(
-                "SELECT id, pack, room, tool_name, arguments_json, status, detail FROM tickets WHERE id = ?1",
-                params![id],
-                |row| {
-                    Ok(Ticket {
-                        id: row.get(0)?,
-                        pack: row.get(1)?,
-                        room: row.get(2)?,
-                        tool_name: row.get(3)?,
-                        arguments_json: row.get(4)?,
-                        status: row.get(5)?,
-                        detail: row.get(6)?,
-                    })
-                },
-            )
-            .map_err(FacilitatorError::from)
+        append_audit(
+            &transaction,
+            actor,
+            "ticket_status",
+            Some(id),
+            Some(current_status.as_str()),
+            Some(next.as_str()),
+            "",
+        )?;
+        let ticket = transaction.query_row(
+            "SELECT id, pack, room, tool_name, arguments_json, status, detail FROM tickets WHERE id = ?1",
+            params![id],
+            ticket_from_row,
+        )?;
+        transaction.commit()?;
+        Ok(ticket)
     }
+
+    pub fn list_audit(&self, limit: u32) -> Result<Vec<AuditEvent>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, at_millis, actor, action, ticket_id, from_status, to_status, detail
+             FROM audit_events ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![limit], |row| {
+            Ok(AuditEvent {
+                id: row.get(0)?,
+                at_millis: row.get(1)?,
+                actor: row.get(2)?,
+                action: row.get(3)?,
+                ticket_id: row.get(4)?,
+                from_status: row.get(5)?,
+                to_status: row.get(6)?,
+                detail: row.get(7)?,
+            })
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row?);
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn insert_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: Role,
+    ) -> Result<(), FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash, role, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![username, password_hash, role.as_str(), unix_millis()],
+        )?;
+        if inserted == 0 {
+            return Err(FacilitatorError::DuplicateUser(username.to_string()));
+        }
+        append_audit(
+            &transaction,
+            "admin",
+            "user_added",
+            None,
+            None,
+            None,
+            &format!("{username} ({})", role.as_str()),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_user(&self, username: &str) -> Result<(), FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let removed =
+            transaction.execute("DELETE FROM users WHERE username = ?1", params![username])?;
+        if removed == 0 {
+            return Err(FacilitatorError::UnknownUser(username.to_string()));
+        }
+        transaction.execute(
+            "DELETE FROM sessions WHERE username = ?1",
+            params![username],
+        )?;
+        transaction.execute(
+            "DELETE FROM login_failures WHERE username = ?1",
+            params![username],
+        )?;
+        append_audit(
+            &transaction,
+            "admin",
+            "user_removed",
+            None,
+            None,
+            None,
+            username,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn list_users(&self) -> Result<Vec<(String, Role)>, FacilitatorError> {
+        let connection = self.lock()?;
+        let mut statement =
+            connection.prepare("SELECT username, role FROM users ORDER BY username ASC")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut users = Vec::new();
+        for row in rows {
+            let (username, role) = row?;
+            if let Some(role) = Role::parse(&role) {
+                users.push((username, role));
+            }
+        }
+        Ok(users)
+    }
+
+    pub(crate) fn has_users(&self) -> Result<bool, FacilitatorError> {
+        let connection = self.lock()?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+        Ok(count > 0)
+    }
+
+    pub(crate) fn login_state(&self, username: &str) -> Result<LoginState, FacilitatorError> {
+        let connection = self.lock()?;
+        let locked_until: Option<i64> = connection
+            .query_row(
+                "SELECT locked_until FROM login_failures WHERE username = ?1",
+                params![username],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if locked_until.is_some_and(|until| until > unix_millis()) {
+            return Ok(LoginState::Locked);
+        }
+        let password_hash: Option<String> = connection
+            .query_row(
+                "SELECT password_hash FROM users WHERE username = ?1",
+                params![username],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(match password_hash {
+            Some(password_hash) => LoginState::Known { password_hash },
+            None => LoginState::Unknown,
+        })
+    }
+
+    /// Count a failed login; returns true when this failure locked the account.
+    pub(crate) fn record_login_failure(&self, username: &str) -> Result<bool, FacilitatorError> {
+        let connection = self.lock()?;
+        let now = unix_millis();
+        let failures: i64 = connection
+            .query_row(
+                "SELECT failures FROM login_failures WHERE username = ?1",
+                params![username],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            + 1;
+        let (failures, locked_until) = if failures >= MAX_LOGIN_FAILURES {
+            (0, now + LOCKOUT_MILLIS)
+        } else {
+            (failures, 0)
+        };
+        connection.execute(
+            "INSERT INTO login_failures (username, failures, locked_until) VALUES (?1, ?2, ?3)
+             ON CONFLICT(username) DO UPDATE SET failures = ?2, locked_until = ?3",
+            params![username, failures, locked_until],
+        )?;
+        let locked = locked_until > 0;
+        if locked {
+            append_audit(
+                &connection,
+                username,
+                "account_locked",
+                None,
+                None,
+                None,
+                "too many failed logins",
+            )?;
+        }
+        Ok(locked)
+    }
+
+    pub(crate) fn clear_login_failures(&self, username: &str) -> Result<(), FacilitatorError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "DELETE FROM login_failures WHERE username = ?1",
+            params![username],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn create_session(
+        &self,
+        token_hash: &str,
+        username: &str,
+        csrf: &str,
+        expires_at: i64,
+    ) -> Result<(), FacilitatorError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "DELETE FROM sessions WHERE expires_at <= ?1",
+            params![unix_millis()],
+        )?;
+        connection.execute(
+            "INSERT INTO sessions (token_hash, username, csrf, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            params![token_hash, username, csrf, expires_at],
+        )?;
+        append_audit(&connection, username, "login", None, None, None, "")?;
+        Ok(())
+    }
+
+    pub(crate) fn session(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<StaffSession>, FacilitatorError> {
+        let connection = self.lock()?;
+        let row: Option<(String, String, String)> = connection
+            .query_row(
+                "SELECT s.username, u.role, s.csrf FROM sessions s
+                 JOIN users u ON u.username = s.username
+                 WHERE s.token_hash = ?1 AND s.expires_at > ?2",
+                params![token_hash, unix_millis()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(username, role, csrf)| {
+            Role::parse(&role).map(|role| StaffSession {
+                username,
+                role,
+                csrf,
+            })
+        }))
+    }
+
+    pub(crate) fn delete_session(
+        &self,
+        token_hash: &str,
+        username: &str,
+    ) -> Result<(), FacilitatorError> {
+        let connection = self.lock()?;
+        connection.execute(
+            "DELETE FROM sessions WHERE token_hash = ?1",
+            params![token_hash],
+        )?;
+        append_audit(&connection, username, "logout", None, None, None, "")?;
+        Ok(())
+    }
+}
+
+fn ticket_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Ticket> {
+    Ok(Ticket {
+        id: row.get(0)?,
+        pack: row.get(1)?,
+        room: row.get(2)?,
+        tool_name: row.get(3)?,
+        arguments_json: row.get(4)?,
+        status: row.get(5)?,
+        detail: row.get(6)?,
+    })
+}
+
+fn append_audit(
+    connection: &Connection,
+    actor: &str,
+    action: &str,
+    ticket_id: Option<&str>,
+    from_status: Option<&str>,
+    to_status: Option<&str>,
+    detail: &str,
+) -> Result<(), FacilitatorError> {
+    connection.execute(
+        "INSERT INTO audit_events (at_millis, actor, action, ticket_id, from_status, to_status, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            unix_millis(),
+            actor,
+            action,
+            ticket_id,
+            from_status,
+            to_status,
+            detail
+        ],
+    )?;
+    core_observability::record_property_audit_event(action);
+    Ok(())
 }
 
 fn next_ticket_id() -> String {
@@ -217,7 +561,7 @@ fn next_ticket_id() -> String {
     format!("t{}-{sequence}", unix_millis())
 }
 
-fn unix_millis() -> i64 {
+pub(crate) fn unix_millis() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
         Err(_) => 0,

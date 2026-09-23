@@ -706,6 +706,10 @@ pub struct PropertyConfig {
     /// MCP endpoint, for example `http://127.0.0.1:8791/mcp`.
     #[serde(default)]
     pub facilitator_url: Option<String>,
+    /// File holding the facilitator service token (the pack writes `service.token`
+    /// beside its `property.json`). `AICE_PROPERTY_SERVICE_TOKEN` overrides it.
+    #[serde(default)]
+    pub service_token_file: Option<String>,
 }
 
 impl Config {
@@ -1086,6 +1090,31 @@ mod tests {
         assert_eq!(config.briefing.news_limit, 5);
         assert!(config.news.enable_summary_streaming);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_parses_property_facilitator_connection() {
+        let path = std::env::temp_dir().join("aice_config_property_connection.json");
+        std::fs::write(
+            &path,
+            br#"{
+                "property": {
+                    "facilitator_url": "https://desk.local:8791/mcp",
+                    "service_token_file": "/etc/aice/service.token"
+                }
+            }"#,
+        )
+        .must();
+        let config = Config::load(&path).must();
+        assert_eq!(
+            config.property.facilitator_url.as_deref(),
+            Some("https://desk.local:8791/mcp")
+        );
+        assert_eq!(
+            config.property.service_token_file.as_deref(),
+            Some("/etc/aice/service.token")
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

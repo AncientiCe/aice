@@ -1624,13 +1624,23 @@ impl AiceBackendEngine {
         )));
 
         let property_client = match config.property.facilitator_url.as_deref() {
-            Some(url) if !url.trim().is_empty() => match PropertyClient::new(url) {
-                Ok(client) => Some(client),
-                Err(error) => {
-                    tracing::warn!(%error, "property facilitator client was not created");
-                    None
+            Some(url) if !url.trim().is_empty() => {
+                let token_file = config
+                    .property
+                    .service_token_file
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(std::path::Path::new);
+                match property_facilitator::client_service_token(token_file)
+                    .and_then(|token| PropertyClient::new(url, token))
+                {
+                    Ok(client) => Some(client),
+                    Err(error) => {
+                        tracing::warn!(%error, "property facilitator client was not created");
+                        None
+                    }
                 }
-            },
+            }
             _ => None,
         };
         let discovered_property_tools = if let Some(client) = &property_client {

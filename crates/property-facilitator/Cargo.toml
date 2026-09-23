@@ -5,16 +5,22 @@ edition = "2021"
 description = "On-prem property MCP facilitator for hotels, care homes, and wards"
 
 [dependencies]
+argon2 = "0.5"
 bytes = "1"
 core-observability = { path = "../core-observability" }
 core-policy = { path = "../core-policy" }
+form_urlencoded = "1"
+hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+rand = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
+rpassword = "7"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
