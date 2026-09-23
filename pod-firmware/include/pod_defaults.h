@@ -45,6 +45,11 @@
 #define OTA_CHECK_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
 #endif
 
+// A press at least this long calls staff (help button) instead of stopping audio.
+#ifndef HELP_PRESS_MS
+#define HELP_PRESS_MS 1500
+#endif
+
 // Hold the button this long while booting to forget the pod's identity.
 #ifndef FACTORY_RESET_HOLD_MS
 #define FACTORY_RESET_HOLD_MS 5000

@@ -411,3 +411,63 @@ async fn connected_pods_are_reported_as_alive() {
     handle.shutdown().await;
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn the_help_button_raises_a_ticket_without_the_llm() {
+    let (running, db, token) = facilitator_with_pod("help", "204").await;
+    let engine = Arc::new(RecordingEngine::default());
+    let handle = backend(&running, Arc::clone(&engine)).await;
+    let (ws, _) = connect_async(ws_request(&handle.bind, Some(&token)))
+        .await
+        .unwrap_or_else(|error| panic!("ws connect failed: {error}"));
+    let (mut write, mut read) = ws.split();
+    write
+        .send(Message::Text(
+            serde_json::to_string(&TurnStreamClientMessage::HelpRequest).unwrap_or_default(),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("send failed: {error}"));
+    let event = loop {
+        let next = timeout(Duration::from_secs(3), read.next())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for help_raised"));
+        let Some(Ok(Message::Text(text))) = next else {
+            panic!("socket closed");
+        };
+        let event: TurnStreamServerEvent =
+            serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode: {error}"));
+        if matches!(event, TurnStreamServerEvent::HelpRaised { .. }) {
+            break event;
+        }
+    };
+    let TurnStreamServerEvent::HelpRaised { ticket_id, spoken } = event else {
+        panic!("expected help_raised");
+    };
+    assert!(ticket_id.is_some(), "a ticket was opened");
+    assert!(!spoken.is_empty());
+    assert!(
+        engine
+            .requests
+            .lock()
+            .map(|r| r.is_empty())
+            .unwrap_or(false),
+        "the LLM engine was not involved"
+    );
+    let tickets = reqwest::Client::new()
+        .get(format!("{}/api/tickets", running.url))
+        .bearer_auth(SERVICE_TOKEN)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("tickets: {error}"))
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or_default();
+    assert!(tickets
+        .as_array()
+        .map(|list| list
+            .iter()
+            .any(|t| t["tool_name"] == "help_button" && t["room"] == "204"))
+        .unwrap_or(false));
+    handle.shutdown().await;
+    let _ = std::fs::remove_file(db);
+}

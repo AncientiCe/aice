@@ -252,3 +252,61 @@ async fn a_pod_that_lost_its_token_gets_a_new_one_with_its_nonce() {
     assert_eq!(verify(&running.url, TOKEN, &new).await.0, StatusCode::OK);
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn the_help_button_opens_an_escalated_ticket_for_the_pods_room() {
+    let db = temp_db("help");
+    let running = match serve(hotels(db.clone(), None, Vec::new())).await {
+        Ok(running) => running,
+        Err(error) => panic!("serve failed: {error}"),
+    };
+    let _ = enroll(&running.url, "pod-hh08", "nonce-eight-0123456789").await;
+    if let Err(error) = property_facilitator::assign_device(&db, "pod-hh08", "315") {
+        panic!("assign: {error}");
+    }
+    let press = |token: &'static str, device: &'static str| {
+        let base = running.url.clone();
+        async move {
+            match client()
+                .post(format!("{base}/api/devices/help"))
+                .bearer_auth(token)
+                .json(&json!({ "device_id": device }))
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    (
+                        status,
+                        response.json::<Value>().await.unwrap_or(Value::Null),
+                    )
+                }
+                Err(error) => panic!("help: {error}"),
+            }
+        }
+    };
+    assert_eq!(press("wrong", "pod-hh08").await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(press(TOKEN, "pod-unknown").await.0, StatusCode::NOT_FOUND);
+    let (status, body) = press(TOKEN, "pod-hh08").await;
+    assert_eq!(status, StatusCode::OK);
+    let ticket = body["ticket_id"].as_str().unwrap_or("").to_string();
+    assert!(!ticket.is_empty());
+    let tickets = match client()
+        .get(format!("{}/api/tickets", running.url))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+    {
+        Ok(response) => response.json::<Value>().await.unwrap_or(Value::Null),
+        Err(error) => panic!("tickets: {error}"),
+    };
+    let help = tickets
+        .as_array()
+        .and_then(|list| list.iter().find(|t| t["id"] == ticket.as_str()))
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(help["room"], "315");
+    assert_eq!(help["tool_name"], "help_button");
+    assert_eq!(help["status"], "escalated");
+    let _ = std::fs::remove_file(db);
+}
