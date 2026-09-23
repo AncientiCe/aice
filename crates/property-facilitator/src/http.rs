@@ -367,6 +367,36 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
             }
             if let Some(id) = path
                 .strip_prefix("/api/stays/")
+                .and_then(|rest| rest.strip_suffix("/consent"))
+            {
+                if !incoming.csrf_matches(&session.csrf) {
+                    return forbidden("csrf token mismatch");
+                }
+                let consent = if incoming.is_form() {
+                    incoming.form_field("memory_consent").unwrap_or_default()
+                } else {
+                    serde_json::from_slice::<Value>(&incoming.body)
+                        .ok()
+                        .and_then(|body| {
+                            body.get("memory_consent").map(|value| match value {
+                                Value::Bool(true) => "yes".to_string(),
+                                Value::String(text) => text.clone(),
+                                _ => String::new(),
+                            })
+                        })
+                        .unwrap_or_default()
+                };
+                return match state.set_stay_consent(id, parse_yes(&consent), &session.username) {
+                    Ok(_) if incoming.is_form() => redirect("/desk"),
+                    Ok(stay) => json_response(StatusCode::OK, json!(stay)),
+                    Err(FacilitatorError::UnknownStay(missing)) => {
+                        json_response(StatusCode::NOT_FOUND, json!({"error": missing}))
+                    }
+                    Err(error) => internal_error(&error),
+                };
+            }
+            if let Some(id) = path
+                .strip_prefix("/api/stays/")
                 .and_then(|rest| rest.strip_suffix("/close"))
             {
                 if !incoming.csrf_matches(&session.csrf) {
@@ -535,7 +565,9 @@ fn open_stay(
     }
     let continue_from = field("continue_from");
     let continue_from = Some(continue_from.trim()).filter(|value| !value.is_empty());
-    match state.open_stay(room, continue_from, &session.username) {
+    let consent = field("memory_consent");
+    let consent = (!consent.trim().is_empty()).then(|| parse_yes(&consent));
+    match state.open_stay(room, continue_from, consent, &session.username) {
         Ok(_) if incoming.is_form() => redirect("/desk"),
         Ok(stay) => json_response(StatusCode::CREATED, json!(stay)),
         Err(error @ FacilitatorError::StayConflict(_)) => {
@@ -809,6 +841,14 @@ fn change_device(
         }
         Err(error) => internal_error(&error),
     }
+}
+
+/// Form and JSON consent values: yes/on/true/1 mean agreed.
+fn parse_yes(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "yes" | "on" | "true" | "1"
+    )
 }
 
 fn valid_device_id(value: &str) -> bool {

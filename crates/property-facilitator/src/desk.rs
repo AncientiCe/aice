@@ -93,7 +93,7 @@ pub(crate) fn desk_html(
     } else {
         String::new()
     };
-    let stays = stays_html(state, &csrf_field)?;
+    let stays = stays_html(state, &csrf_field, state.memory_consent_default())?;
     let devices = if session.role == Role::Supervisor {
         devices_html(state, &csrf_field)?
     } else {
@@ -112,7 +112,11 @@ pub(crate) fn desk_html(
     ))
 }
 
-fn stays_html(state: &Facilitator, csrf_field: &str) -> Result<String, FacilitatorError> {
+fn stays_html(
+    state: &Facilitator,
+    csrf_field: &str,
+    consent_default: bool,
+) -> Result<String, FacilitatorError> {
     let mut rows = String::new();
     for stay in state.list_stays()? {
         let id = escape_html(&stay.id);
@@ -123,8 +127,16 @@ fn stays_html(state: &Facilitator, csrf_field: &str) -> Result<String, Facilitat
             (Some(_), None) => "closed (memory kept)",
         };
         let close = if stay.closed_millis.is_none() {
+            let (flip, label) = if stay.memory_consent {
+                ("no", "Memory: on (turn off)")
+            } else {
+                ("yes", "Memory: off (resident agreed)")
+            };
             format!(
-                "<form class=\"inline\" method=\"post\" action=\"/api/stays/{id}/close\">\
+                "<form class=\"inline\" method=\"post\" action=\"/api/stays/{id}/consent\">\
+                {csrf_field}<input type=\"hidden\" name=\"memory_consent\" value=\"{flip}\">\
+                <button>{label}</button></form>\
+                <form class=\"inline\" method=\"post\" action=\"/api/stays/{id}/close\">\
                 {csrf_field}<button>Check out</button></form>"
             )
         } else {
@@ -139,8 +151,11 @@ fn stays_html(state: &Facilitator, csrf_field: &str) -> Result<String, Facilitat
         "<h2>Stays</h2><form method=\"post\" action=\"/api/stays\">{csrf_field}\
         <label>Room <input name=\"room\" size=\"6\" required></label> \
         <label>Continue memory of stay <input name=\"continue_from\" size=\"24\"></label> \
+        <label><input type=\"checkbox\" name=\"memory_consent\" value=\"yes\"{checked}> Agreed to voice memory</label>\
+        <input type=\"hidden\" name=\"memory_consent\" value=\"no\"> \
         <button>Check in</button></form>\
-        <table><tr><th>Room</th><th>Stay</th><th>Status</th><th></th></tr>{rows}</table>"
+        <table><tr><th>Room</th><th>Stay</th><th>Status</th><th></th></tr>{rows}</table>",
+        checked = if consent_default { " checked" } else { "" }
     ))
 }
 

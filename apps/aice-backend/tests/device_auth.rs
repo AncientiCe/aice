@@ -331,7 +331,7 @@ async fn each_turn_uses_the_rooms_current_stay() {
         "no stay means no memory: {empty_room:?}"
     );
 
-    let first = open_stay(&db, "204", None).unwrap_or_else(|error| panic!("open: {error}"));
+    let first = open_stay(&db, "204", None, true).unwrap_or_else(|error| panic!("open: {error}"));
     let during = run_turn(&mut write, &mut read, &engine, "t-first").await;
     assert_eq!(
         during.as_ref().and_then(|c| c.get("memory_wing")),
@@ -340,7 +340,7 @@ async fn each_turn_uses_the_rooms_current_stay() {
 
     close_stay(&db, &first.id, MemoryRetention::Keep)
         .unwrap_or_else(|error| panic!("close: {error}"));
-    let second = open_stay(&db, "204", None).unwrap_or_else(|error| panic!("open: {error}"));
+    let second = open_stay(&db, "204", None, true).unwrap_or_else(|error| panic!("open: {error}"));
     let after = run_turn(&mut write, &mut read, &engine, "t-second").await;
     assert_eq!(
         after.as_ref().and_then(|c| c.get("memory_wing")),

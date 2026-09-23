@@ -144,6 +144,8 @@ pub struct Stay {
     pub purge_after_millis: Option<i64>,
     pub purged_millis: Option<i64>,
     pub continued_from: Option<String>,
+    /// The guest or resident agreed to be remembered during this stay.
+    pub memory_consent: bool,
 }
 
 pub(crate) enum EnrollOutcome {
@@ -250,6 +252,13 @@ impl TicketStore {
         )?;
         add_column_if_missing(&connection, "tickets", "alert_tier", "INTEGER")?;
         add_column_if_missing(&connection, "devices", "offline_since", "INTEGER")?;
+        // Stays created before consent was recorded keep their memory.
+        add_column_if_missing(
+            &connection,
+            "stays",
+            "memory_consent",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
         add_column_if_missing(&connection, "tickets", "next_alert_at", "INTEGER")?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS tickets_next_alert ON tickets(next_alert_at);",
@@ -871,7 +880,7 @@ impl TicketStore {
             .query_row(
                 "SELECT d.device_id, d.room,
                         (SELECT s.memory_wing FROM stays s
-                         WHERE s.room = d.room AND s.closed_at IS NULL
+                         WHERE s.room = d.room AND s.closed_at IS NULL AND s.memory_consent = 1
                          ORDER BY s.opened_at DESC LIMIT 1)
                  FROM devices d
                  WHERE d.token_hash = ?1 AND d.status = 'active' AND d.room IS NOT NULL",
@@ -975,6 +984,7 @@ impl TicketStore {
         &self,
         room: &str,
         continue_from: Option<&str>,
+        memory_consent: bool,
         actor: &str,
     ) -> Result<Stay, FacilitatorError> {
         let mut connection = self.lock()?;
@@ -1021,9 +1031,9 @@ impl TicketStore {
             None => format!("stay-{id}"),
         };
         transaction.execute(
-            "INSERT INTO stays (id, room, memory_wing, opened_at, closed_at, purge_after, purged_at, continued_from)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5)",
-            params![id, room, memory_wing, now, continue_from],
+            "INSERT INTO stays (id, room, memory_wing, opened_at, closed_at, purge_after, purged_at, continued_from, memory_consent)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5, ?6)",
+            params![id, room, memory_wing, now, continue_from, memory_consent],
         )?;
         append_audit(
             &transaction,
@@ -1032,7 +1042,55 @@ impl TicketStore {
             None,
             None,
             None,
-            &format!("{id} room {room}"),
+            &format!(
+                "{id} room {room}, memory {}",
+                if memory_consent {
+                    "agreed"
+                } else {
+                    "not agreed"
+                }
+            ),
+        )?;
+        let stay = transaction.query_row(
+            &format!("{STAY_COLUMNS} WHERE id = ?1"),
+            params![id],
+            stay_from_row,
+        )?;
+        transaction.commit()?;
+        Ok(stay)
+    }
+
+    /// Record the guest's or resident's memory consent for an open stay.
+    pub(crate) fn set_stay_consent(
+        &self,
+        id: &str,
+        memory_consent: bool,
+        actor: &str,
+    ) -> Result<Stay, FacilitatorError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE stays SET memory_consent = ?1 WHERE id = ?2 AND closed_at IS NULL",
+            params![memory_consent, id],
+        )?;
+        if changed == 0 {
+            return Err(FacilitatorError::UnknownStay(id.to_string()));
+        }
+        append_audit(
+            &transaction,
+            actor,
+            "stay_consent",
+            None,
+            None,
+            None,
+            &format!(
+                "{id} memory {}",
+                if memory_consent {
+                    "agreed"
+                } else {
+                    "withdrawn"
+                }
+            ),
         )?;
         let stay = transaction.query_row(
             &format!("{STAY_COLUMNS} WHERE id = ?1"),
@@ -1129,8 +1187,7 @@ impl TicketStore {
     }
 }
 
-const STAY_COLUMNS: &str =
-    "SELECT id, room, memory_wing, opened_at, closed_at, purge_after, purged_at, continued_from FROM stays";
+const STAY_COLUMNS: &str = "SELECT id, room, memory_wing, opened_at, closed_at, purge_after, purged_at, continued_from, memory_consent FROM stays";
 
 fn stay_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stay> {
     Ok(Stay {
@@ -1142,6 +1199,7 @@ fn stay_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stay> {
         purge_after_millis: row.get(5)?,
         purged_millis: row.get(6)?,
         continued_from: row.get(7)?,
+        memory_consent: row.get(8)?,
     })
 }
 

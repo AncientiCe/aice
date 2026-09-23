@@ -171,7 +171,12 @@ async fn wipe_on_close_queues_the_wing_for_purge_until_confirmed() {
     };
     let token = pod_token(&running.url, &db, "pod-s3", "4B").await;
     let desk = staff(&running.url, &db).await;
-    let _ = stay_action(&desk, "/api/stays", &[("room", "4B")]).await;
+    let _ = stay_action(
+        &desk,
+        "/api/stays",
+        &[("room", "4B"), ("memory_consent", "yes")],
+    )
+    .await;
     let wing = verify(&running.url, &token).await["memory_wing"]
         .as_str()
         .unwrap_or("")

@@ -108,6 +108,7 @@ static constexpr uint32_t TTS_END_GRACE_MS = 180;
 static WebSocketsClient g_ws;
 static uint32_t g_ws_disconnects = 0;
 static String   g_device_id;
+static bool     g_muted = false;
 static String   g_token;
 static uint32_t g_last_update_check_ms = 0;
 enum class AudioDriverMode { None, Mic, Speaker };
@@ -223,20 +224,34 @@ void loop() {
     g_ws.loop();
     led_update();
 
-    // Button: short tap stops playback; a long press calls for help without speech.
+    // Button: tap stops playback, double tap toggles the privacy mute, and a
+    // long press calls for help without speech (also while muted).
     static bool btn_last = HIGH;
     static uint32_t btn_down_ms = 0;
+    static uint32_t tap_released_ms = 0;
+    static bool tap_pending = false;
     bool btn_now = digitalRead(PIN_BTN);
     if (btn_last == HIGH && btn_now == LOW) {
         btn_down_ms = millis();
     } else if (btn_last == LOW && btn_now == HIGH && g_ws_connected) {
         if (millis() - btn_down_ms >= HELP_PRESS_MS) {
             Serial.println("[aice-pod] long press — calling for help");
+            tap_pending = false;
             send_help_button();
+        } else if (tap_pending && millis() - tap_released_ms <= DOUBLE_TAP_MS) {
+            tap_pending = false;
+            g_muted = !g_muted;
+            Serial.printf("[aice-pod] privacy mute %s\n", g_muted ? "on" : "off");
+            led_update();
         } else {
-            Serial.println("[aice-pod] button tap — stop");
-            send_tap_activate();
+            tap_pending = true;
+            tap_released_ms = millis();
         }
+    }
+    if (tap_pending && millis() - tap_released_ms > DOUBLE_TAP_MS) {
+        tap_pending = false;
+        Serial.println("[aice-pod] button tap — stop");
+        send_tap_activate();
     }
     btn_last = btn_now;
 
@@ -246,8 +261,9 @@ void loop() {
         g_last_ping_ms = millis();
     }
 
-    // Mic capture only when mic is active (G33 shared → off during playback).
-    if (g_ws_connected && g_mic_running &&
+    // Mic capture only when mic is active (G33 shared → off during playback)
+    // and the room has not muted the pod.
+    if (g_ws_connected && g_mic_running && !g_muted &&
         (g_state == PodState::Listening || g_state == PodState::Thinking)) {
         capture_and_send_audio();
     }
@@ -294,7 +310,8 @@ static void led_update() {
             strip.setPixelColor(0, blink_on ? strip.Color(0, 0, 60, 0) : strip.Color(0, 0, 0, 0));
             break;
         case PodState::Listening:
-            strip.setPixelColor(0, strip.Color(0, 60, 0, 0));      // green
+            // Magenta while muted so the room can see nothing is being heard.
+            strip.setPixelColor(0, g_muted ? strip.Color(60, 0, 60, 0) : strip.Color(0, 60, 0, 0));
             break;
         case PodState::Thinking:
             strip.setPixelColor(0, strip.Color(60, 40, 0, 0));     // amber
