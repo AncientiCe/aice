@@ -41,7 +41,7 @@ The pack refuses to treat a fall as a completed local action. Staff acknowledgem
 ## Security and memory
 
 - The desk needs a staff login; `/mcp` needs the service token; pods need a device token. See [architecture section 24](../architecture/README.md#24-property-security-desk-login-service-token-tls) and [25](../architecture/README.md#25-room-pod-provisioning-and-device-tokens).
-- Staff check guests and residents in and out under **Stays**. Memory exists only for an open stay and follows `memory_retention` at checkout ([section 26](../architecture/README.md#26-stays-and-stay-scoped-memory)). Default retention: `keep`.
+- Staff check guests and residents in and out under **Stays**. Memory exists only for an open stay whose guest or resident agreed (default: not agreed: ask each resident) and follows `memory_retention` at checkout ([section 26](../architecture/README.md#26-stays-and-stay-scoped-memory)). Default retention: `keep`.
 
 ## Alerts
 

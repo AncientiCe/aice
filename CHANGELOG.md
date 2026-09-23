@@ -6,6 +6,32 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Added
+
+- Staff desk login with `staff` and `supervisor` roles, CSRF protection, lockout after five failed passwords, and an append-only audit log; `user add|remove|list` on every pack.
+- A service token between backend and facilitator (`service.token`, `property.service_token_file`).
+- Room pod provisioning: pods enrol with a nonce, a supervisor assigns the room, the pod receives a device token; `device list|assign|revoke`. The backend verifies the token on every connection and turn and takes the room from it.
+- TLS from a property-local CA (`crates/core-tls`): facilitator `tls.mode: auto|files|off`, backend `service.tls`, bridge `pod_gateway.tls`; `tls fingerprint|issue`.
+- Stays with private, stay-scoped memory; per-stay memory consent; `memory_retention` `keep` (default for hotels and care), `archive`, or `wipe_on_close` (default for wards); a backend retention job; `stay open|close|list`.
+- Staff alert tiers, webhook and property-MCP channels, and per-tool SLA re-escalation that survives restarts.
+- Room bridge (`pod-gateway`): speech detection, turns on the backend with the pod's token, Piper speech back to the pod paced for its playback queue.
+- Device heartbeats and `device_offline` tickets; a help button (long press) that raises a ticket without speech; a privacy mute (double tap).
+- Signed pod firmware updates with staged rollout (`firmware keygen|publish|rollout|pod-header`) and lost-token recovery.
+- Admission control (`service.max_concurrent_turns`, `service.turn_queue_max_wait_ms`), a Whisper worker pool (`stt.workers`), and LLM host failover (`ollama_urls`).
+- `room-loadtest` and a CI capacity gate; CI builds the pod firmware; Linux x86_64 and aarch64 release archives.
+- Pilot runbook, DPIA template, and clinical safety starter.
+
+### Changed
+
+- The facilitator refuses plain HTTP off loopback, and a property backend or bridge refuses plain HTTP/WebSocket on a network bind unless `service.allow_plaintext_lan` is set.
+- In a property deployment a turn without an open, consented stay remembers nothing, and the shared journal skill is hidden from rooms.
+- `pod-gateway` is no longer a logging stub; its old `run_gateway` library API is replaced by `spawn_bridge`.
+- Pods take their room from the desk, not from firmware (`DEVICE_ROOM` is gone).
+
+### Security
+
+- Previously the desk, ticket API and `/mcp` were reachable without credentials, and a room's turn stream accepted any client-supplied room.
+
 ## [v0.3.2] - 2026-09-22
 
 ### Fixed

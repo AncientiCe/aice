@@ -677,6 +677,8 @@ flowchart TD
 
 **Notes:**
 - **Inputs:** Desk check-in/out, `POST /api/stays`, `POST /api/stays/{id}/close`, or CLI `stay open <room> [<continue-from>]` / `stay close <id>`. `memory_retention` in `property.json`: `{"mode": "keep"}` (default for hotels and care), `{"mode": "archive", "archive_after_days": N}`, or `{"mode": "wipe_on_close"}` (default for wards).
+- **Consent:** each stay records `memory_consent`. Without it, verification returns no memory wing, so the room reads and writes nothing. `memory_consent_default` is true for hotels (booking terms) and false for care homes and wards; staff tick consent at check-in and can switch it for an open stay (`POST /api/stays/{id}/consent`, audited as `stay_consent`).
+- **Privacy mute:** a double tap on the pod stops it sending audio (magenta LED); the long-press help button still works.
 - **Scoping:** home installs keep the shared palace. In a property, a turn without a stay (or any unauthenticated turn) has memory off. Continuing a stay is allowed only while its memory still exists and is not due for purge; continuing clears the old stay's purge date because the wing lives on.
 - **Purge:** deletes the wing's drawers, BM25 rows, closets, tunnels, and every knowledge-graph entity/triple in the `<wing>:` namespace, then confirms to the facilitator. Non-stay wings can never be purged.
 - **Encryption at rest:** the palace and property databases are local SQLite files. Until the palace supports an encrypted store, run them on an encrypted volume (BitLocker, FileVault, or LUKS); see the deployment runbook.

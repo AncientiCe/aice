@@ -118,6 +118,7 @@ jobs:
           cargo build --release -p aice-care --bin aice-care
           cargo build --release -p aice-ward --bin aice-ward
           cargo build --release -p pod-gateway --bin pod-gateway
+          cargo build --release -p room-loadtest --bin room-loadtest
 
       - name: Package release archive and checksums
         shell: bash
@@ -125,9 +126,9 @@ jobs:
           set -euo pipefail
           tag="${{ github.event.inputs.release_tag }}"
           mkdir -p dist
-          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway dist/
+          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway target/release/room-loadtest dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
-          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway
+          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway room-loadtest
           shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets
@@ -186,6 +187,7 @@ jobs:
           cargo build --release -p aice-care --bin aice-care
           cargo build --release -p aice-ward --bin aice-ward
           cargo build --release -p pod-gateway --bin pod-gateway
+          cargo build --release -p room-loadtest --bin room-loadtest
 
       - name: Package release archive and checksums
         shell: bash
@@ -193,9 +195,9 @@ jobs:
           set -euo pipefail
           tag="${{ github.event.inputs.release_tag }}"
           mkdir -p dist
-          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway dist/
+          cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway target/release/room-loadtest dist/
           archive="aice-${tag}-linux-${{ matrix.arch }}.tar.gz"
-          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway
+          tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway room-loadtest
           sha256sum "dist/${archive}" > "dist/${archive}.sha256"
 
       - name: Publish GitHub release assets
