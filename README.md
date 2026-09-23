@@ -100,7 +100,8 @@ Defined in `.cargo/config.toml`:
 - `cargo aice-audit` &rarr; dependency audit.
 - `cargo aice-test` &rarr; full workspace test suite.
 
-The standalone pod transport (`cargo aice-gateway`) is documented under [Legacy / experimental](#legacy--experimental).
+- `cargo aice-gateway` &rarr; run the room bridge for pods (see [Property deployments](#property-deployments-hotels-care-homes-wards)).
+- `cargo aice-loadtest` &rarr; measure capacity with simulated pods.
 
 ## Skills
 
@@ -113,7 +114,7 @@ Skills are defined and implemented in the external [`aice-skills`](https://githu
 
 - `apps/aice-backend`: cross-platform core backend service (primary).
 - `crates/core-*`: runtime building blocks (`core-config`, `core-llm`, `core-stt`, `core-orchestrator`, `core-observability`, `core-runtime-protocol`).
-- `apps/pod-gateway`, `pod-firmware`: legacy / experimental components — see below.
+- `apps/pod-gateway`: room bridge between pods and the backend; `pod-firmware`: ATOM Echo room pod; `apps/room-loadtest`: capacity measurement; `crates/core-tls`: property CA and TLS helpers.
 
 ## Public repository safety
 
@@ -150,12 +151,20 @@ Runbook: [docs/runbooks/local-observability.md](docs/runbooks/local-observabilit
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 - Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-## Legacy / experimental
+## Property deployments (hotels, care homes, wards)
 
-These components predate the split-runtime design and are retained for continuity. New deployments should use `aice-backend` with a platform frontend.
+A pod in each room, a room bridge, the voice backend, and one property pack (`aice-hotels`, `aice-care`, or `aice-ward`) on one on-prem host:
 
-- **`apps/pod-gateway`**: standalone WebSocket ingest/egress transport for advanced/internal deployments. Invoke via `cargo aice-gateway`.
-- **`pod-firmware` + M5Stack ATOM Echo**: experimental hardware path, not covered by binary release guarantees. See [docs/deployment/m5stack-pod.md](docs/deployment/m5stack-pod.md) and [docs/network/wifi-configuration.md](docs/network/wifi-configuration.md).
+- **Security:** staff logins with roles and an audit log, a service token for the backend, facilitator-issued device tokens for pods, and TLS from a property-local CA ([architecture 24–25](docs/architecture/README.md#24-property-security-desk-login-service-token-tls)).
+- **Memory:** private to each stay and only with the guest's or resident's consent; retention `keep`, `archive`, or `wipe_on_close` ([architecture 26](docs/architecture/README.md#26-stays-and-stay-scoped-memory)).
+- **Staff alerts:** paging tiers with SLA re-escalation, a help button that works without speech, and offline-pod alerts ([architecture 27](docs/architecture/README.md#27-staff-alerting-and-sla-re-escalation), [29](docs/architecture/README.md#29-help-button-degraded-mode)).
+- **Capacity:** admission control, a Whisper worker pool, LLM host failover, and `room-loadtest` ([architecture 28](docs/architecture/README.md#28-capacity-admission-control-worker-pools-and-llm-failover), [30](docs/architecture/README.md#30-capacity-measurement-room-loadtest)).
+- **Runbooks:** [pilot runbook](docs/runbooks/property-pilot.md), [pod deployment](docs/deployment/m5stack-pod.md), [DPIA template](docs/compliance/dpia-template.md), [clinical safety starter](docs/compliance/clinical-safety-case.md).
+
+Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a clinical safety case approved by a Clinical Safety Officer. The pod firmware compiles in CI but has not yet been exercised on hardware.
+
+- **`apps/pod-gateway`** (`cargo aice-gateway`): the room bridge between pods and `aice-backend` ([architecture 4](docs/architecture/README.md#4-room-bridge-pods--backend)).
+- **`pod-firmware`**: M5Stack ATOM Echo room pod ([pod deployment](docs/deployment/m5stack-pod.md)).
 
 ### Release v0.3.2
 
