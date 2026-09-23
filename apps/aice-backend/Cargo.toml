@@ -37,7 +37,7 @@ thiserror = "1.0"
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
 core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "ccf156ce4b4f9c95ce65b5f1c367c90ca6bb22c5", default-features = false, features = ["core-common", "hotel"] }
 skill-chain = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "ccf156ce4b4f9c95ce65b5f1c367c90ca6bb22c5" }
-mempalace = { git = "ssh://git@github.com/AncientiCe/mempalace-rs.git", tag = "v0.1.0", package = "mempalace-rust", default-features = false }
+palace = { git = "ssh://git@github.com/AncientiCe/palace-rs.git", tag = "v0.14.2", package = "palace-rs", default-features = false }
 
 [dev-dependencies]
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

@@ -38,7 +38,7 @@ All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aic
 | Volume | `skill-volume` | Frontend-owned (external macOS frontend repo), `MacOsVolumeSkill` | [volume.md](volume.md) |
 | Weather | `skill-weather` | Backend-owned (`aice-backend`), `OpenMeteoWeatherSkill` | [weather.md](weather.md) |
 
-Memory is no longer a skill; it is core infrastructure embedded in `aice-backend` via the Memory Palace (`mempalace-rs`). See [§7 in architecture docs](../architecture/README.md#7-memory-palace-core-persistent-memory).
+Memory is no longer a skill; it is core infrastructure embedded in `aice-backend` via the Memory Palace (`palace-rs`). See [§7 in architecture docs](../architecture/README.md#7-memory-palace-core-persistent-memory).
 
 ## Property packs
 

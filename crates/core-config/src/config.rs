@@ -596,14 +596,38 @@ fn default_memory_sqlite_path() -> String {
     "memory.sqlite".to_string()
 }
 
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// palace-rs keeps its data in `~/.palace`. Installs from before the rename
+/// that only have `~/.mempalace` keep using it so their memory is not lost.
+fn palace_data_dir(home: &std::path::Path) -> std::path::PathBuf {
+    let current = home.join(".palace");
+    let legacy = home.join(".mempalace");
+    if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
 fn default_palace_db_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{home}/.mempalace/palace/palace.db")
+    palace_data_dir(&home_dir())
+        .join("palace")
+        .join("palace.db")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn default_palace_identity_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{home}/.mempalace/identity.txt")
+    palace_data_dir(&home_dir())
+        .join("identity.txt")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn default_palace_recall_results() -> usize {
@@ -924,14 +948,8 @@ mod tests {
         assert_eq!(config.memory.path, "memory.json");
         assert_eq!(config.memory.max_recent_turns, 10);
         assert_eq!(config.memory.sqlite_path, "memory.sqlite");
-        assert!(config
-            .memory
-            .palace_db_path
-            .ends_with(".mempalace/palace/palace.db"));
-        assert!(config
-            .memory
-            .palace_identity_path
-            .ends_with(".mempalace/identity.txt"));
+        assert!(std::path::Path::new(&config.memory.palace_db_path).ends_with("palace/palace.db"));
+        assert!(std::path::Path::new(&config.memory.palace_identity_path).ends_with("identity.txt"));
         assert_eq!(config.memory.palace_recall_results, 5);
         assert_eq!(config.memory.palace_recall_min_similarity, 0.3);
         assert_eq!(config.memory.palace_recall_max_chars, 1_500);
@@ -1269,5 +1287,22 @@ mod tests {
             ..super::PropertyConfig::default()
         };
         assert!(forced.device_token_required());
+    }
+
+    #[test]
+    fn palace_data_dir_prefers_palace_but_keeps_an_existing_mempalace() {
+        let home = std::env::temp_dir().join(format!("aice-palace-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).must();
+        assert_eq!(super::palace_data_dir(&home), home.join(".palace"));
+        std::fs::create_dir_all(home.join(".mempalace")).must();
+        assert_eq!(
+            super::palace_data_dir(&home),
+            home.join(".mempalace"),
+            "an install that only has the old directory keeps its memory"
+        );
+        std::fs::create_dir_all(home.join(".palace")).must();
+        assert_eq!(super::palace_data_dir(&home), home.join(".palace"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

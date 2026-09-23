@@ -64,7 +64,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use mempalace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
+use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
 use property_facilitator::PropertyClient;
 use serde_json::{json, Value};
 use skill_chain::EffectiveCapabilities;
@@ -3986,7 +3986,7 @@ mod tests {
         NewsHeadline, NewsHeadlinesResult, SportsEvent, SportsLiveResult, TimeResult,
         WeatherResult,
     };
-    use mempalace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
+    use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
     use serde_json::json;
     use std::time::SystemTime;
 
@@ -3998,6 +3998,7 @@ mod tests {
             room: "voice_turns".to_string(),
             source_file: "test".to_string(),
             created_at: "2026-05-03T00:00:00Z".to_string(),
+            filed_at: "2026-05-03T00:00:00Z".to_string(),
             similarity,
         }
     }

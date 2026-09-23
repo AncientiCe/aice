@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aice_backend::{run_memory_retention_once, MemoryScope};
-use mempalace::palace::Palace;
+use palace::palace::Palace;
 use property_facilitator::{
     close_stay, open_stay, serve, MemoryRetention, Pack, PropertyClient, Settings,
 };
@@ -66,6 +66,25 @@ async fn a_wiped_stay_loses_its_drawers_and_facts_and_nothing_else() {
     add_drawer(&palace, "d2", &leaving.memory_wing);
     add_drawer(&palace, "d3", &staying.memory_wing);
     add_drawer(&palace, "d4", "journal");
+    for wing in [&leaving.memory_wing, &staying.memory_wing] {
+        palace::store::ensure_wing_registered(palace.conn(), wing)
+            .unwrap_or_else(|error| panic!("register wing: {error}"));
+        palace
+            .conn()
+            .execute(
+                "INSERT INTO usage_events (ts, session_id, project, tool, wing, outcome)
+                 VALUES ('2026-09-23T00:00:00Z', 's', 'aice', 'search', ?1, 'hit')",
+                [wing.as_str()],
+            )
+            .unwrap_or_else(|error| panic!("usage row: {error}"));
+    }
+    palace
+        .conn()
+        .execute(
+            "INSERT INTO gain_feedback (query_id, drawer_id, verdict, source) VALUES ('q', 'd1', 'useful', 'test')",
+            [],
+        )
+        .unwrap_or_else(|error| panic!("feedback row: {error}"));
     let leaving_scope = MemoryScope::Stay(leaving.memory_wing.clone());
     let staying_scope = MemoryScope::Stay(staying.memory_wing.clone());
     for scope in [&leaving_scope, &staying_scope] {
@@ -107,6 +126,30 @@ async fn a_wiped_stay_loses_its_drawers_and_facts_and_nothing_else() {
             .kg_query(&staying_scope.entity("Alice").unwrap_or_default())
             .unwrap_or_default();
         assert_eq!(kept.len(), 1, "other guests' facts stay");
+        let count = |sql: &str, arg: &str| -> i64 {
+            guard
+                .conn()
+                .query_row(sql, [arg], |row| row.get(0))
+                .unwrap_or(-1)
+        };
+        let wings = "SELECT COUNT(*) FROM wings WHERE name = ?1";
+        let usage = "SELECT COUNT(*) FROM usage_events WHERE wing = ?1";
+        assert_eq!(
+            count(wings, &leaving.memory_wing),
+            0,
+            "wing registry entry removed"
+        );
+        assert_eq!(count(usage, &leaving.memory_wing), 0, "usage trail removed");
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM gain_feedback WHERE drawer_id = ?1",
+                "d1"
+            ),
+            0,
+            "feedback on deleted drawers removed"
+        );
+        assert_eq!(count(wings, &staying.memory_wing), 1);
+        assert_eq!(count(usage, &staying.memory_wing), 1);
     }
 
     assert_eq!(

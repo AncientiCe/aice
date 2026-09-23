@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use core_observability::{record_memory_retention_purge, record_palace_error};
-use mempalace::palace::Palace;
+use palace::palace::Palace;
 use property_facilitator::PropertyClient;
 use serde_json::Value;
 
@@ -81,7 +81,8 @@ impl MemoryScope {
     }
 }
 
-/// Delete every drawer and knowledge-graph fact of a stay wing.
+/// Delete every drawer, knowledge-graph fact, and trace (wing registry,
+/// usage events, feedback, mined-file records) of a stay wing.
 /// Returns how many drawers were removed.
 pub fn purge_stay_memory(palace: &Palace, wing: &str) -> Result<usize, DynError> {
     if !wing.starts_with("stay-") {
@@ -97,12 +98,20 @@ pub fn purge_stay_memory(palace: &Palace, wing: &str) -> Result<usize, DynError>
         "DELETE FROM bm25_doc_stats WHERE drawer_id IN (SELECT id FROM drawers WHERE wing = ?1)",
         [wing],
     )?;
+    transaction.execute(
+        "DELETE FROM gain_feedback WHERE drawer_id IN (SELECT id FROM drawers WHERE wing = ?1)",
+        [wing],
+    )?;
     transaction.execute("DELETE FROM closets WHERE wing = ?1", [wing])?;
+    transaction.execute("DELETE FROM usage_events WHERE wing = ?1", [wing])?;
+    transaction.execute("DELETE FROM mined_files WHERE wing = ?1", [wing])?;
     transaction.execute(
         "DELETE FROM tunnels WHERE wing_a = ?1 OR wing_b = ?1",
         [wing],
     )?;
     let drawers = transaction.execute("DELETE FROM drawers WHERE wing = ?1", [wing])?;
+    // palace-rs re-registers wings from drawers on open, so this stays gone.
+    transaction.execute("DELETE FROM wings WHERE name = ?1", [wing])?;
     // Entity ids are lower-cased names, so the namespace prefix is too.
     let prefix = format!("{}:", wing.to_lowercase().replace(' ', "_"));
     transaction.execute(
@@ -176,7 +185,7 @@ pub fn spawn_memory_retention(
 #[cfg(test)]
 mod tests {
     use super::{purge_stay_memory, MemoryScope};
-    use mempalace::palace::Palace;
+    use palace::palace::Palace;
     use serde_json::json;
 
     #[test]
