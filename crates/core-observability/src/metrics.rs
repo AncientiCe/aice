@@ -154,6 +154,8 @@ const PALACE_ERRORS_TOTAL: &str = "palace_errors_total";
 const PROPERTY_REQUESTS_TOTAL: &str = "property_requests_total";
 const PROPERTY_MCP_ERRORS_TOTAL: &str = "property_mcp_errors_total";
 const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
+const PROPERTY_AUTH_ATTEMPTS_TOTAL: &str = "property_auth_attempts_total";
+const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -350,6 +352,13 @@ pub fn register_metrics() {
         0.0_f64,
         "operation" => "unknown"
     );
+    counter!(
+        PROPERTY_AUTH_ATTEMPTS_TOTAL,
+        0,
+        "method" => "unknown",
+        "result" => "unknown"
+    );
+    counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 0, "action" => "unknown");
 }
 
 /// Record a new voice session start.
@@ -1092,4 +1101,19 @@ pub fn record_property_mcp_duration(operation: &str, duration: Duration) {
         duration.as_secs_f64(),
         "operation" => operation.to_string()
     );
+}
+
+/// Desk logins, desk sessions, and service-token checks, by outcome.
+pub fn record_property_auth_attempt(method: &str, result: &str) {
+    counter!(
+        PROPERTY_AUTH_ATTEMPTS_TOTAL,
+        1,
+        "method" => method.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Rows appended to the facilitator audit log, by action.
+pub fn record_property_audit_event(action: &str) {
+    counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 1, "action" => action.to_string());
 }
