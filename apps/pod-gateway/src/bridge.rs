@@ -248,6 +248,10 @@ where
     // True between turn_done and the answer; a cancelled turn's answer is dropped.
     let mut awaiting_answer = false;
     let mut speaking: Option<tokio::task::JoinHandle<()>> = None;
+    // Signals that the pod has been sent the whole answer, so the backend's
+    // wake-word awake window can run from the end of playback.
+    let (played_tx, mut played_rx) = mpsc::channel::<u64>(1);
+    let mut playback: u64 = 0;
 
     let result: Result<(), DynError> = async {
         loop {
@@ -311,6 +315,9 @@ where
                         PodToGateway::TapActivate => {
                             if let Some(task) = speaking.take() {
                                 task.abort();
+                                backend_tx
+                                    .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::PlaybackFinished)?))
+                                    .await?;
                             }
                             awaiting_answer = false;
                             push(GatewayToPod::StopAudio);
@@ -397,8 +404,22 @@ where
                     match spoken {
                         Ok(pcm) => {
                             record_pod_bridge_turn("answered");
+                            if let Some(task) = speaking.take() {
+                                task.abort();
+                            }
+                            backend_tx
+                                .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::PlaybackStarted)?))
+                                .await?;
                             // The pod returns to listening on its own when playback ends.
-                            speaking = Some(tokio::spawn(speak(out_tx.clone(), device_label.clone(), pcm)));
+                            let out = out_tx.clone();
+                            let label = device_label.clone();
+                            let played = played_tx.clone();
+                            playback += 1;
+                            let this_playback = playback;
+                            speaking = Some(tokio::spawn(async move {
+                                speak(out, label, pcm).await;
+                                let _ = played.send(this_playback).await;
+                            }));
                         }
                         Err(error) => {
                             warn!(device = %device_label, %error, "speech synthesis failed");
@@ -408,6 +429,14 @@ where
                     }
                     record_pod_bridge_turn_duration(turn_started_at.elapsed());
                     turn.listen();
+                }
+                played = played_rx.recv() => {
+                    // A stale signal from a replaced answer is ignored.
+                    if played == Some(playback) && speaking.take().is_some() {
+                        backend_tx
+                            .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::PlaybackFinished)?))
+                            .await?;
+                    }
                 }
             }
         }

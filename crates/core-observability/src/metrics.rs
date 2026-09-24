@@ -166,6 +166,7 @@ const POD_BRIDGE_TURNS_TOTAL: &str = "pod_bridge_turns_total";
 const BACKEND_QUEUE_DEPTH: &str = "backend_queue_depth";
 const BACKEND_INFERENCE_HOST_ERRORS_TOTAL: &str = "backend_inference_host_errors_total";
 const BACKEND_HELP_REQUESTS_TOTAL: &str = "backend_help_requests_total";
+const BACKEND_WAKE_WORD_TURNS_TOTAL: &str = "backend_wake_word_turns_total";
 const BACKEND_QUEUE_WAIT_SECONDS: &str = "backend_queue_wait_seconds";
 const BACKEND_QUEUE_REJECTIONS_TOTAL: &str = "backend_queue_rejections_total";
 const POD_BRIDGE_TURN_DURATION_SECONDS: &str = "pod_bridge_turn_duration_seconds";
@@ -387,6 +388,7 @@ pub fn register_metrics() {
     gauge!(BACKEND_QUEUE_DEPTH, 0.0, "stage" => "unknown");
     counter!(BACKEND_INFERENCE_HOST_ERRORS_TOTAL, 0, "host" => "unknown");
     counter!(BACKEND_HELP_REQUESTS_TOTAL, 0, "result" => "unknown");
+    counter!(BACKEND_WAKE_WORD_TURNS_TOTAL, 0, "result" => "unknown");
     histogram!(BACKEND_QUEUE_WAIT_SECONDS, 0.0_f64, "stage" => "unknown");
     counter!(BACKEND_QUEUE_REJECTIONS_TOTAL, 0, "stage" => "unknown");
     histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, 0.0_f64);
@@ -1288,4 +1290,11 @@ pub fn record_backend_inference_host_error(host: &str) {
 /// Help-button presses, by result (`raised`, `unavailable`, `no_property`).
 pub fn record_backend_help_request(result: &str) {
     counter!(BACKEND_HELP_REQUESTS_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Wake-word decision for a finished turn: `woken` (idle, wake word said),
+/// `awake` (conversation in flight, no wake word needed), `ignored` (idle, no
+/// wake word; the turn is dropped).
+pub fn record_backend_wake_word_turn(result: &str) {
+    counter!(BACKEND_WAKE_WORD_TURNS_TOTAL, 1, "result" => result.to_string());
 }

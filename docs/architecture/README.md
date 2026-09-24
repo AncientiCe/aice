@@ -109,6 +109,7 @@ sequenceDiagram
 - **Turn detection:** a turn opens after three frames above `vad_start_level` (mean absolute sample value) and includes the eight frames before it, so the first word is kept. It closes after `vad_end_silence_ms` of quiet audio or 15 s. Time is measured in audio samples, so buffered bursts are judged like live audio. The pod mic is off while it plays, so the bridge ignores audio until the answer has been sent.
 - **Outputs:** `hello_ack`, `led` (`listening`, `thinking`, `speaking`), `audio` chunks of at most 2 KiB, `stop_audio`, `pong`, `error`. Audio is paced at playback speed with three chunks of lead, because the pod queues only six 2 KiB chunks (about 0.4 s); the pod returns to listening by itself when playback ends.
 - **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`); `help_button` (long press) calls staff without speech (section 29).
+- **Playback:** the bridge sends `playback_started` to the backend before it sends an answer to the pod, and `playback_finished` when the answer has been sent or a tap stops it, so the wake-word awake window runs from the end of playback (section 31).
 - **Half-duplex limit:** the ATOM Echo cannot capture while it plays, so section 2 barge-in never fires on this path; the button is the only interrupt. The ATOM Echo is a transport test bed. Guest rooms need a full-duplex pod with echo cancellation, where any speech during playback interrupts the answer: see [Signal Pod requirements](../hardware/signal-pod.md).
 - **Local skills:** pods have none; a `frontend_skill_intent` is answered with an error result so the backend replies instead of waiting.
 - **Failure paths:** the backend refuses the token → `error {code: unauthorized}` and the pod connection closes; backend unreachable → `error {code: backend_unavailable}`; invalid JSON → `invalid_message`; audio over 64 KiB → `payload_too_large`; binary frames → `binary_not_supported`; Piper failure → the turn ends without audio (`pod_bridge_turns_total{result="speech_failed"}`). A property deployment refuses plain WebSocket pods on a network bind unless `service.allow_plaintext_lan` is set.
@@ -537,7 +538,7 @@ sequenceDiagram
 
 **Notes:**
 - **Dual-frame model:** Binary WebSocket frames carry raw PCM audio (i16 little-endian, 16 kHz mono). Text WebSocket frames carry JSON control messages (`TurnStreamClientMessage`) and server events (`TurnStreamServerEvent`). Odd-byte binary frames are rejected with an error event.
-- **Inputs:** WebSocket client messages `turn_start`, binary PCM frames, `turn_done`, `turn_cancel`, `frontend_skill_result`.
+- **Inputs:** WebSocket client messages `turn_start`, binary PCM frames, `turn_done`, `turn_cancel`, `frontend_skill_result`, `playback_started`, `playback_finished` (wake-word conversation window, section 31).
 - **Outputs:** WebSocket server events `partial_transcript`, `intent_update`, `token`, `frontend_skill_intent`, `done`, `error`.
 - **Latency instrumentation:** `backend_turn_partial_transcript_duration_seconds`, `backend_turn_first_token_duration_seconds`, `backend_turn_speculative_restarts_total`, `backend_turn_cancellations_total{reason}`, `backend_llm_provider_duration_seconds{provider}` plus stage labels `stt_incremental`, `speculative_classify`, `speculative_generate`.
 - **Failure paths:** Invalid message format/sequence or unsupported audio format emits `error`; transcript divergence aborts prior speculative run and increments cancellation/restart metrics; `turn_cancel` aborts active work and emits `done`; WebSocket disconnect cleans up the session.
@@ -796,3 +797,27 @@ flowchart LR
 - **Sizing:** raise `--rooms` until p95 passes the target, then set `stt.workers`, `service.max_concurrent_turns`, and `ollama_urls` from the numbers. Record the result for the property in its deployment notes.
 - **CI gate:** `apps/room-loadtest/tests/capacity.rs` runs 8 rooms × 2 turns through the real bridge, backend (admission limit 2), and facilitator with explicit test doubles for STT, LLM, and speech; every turn must be answered, admission must hold, and p95 must stay under 5 s.
 - **Failure paths:** a room that gets no answer audio within `--timeout-secs` counts as failed and the binary exits non-zero.
+
+---
+
+## 31. Wake-word conversation window
+
+**Purpose:** With `wake_word.enabled`, the wake word starts a conversation; it does not have to be repeated for every sentence. While a conversation is in flight, the guest can follow up, correct, or cut in without it. After a quiet period the room goes back to idle, and the next conversation needs the wake word again.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> InFlight: turn starts with a wake phrase (woken)
+    Idle --> Idle: turn without a wake phrase (ignored, dropped)
+    InFlight --> InFlight: turn_start while a turn is open, turn_cancel, playback_started
+    InFlight --> Window: answer done / playback_finished
+    Window --> InFlight: any turn (awake, no wake phrase)
+    Window --> Idle: wake_word.cooldown_secs without a turn
+```
+
+**Notes:**
+- **State is per connection:** each `/turns/stream` WebSocket (one per pod through the bridge, one per desktop frontend) keeps its own conversation state. A reconnect starts idle.
+- **Awake when a turn starts** if a previous turn is still open, the last answer was cancelled (`turn_cancel`, e.g. a tap or barge-in), the client reported `playback_started` without `playback_finished`, or the last answer or playback ended less than `wake_word.cooldown_secs` ago. Clients that never send playback messages get a window from the backend's `done`.
+- **Transcript:** a leading wake phrase is dropped from the transcript whether or not the conversation is awake. An awake turn is passed to the LLM unchanged otherwise; an idle turn without a wake phrase is dropped and answered with `done` only.
+- **Failure paths:** a client that sends `playback_started` and disconnects loses the state with the connection; a missing `playback_finished` on a live connection keeps the conversation awake until the next turn is answered.
+- **Metrics:** `backend_wake_word_turns_total{result}` per finished turn: `woken`, `awake`, `ignored` (not recorded when the wake word is disabled).

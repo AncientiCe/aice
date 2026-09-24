@@ -60,6 +60,11 @@ pub enum TurnStreamClientMessage {
     TurnCancel,
     /// The room's help button was pressed; raise a staff ticket directly.
     HelpRequest,
+    /// The client started playing an answer; the conversation stays awake.
+    PlaybackStarted,
+    /// The client finished (or stopped) playing an answer; the wake-word
+    /// awake window runs from now.
+    PlaybackFinished,
     FrontendSkillResult {
         turn_id: String,
         intent_id: String,

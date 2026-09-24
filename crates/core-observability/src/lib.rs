@@ -23,9 +23,10 @@ pub use metrics::{
     record_backend_turn_speculative_restart, record_backend_turn_stage_duration,
     record_backend_turn_total, record_backend_udp_discovery_listen_duration,
     record_backend_udp_discovery_listen_total, record_backend_udp_discovery_request_total,
-    record_backend_udp_discovery_response_total, record_briefing_skill, record_calculator_skill,
-    record_calendar_skill, record_cancellation_success, record_computer_skill,
-    record_currency_skill, record_dictionary_skill, record_distance_skill, record_email_skill,
+    record_backend_udp_discovery_response_total, record_backend_wake_word_turn,
+    record_briefing_skill, record_calculator_skill, record_calendar_skill,
+    record_cancellation_success, record_computer_skill, record_currency_skill,
+    record_dictionary_skill, record_distance_skill, record_email_skill,
     record_endpointing_wait_duration, record_error, record_first_audio_latency,
     record_first_token_latency, record_fleet_devices, record_fleet_firmware_download,
     record_fleet_firmware_manifest, record_fleet_heartbeat_missed, record_fleet_provisioning,
@@ -139,6 +140,7 @@ mod tests {
         super::record_backend_queue_rejection("stt");
         super::record_backend_inference_host_error("http://127.0.0.1:11434");
         super::record_backend_help_request("raised");
+        super::record_backend_wake_word_turn("awake");
         super::record_fleet_heartbeat_missed();
         super::record_fleet_devices("online", 3);
         super::record_fleet_firmware_manifest("offered");
@@ -259,6 +261,7 @@ mod tests {
                         && payload.contains("backend_queue_rejections_total")
                         && payload.contains("backend_inference_host_errors_total")
                         && payload.contains("backend_help_requests_total")
+                        && payload.contains("backend_wake_word_turns_total")
                         && payload.contains("fleet_heartbeat_missed_total")
                         && payload.contains("fleet_firmware_manifest_total")
                         && payload.contains("fleet_firmware_downloads_total")

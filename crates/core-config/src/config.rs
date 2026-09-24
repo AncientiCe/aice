@@ -14,7 +14,8 @@ pub struct WakeWordConfig {
     /// Sensitivity 0.0–1.0 (higher = more sensitive).
     #[serde(default = "default_sensitivity")]
     pub sensitivity: f32,
-    /// Cooldown in seconds after activation before listening again.
+    /// Seconds a conversation stays awake after the last answer (or its
+    /// playback) ends; after that, the next turn needs a wake phrase again.
     #[serde(default = "default_cooldown_secs")]
     pub cooldown_secs: u64,
 }

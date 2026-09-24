@@ -837,3 +837,211 @@ async fn turn_stream_frontend_skill_round_trip() {
 
     handle.shutdown().await;
 }
+
+/// Answers slowly so a client can cancel while the answer is in flight.
+struct SlowEchoEngine;
+
+#[async_trait]
+impl BackendEngine for SlowEchoEngine {
+    async fn process_turn(
+        &self,
+        request: TurnRequest,
+    ) -> Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        Ok(BackendEngineDecision::Chat(format!(
+            "echo:{}",
+            request.transcript.trim()
+        )))
+    }
+
+    async fn finalize_frontend_skill(
+        &self,
+        _turn_id: &str,
+        _intent_id: &str,
+        _request: FrontendSkillResultRequest,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok("done".to_string())
+    }
+}
+
+type WsWrite = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Message,
+>;
+type WsRead = futures_util::stream::SplitStream<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+>;
+
+async fn wake_word_session(
+    engine: Arc<dyn BackendEngine>,
+    transcripts: &[&str],
+    awake_secs: u64,
+) -> (aice_backend::ServerHandle, WsWrite, WsRead) {
+    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(SequencedTranscriber {
+        transcripts: Mutex::new(transcripts.iter().map(|t| t.to_string()).collect()),
+    });
+    let audio_config = AudioIngressConfig {
+        wake_word: WakeWordConfig {
+            enabled: true,
+            phrases: vec!["computer".to_string()],
+            sensitivity: 0.5,
+            cooldown_secs: awake_secs,
+        },
+    };
+    let handle = spawn_server_with_audio("127.0.0.1:0", engine, transcriber, audio_config)
+        .await
+        .unwrap_or_else(|error| panic!("spawn failed: {error}"));
+    let ws_url = format!("ws://{}/turns/stream", handle.bind);
+    let (ws_stream, _) = connect_async(&ws_url)
+        .await
+        .unwrap_or_else(|error| panic!("ws connect failed: {error}"));
+    let (write, read) = ws_stream.split();
+    (handle, write, read)
+}
+
+async fn send_client(write: &mut WsWrite, message: &TurnStreamClientMessage) {
+    write
+        .send(Message::Text(
+            serde_json::to_string(message).unwrap_or_else(|error| panic!("encode failed: {error}")),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("send failed: {error}"));
+}
+
+async fn start_turn(write: &mut WsWrite, turn_id: &str) {
+    send_client(
+        write,
+        &TurnStreamClientMessage::TurnStart {
+            session_id: "wake-session".to_string(),
+            device_id: Some("device-a".to_string()),
+            turn_id: turn_id.to_string(),
+            supported_frontend_intents: vec![],
+            schema_version: None,
+        },
+    )
+    .await;
+    write
+        .send(Message::Binary(pcm_binary_frame(&[100, 100])))
+        .await
+        .unwrap_or_else(|error| panic!("send failed: {error}"));
+    send_client(write, &TurnStreamClientMessage::TurnDone).await;
+}
+
+/// Reads events until `done`; returns the answer tokens joined.
+async fn answer_until_done(read: &mut WsRead) -> String {
+    let mut answer = String::new();
+    loop {
+        let Message::Text(text) = recv_ws(read).await else {
+            continue;
+        };
+        let event: TurnStreamServerEvent = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("decode event failed: {error}"));
+        match event {
+            TurnStreamServerEvent::Token { text, .. } => answer.push_str(&text),
+            TurnStreamServerEvent::Done { .. } => return answer,
+            _ => {}
+        }
+    }
+}
+
+async fn run_turn(write: &mut WsWrite, read: &mut WsRead, turn_id: &str) -> String {
+    start_turn(write, turn_id).await;
+    answer_until_done(read).await
+}
+
+#[tokio::test]
+async fn turn_stream_follow_up_needs_no_wake_word_while_awake() {
+    let (handle, mut write, mut read) = wake_word_session(
+        Arc::new(EchoEngine),
+        &["computer, turn on the lights", "and the fan"],
+        30,
+    )
+    .await;
+
+    let first = run_turn(&mut write, &mut read, "turn-1").await;
+    assert_eq!(first, "echo:turn on the lights");
+    let follow_up = run_turn(&mut write, &mut read, "turn-2").await;
+    assert_eq!(follow_up, "echo:and the fan");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn turn_stream_returns_to_idle_after_awake_window() {
+    let (handle, mut write, mut read) = wake_word_session(
+        Arc::new(EchoEngine),
+        &["computer, turn on the lights", "and the fan"],
+        1,
+    )
+    .await;
+
+    let first = run_turn(&mut write, &mut read, "turn-1").await;
+    assert_eq!(first, "echo:turn on the lights");
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let after_idle = run_turn(&mut write, &mut read, "turn-2").await;
+    assert!(
+        after_idle.is_empty(),
+        "idle pod needs the wake word again, got {after_idle:?}"
+    );
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn turn_stream_stays_awake_while_answer_plays() {
+    let (handle, mut write, mut read) = wake_word_session(
+        Arc::new(EchoEngine),
+        &["computer, tell me about the spa", "no, the pool"],
+        1,
+    )
+    .await;
+
+    let first = run_turn(&mut write, &mut read, "turn-1").await;
+    assert_eq!(first, "echo:tell me about the spa");
+    send_client(&mut write, &TurnStreamClientMessage::PlaybackStarted).await;
+    // Playback outlasts the awake window; the conversation is still in flight.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let barge_in = run_turn(&mut write, &mut read, "turn-2").await;
+    assert_eq!(barge_in, "echo:no, the pool");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn turn_stream_awake_window_starts_when_playback_finishes() {
+    let (handle, mut write, mut read) = wake_word_session(
+        Arc::new(EchoEngine),
+        &["computer, tell me about the spa", "and the opening hours"],
+        1,
+    )
+    .await;
+
+    let first = run_turn(&mut write, &mut read, "turn-1").await;
+    assert_eq!(first, "echo:tell me about the spa");
+    send_client(&mut write, &TurnStreamClientMessage::PlaybackStarted).await;
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    send_client(&mut write, &TurnStreamClientMessage::PlaybackFinished).await;
+    let follow_up = run_turn(&mut write, &mut read, "turn-2").await;
+    assert_eq!(follow_up, "echo:and the opening hours");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn turn_stream_cancelled_answer_keeps_conversation_awake() {
+    let (handle, mut write, mut read) = wake_word_session(
+        Arc::new(SlowEchoEngine),
+        &["computer, book a table for two", "no, for four"],
+        0,
+    )
+    .await;
+
+    start_turn(&mut write, "turn-1").await;
+    send_client(&mut write, &TurnStreamClientMessage::TurnCancel).await;
+    let cancelled = answer_until_done(&mut read).await;
+    assert!(cancelled.is_empty(), "cancelled answer must not stream");
+    let correction = run_turn(&mut write, &mut read, "turn-2").await;
+    assert_eq!(correction, "echo:no, for four");
+
+    handle.shutdown().await;
+}

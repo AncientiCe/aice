@@ -72,7 +72,7 @@ Boards worth evaluating against H1–H6 (not yet tested with Aice): ESP32-S3-BOX
 | P3 | The bridge keeps running turn detection during playback, with its own start threshold (`pod_gateway.barge_in_start_level`, above `vad_start_level`) and frame count, so residual echo does not trigger. |
 | P4 | On onset during playback or while an answer is pending, the bridge runs the existing `tap_activate` stop path (abort speaking task, `stop_audio`, `turn_cancel`) and then opens a new turn with the preroll frames, so the guest's first words are kept. |
 | P5 | Onset detection uses audio energy over audio time only. It never inspects transcripts. |
-| P6 | A barge-in turn belongs to the conversation already in flight, so the backend wake-word gate does not apply to it. |
+| P6 | A barge-in turn belongs to the conversation already in flight, so it needs no wake word. Implemented: the bridge sends `playback_started` / `playback_finished` and the backend keeps the conversation awake while playback is in flight ([architecture 31](../architecture/README.md#31-wake-word-conversation-window)). |
 
 ## Backend requirements
 

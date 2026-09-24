@@ -10,6 +10,7 @@ use aice_backend::{
     BackendEngineDecision, DeviceAuth, ServerHandle, ServerOptions,
 };
 use async_trait::async_trait;
+use core_config::WakeWordConfig;
 use core_runtime_protocol::{FrontendSkillResultRequest, TurnRequest};
 use futures_util::{SinkExt, StreamExt};
 use pod_gateway::{spawn_bridge, BridgeSettings, Speech, VadSettings};
@@ -58,6 +59,21 @@ impl BackendEngine for Answering {
 
 struct HeardTowels;
 
+/// Explicit test double: hears whatever the test last said.
+struct Heard(Mutex<String>);
+
+#[async_trait]
+impl AudioTranscriber for Heard {
+    async fn transcribe(
+        &self,
+        _samples: Vec<i16>,
+        _sample_rate_hz: u32,
+        _channels: u16,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.0.lock().map(|heard| heard.clone()).unwrap_or_default())
+    }
+}
+
 #[async_trait]
 impl AudioTranscriber for HeardTowels {
     async fn transcribe(
@@ -67,6 +83,18 @@ impl AudioTranscriber for HeardTowels {
         _channels: u16,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok("towels please".to_string())
+    }
+}
+
+/// Explicit test double: about 1.6 s of pod playback for any answer, longer
+/// than the one-second awake window used with it.
+struct LongSpeech;
+
+const LONG_SPEECH_BYTES: usize = 25 * 2048;
+
+impl Speech for LongSpeech {
+    fn synthesize(&self, _text: &str) -> Result<Vec<u8>, String> {
+        Ok(vec![7u8; LONG_SPEECH_BYTES])
     }
 }
 
@@ -103,6 +131,14 @@ struct Stack {
 }
 
 async fn stack(label: &str) -> Stack {
+    stack_with(label, Arc::new(HeardTowels), AudioIngressConfig::default()).await
+}
+
+async fn stack_with(
+    label: &str,
+    transcriber: Arc<dyn AudioTranscriber>,
+    audio: AudioIngressConfig,
+) -> Stack {
     let db = temp_db(label);
     let mut settings = Settings::default_for(Pack::Hotels);
     settings.bind = "127.0.0.1:0".to_string();
@@ -131,12 +167,11 @@ async fn stack(label: &str) -> Stack {
         rooms: Mutex::new(Vec::new()),
     });
     let engine_dyn: Arc<dyn BackendEngine> = engine.clone();
-    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(HeardTowels);
     let backend = spawn_server_with_options(
         "127.0.0.1:0",
         engine_dyn,
         transcriber,
-        AudioIngressConfig::default(),
+        audio,
         ServerOptions {
             device_auth: Some(Arc::new(DeviceAuth::new(client))),
             tls: None,
@@ -164,6 +199,10 @@ fn fast_vad() -> VadSettings {
 }
 
 async fn bridge(backend: &ServerHandle) -> pod_gateway::BridgeHandle {
+    bridge_with(backend, Arc::new(CountingSpeech)).await
+}
+
+async fn bridge_with(backend: &ServerHandle, speech: Arc<dyn Speech>) -> pod_gateway::BridgeHandle {
     spawn_bridge(
         "127.0.0.1:0",
         BridgeSettings {
@@ -172,7 +211,7 @@ async fn bridge(backend: &ServerHandle) -> pod_gateway::BridgeHandle {
             pod_tls: None,
             vad: fast_vad(),
         },
-        Arc::new(CountingSpeech),
+        speech,
     )
     .await
     .unwrap_or_else(|error| panic!("bridge: {error}"))
@@ -396,6 +435,67 @@ async fn a_long_press_calls_for_help_and_says_so() {
         }
     }
     assert!(saw_speaking && audio > 0, "the pod confirms out loud");
+    stack.backend.shutdown().await;
+    let _ = std::fs::remove_file(stack.db);
+}
+
+async fn speak_request(socket: &mut PodSocket) {
+    for _ in 0..8 {
+        send(socket, &frame(8_000)).await;
+    }
+    for _ in 0..12 {
+        send(socket, &frame(0)).await;
+    }
+}
+
+async fn receive_answer_audio(socket: &mut PodSocket, bytes: usize) {
+    let mut audio = 0usize;
+    while audio < bytes {
+        match next(socket).await {
+            Some(GatewayToPod::Audio { payload }) => audio += payload.0.len(),
+            Some(GatewayToPod::Led { .. }) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_follow_up_after_a_long_answer_needs_no_wake_word() {
+    let heard = Arc::new(Heard(Mutex::new("computer, towels please".to_string())));
+    let audio = AudioIngressConfig {
+        wake_word: WakeWordConfig {
+            enabled: true,
+            phrases: vec!["computer".to_string()],
+            sensitivity: 0.5,
+            cooldown_secs: 1,
+        },
+    };
+    let stack = stack_with("follow-up", heard.clone(), audio).await;
+    let bridge = bridge_with(&stack.backend, Arc::new(LongSpeech)).await;
+    let mut socket = pod(&bridge.bind, &stack.token).await;
+    hello(&mut socket).await;
+    assert!(matches!(
+        next(&mut socket).await,
+        Some(GatewayToPod::HelloAck { .. })
+    ));
+    let _listening = next(&mut socket).await;
+
+    speak_request(&mut socket).await;
+    // Playback outlasts the awake window; the window must run from its end.
+    receive_answer_audio(&mut socket, LONG_SPEECH_BYTES).await;
+    if let Ok(mut said) = heard.0.lock() {
+        *said = "and a pillow".to_string();
+    }
+    speak_request(&mut socket).await;
+    receive_answer_audio(&mut socket, LONG_SPEECH_BYTES).await;
+
+    let turns = stack
+        .engine
+        .rooms
+        .lock()
+        .map(|rooms| rooms.len())
+        .unwrap_or_default();
+    assert_eq!(turns, 2, "the follow-up was answered without the wake word");
     stack.backend.shutdown().await;
     let _ = std::fs::remove_file(stack.db);
 }
