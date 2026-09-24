@@ -2,6 +2,8 @@
 
 How to build, provision, update, and operate an ATOM Echo as a room pod: a microphone and speaker in each room, connected to the room bridge (`pod-gateway`) and trusted through the property facilitator.
 
+> **Transport test bed only — do not deploy in guest rooms.** The ATOM Echo shares one clock pin (G33) between its microphone and speaker, so it can either listen or speak, never both. A guest cannot interrupt an answer by speaking, only by pressing the button. Use it to test enrolment, TLS, updates, and the bridge protocol. The guest-room pod is the full-duplex [Signal Pod](../hardware/signal-pod.md).
+
 > The firmware compiles in this repository (`python -m platformio run -d pod-firmware`) but the provisioning, TLS, and update paths have not yet been exercised on hardware. Test on one pod before a rollout.
 
 ## Hardware
