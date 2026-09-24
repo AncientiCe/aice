@@ -1,5 +1,5 @@
 /**
- * ATOM Echo pod firmware — full production implementation.
+ * ATOM Echo pod firmware — transport test bed, not a guest-room pod.
  *
  * Hardware (M5Stack ATOM Echo, ESP32-PICO-D4):
  *   PDM mic  : SPM1423 — CLK G33 / DATA G23 (PDM digital mic, not I²S input)
@@ -8,7 +8,8 @@
  *   Button   : G39 (active LOW) — tap to stop playback / wake
  *
  * Official PinMap: G33 = AMP LRCK and MIC CLK (shared). Single I2S0, mode-switch;
- * mic off during playback. Say "Computer stop" when listening; button to stop mid-play.
+ * mic off during playback, so speech cannot interrupt an answer; only a button tap
+ * stops playback. Spoken barge-in needs full-duplex hardware (docs/hardware/signal-pod.md).
  *
  * Protocol: see crates/pod-protocol/src/lib.rs
  *   Pod → Gateway  : Hello, Audio, Identify, TapActivate, Ping

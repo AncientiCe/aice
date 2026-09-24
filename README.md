@@ -114,7 +114,7 @@ Skills are defined and implemented in the external [`aice-skills`](https://githu
 
 - `apps/aice-backend`: cross-platform core backend service (primary).
 - `crates/core-*`: runtime building blocks (`core-config`, `core-llm`, `core-stt`, `core-orchestrator`, `core-observability`, `core-runtime-protocol`).
-- `apps/pod-gateway`: room bridge between pods and the backend; `pod-firmware`: ATOM Echo room pod; `apps/room-loadtest`: capacity measurement; `crates/core-tls`: property CA and TLS helpers.
+- `apps/pod-gateway`: room bridge between pods and the backend; `pod-firmware`: ATOM Echo transport test bed (half-duplex; the guest-room pod is the [Signal Pod](docs/hardware/signal-pod.md)); `apps/room-loadtest`: capacity measurement; `crates/core-tls`: property CA and TLS helpers.
 
 ## Public repository safety
 
@@ -161,10 +161,10 @@ A pod in each room, a room bridge, the voice backend, and one property pack (`ai
 - **Capacity:** admission control, a Whisper worker pool, LLM host failover, and `room-loadtest` ([architecture 28](docs/architecture/README.md#28-capacity-admission-control-worker-pools-and-llm-failover), [30](docs/architecture/README.md#30-capacity-measurement-room-loadtest)).
 - **Runbooks:** [pilot runbook](docs/runbooks/property-pilot.md), [pod deployment](docs/deployment/m5stack-pod.md), [DPIA template](docs/compliance/dpia-template.md), [clinical safety starter](docs/compliance/clinical-safety-case.md).
 
-Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a clinical safety case approved by a Clinical Safety Officer. The pod firmware compiles in CI but has not yet been exercised on hardware.
+Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a clinical safety case approved by a Clinical Safety Officer. The pod firmware compiles in CI but has not yet been exercised on hardware, and it targets the ATOM Echo test bed; a pilot needs a full-duplex [Signal Pod](docs/hardware/signal-pod.md), which does not exist yet.
 
 - **`apps/pod-gateway`** (`cargo aice-gateway`): the room bridge between pods and `aice-backend` ([architecture 4](docs/architecture/README.md#4-room-bridge-pods--backend)).
-- **`pod-firmware`**: M5Stack ATOM Echo room pod ([pod deployment](docs/deployment/m5stack-pod.md)).
+- **`pod-firmware`**: M5Stack ATOM Echo transport test bed ([pod deployment](docs/deployment/m5stack-pod.md)). It cannot listen while it speaks, so guests cannot interrupt it by voice; it is not a guest-room pod. Requirements for the full-duplex guest-room pod: [Signal Pod](docs/hardware/signal-pod.md).
 
 ### Release v0.3.2
 
