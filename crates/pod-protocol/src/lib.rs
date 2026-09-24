@@ -60,6 +60,8 @@ pub enum PodToGateway {
     },
     /// Tap-to-activate (optional).
     TapActivate,
+    /// Long press: call staff without speech (works when the LLM is down).
+    HelpButton,
     /// Keepalive ping from pod.
     Ping { seq: u64 },
 }

@@ -100,5 +100,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build backend and property packs
-        run: cargo build -p aice-backend -p aice-hotels -p aice-care -p aice-ward
+      - name: Build backend, property packs, room bridge, and load test
+        run: cargo build -p aice-backend -p aice-hotels -p aice-care -p aice-ward -p pod-gateway -p room-loadtest
+
+  pod-firmware:
+    name: Build room pod firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PlatformIO
+        run: python3 -m pip install --user platformio
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('pod-firmware/platformio.ini') }}
+
+      - name: Build firmware (example config and trust headers)
+        run: python3 -m platformio run -d pod-firmware

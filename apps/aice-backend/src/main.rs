@@ -2,8 +2,10 @@ use aice_backend::discovery_broadcast::{
     resolve_discovery_udp_port, spawn_udp_discovery_responder, DEFAULT_DISCOVERY_UDP_PORT,
 };
 use aice_backend::{
-    spawn_server_with_audio, AiceBackendEngine, AudioIngressConfig, BackendEngine,
-    WhisperAudioTranscriber,
+    property_client_from_config, server_options_from_config, spawn_device_heartbeats,
+    spawn_memory_retention, spawn_server_with_options, AdmissionSettings, AdmittedEngine,
+    AdmittedTranscriber, AiceBackendEngine, AudioIngressConfig, AudioTranscriber, BackendEngine,
+    WhisperAudioTranscriber, HEARTBEAT_INTERVAL,
 };
 use core_config::Config;
 use core_observability::{
@@ -17,6 +19,8 @@ use std::time::Instant;
 use tracing::{info, warn};
 
 const DEFAULT_BACKEND_BIND: &str = "0.0.0.0:8781";
+/// How often the backend asks the facilitator for stay memories to delete.
+const MEMORY_RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn resolve_metrics_bind(
     metrics_enabled: bool,
@@ -63,16 +67,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         resolve_discovery_udp_port(std::env::var("AICE_BACKEND_DISCOVERY_UDP_PORT").ok())
             .map_err(|error| format!("failed to resolve discovery UDP port: {error}"))?;
 
-    let engine: Arc<dyn BackendEngine> = Arc::new(AiceBackendEngine::from_config(&config).await?);
-    let transcriber = Arc::new(WhisperAudioTranscriber::new(
-        config.stt.whisper_model_path.clone(),
-        config.stt.preload_model_on_startup,
-    )?);
-    let handle = spawn_server_with_audio(
+    let concrete_engine = AiceBackendEngine::from_config(&config).await?;
+    let retention = match property_client_from_config(&config.property) {
+        Some(Ok(client)) => Some(spawn_memory_retention(
+            concrete_engine.palace_handle(),
+            client,
+            MEMORY_RETENTION_INTERVAL,
+        )),
+        Some(Err(error)) => {
+            warn!(%error, "memory retention job not started");
+            None
+        }
+        None => None,
+    };
+    let admission = AdmissionSettings::from_config(&config);
+    info!(
+        max_concurrent_turns = admission.max_concurrent_turns,
+        stt_workers = admission.max_concurrent_stt,
+        max_wait_ms = admission.max_wait.as_millis() as u64,
+        "admission control"
+    );
+    let engine: Arc<dyn BackendEngine> =
+        Arc::new(AdmittedEngine::new(Arc::new(concrete_engine), &admission));
+    let transcriber: Arc<dyn AudioTranscriber> = Arc::new(AdmittedTranscriber::new(
+        Arc::new(WhisperAudioTranscriber::new(
+            config.stt.whisper_model_path.clone(),
+            config.stt.preload_model_on_startup,
+            admission.max_concurrent_stt,
+        )?),
+        &admission,
+    ));
+    let options = server_options_from_config(&config, &bind)?;
+    let heartbeats = options.device_auth.as_ref().map(|auth| {
+        info!("turn stream requires facilitator device tokens");
+        spawn_device_heartbeats(Arc::clone(auth), HEARTBEAT_INTERVAL)
+    });
+    if options.tls.is_some() {
+        info!("backend serves TLS only");
+    }
+    let handle = spawn_server_with_options(
         &bind,
         engine,
         transcriber,
         AudioIngressConfig::from_config(&config),
+        options,
     )
     .await?;
     info!(bind = %handle.bind, "aice-backend started");
@@ -97,6 +135,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     tokio::signal::ctrl_c().await?;
+    if let Some(retention) = retention {
+        retention.abort();
+    }
+    if let Some(heartbeats) = heartbeats {
+        heartbeats.abort();
+    }
     udp_handle.abort();
     let _ = udp_handle.await;
     handle.shutdown().await;

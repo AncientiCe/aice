@@ -46,3 +46,4 @@ jobs:
           cargo build --release -p aice-hotels --bin aice-hotels
           cargo build --release -p aice-care --bin aice-care
           cargo build --release -p aice-ward --bin aice-ward
+          cargo build --release -p pod-gateway --bin pod-gateway

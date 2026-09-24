@@ -36,6 +36,22 @@ Allowed tools open a ticket and speak a confirmation. Denied tools open an `esca
 
 A hospital that wants clinical advice is outside this pack. The policy deny-list is the boundary.
 
+## Security and memory
+
+- The desk needs a staff login; `/mcp` needs the service token; pods need a device token. See [architecture section 24](../architecture/README.md#24-property-security-desk-login-service-token-tls) and [25](../architecture/README.md#25-room-pod-provisioning-and-device-tokens).
+- Staff check guests and residents in and out under **Stays**. Memory exists only for an open stay whose guest or resident agreed (default: not agreed: ask each patient) and follows `memory_retention` at checkout ([section 26](../architecture/README.md#26-stays-and-stay-scoped-memory)). Default retention: `wipe_on_close`.
+
+## Alerts
+
+New tickets page the first alert tier, and tickets not acknowledged within their rule's window escalate tier by tier ([architecture section 27](../architecture/README.md#27-staff-alerting-and-sla-re-escalation)).
+
 ## Metrics
 
 Same names as [aice-hotels](aice-hotels.md), with `pack="ward"`.
+| `property_auth_attempts_total` | counter | `method` (`login`, `session`, `service_token`, `device_token`), `result` |
+| `property_audit_events_total` | counter | `action` |
+| `fleet_provisioning_total` | counter | `result` |
+| `memory_stay_transitions_total` | counter | `action` (`opened`, `continued`, `closed`, `purged`) |
+| `property_alerts_sent_total` | counter | `channel`, `result` |
+| `property_sla_breaches_total` | counter | `pack`, `tool` |
+| `property_ticket_ack_duration_seconds` | histogram | `pack`, `tool` |

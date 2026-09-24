@@ -2,7 +2,7 @@
 //!
 //! Names follow convention: voice_<subsystem>_<operation>_<unit>.
 
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 use std::time::Duration;
 
 /// Voice pipeline stages for duration tracking.
@@ -51,7 +51,6 @@ const POD_AUDIO_FRAMES_TOTAL: &str = "pod_audio_frames_total";
 const POD_AUDIO_BYTES_TOTAL: &str = "pod_audio_bytes_total";
 const POD_TTS_CHUNKS_TOTAL: &str = "pod_tts_chunks_total";
 const POD_TTS_BYTES_TOTAL: &str = "pod_tts_bytes_total";
-const POD_EGRESS_DEVICE_LOCK_POISON_TOTAL: &str = "pod_egress_device_lock_poison_total";
 const VOICE_INTENT_CLASSIFIER_TOTAL: &str = "voice_intent_classifier_total";
 const VOICE_INTENT_VALIDATION_REJECTED_TOTAL: &str = "voice_intent_validation_rejected_total";
 const VOICE_INTENT_ROUTED_TOTAL: &str = "voice_intent_routed_total";
@@ -154,6 +153,29 @@ const PALACE_ERRORS_TOTAL: &str = "palace_errors_total";
 const PROPERTY_REQUESTS_TOTAL: &str = "property_requests_total";
 const PROPERTY_MCP_ERRORS_TOTAL: &str = "property_mcp_errors_total";
 const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
+const PROPERTY_AUTH_ATTEMPTS_TOTAL: &str = "property_auth_attempts_total";
+const PROPERTY_AUDIT_EVENTS_TOTAL: &str = "property_audit_events_total";
+const FLEET_PROVISIONING_TOTAL: &str = "fleet_provisioning_total";
+const FLEET_HEARTBEAT_MISSED_TOTAL: &str = "fleet_heartbeat_missed_total";
+const FLEET_DEVICES: &str = "fleet_devices";
+const FLEET_FIRMWARE_MANIFEST_TOTAL: &str = "fleet_firmware_manifest_total";
+const FLEET_FIRMWARE_DOWNLOADS_TOTAL: &str = "fleet_firmware_downloads_total";
+const MEMORY_STAY_TRANSITIONS_TOTAL: &str = "memory_stay_transitions_total";
+const PROPERTY_ALERTS_SENT_TOTAL: &str = "property_alerts_sent_total";
+const POD_BRIDGE_TURNS_TOTAL: &str = "pod_bridge_turns_total";
+const BACKEND_QUEUE_DEPTH: &str = "backend_queue_depth";
+const BACKEND_INFERENCE_HOST_ERRORS_TOTAL: &str = "backend_inference_host_errors_total";
+const BACKEND_HELP_REQUESTS_TOTAL: &str = "backend_help_requests_total";
+const BACKEND_WAKE_WORD_TURNS_TOTAL: &str = "backend_wake_word_turns_total";
+const BACKEND_QUEUE_WAIT_SECONDS: &str = "backend_queue_wait_seconds";
+const BACKEND_QUEUE_REJECTIONS_TOTAL: &str = "backend_queue_rejections_total";
+const POD_BRIDGE_TURN_DURATION_SECONDS: &str = "pod_bridge_turn_duration_seconds";
+const PROPERTY_SLA_BREACHES_TOTAL: &str = "property_sla_breaches_total";
+const PROPERTY_TICKET_ACK_DURATION_SECONDS: &str = "property_ticket_ack_duration_seconds";
+const MEMORY_RECALL_SCOPED_TOTAL: &str = "memory_recall_scoped_total";
+const MEMORY_RETENTION_PURGES_TOTAL: &str = "memory_retention_purges_total";
+const BACKEND_AUTH_REJECTIONS_TOTAL: &str = "backend_auth_rejections_total";
+const BACKEND_DEVICE_AUTH_DURATION_SECONDS: &str = "backend_device_auth_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -181,7 +203,6 @@ pub fn register_metrics() {
     counter!(POD_AUDIO_BYTES_TOTAL, 0, "device_id" => "unknown");
     counter!(POD_TTS_CHUNKS_TOTAL, 0, "device_id" => "unknown");
     counter!(POD_TTS_BYTES_TOTAL, 0, "device_id" => "unknown");
-    counter!(POD_EGRESS_DEVICE_LOCK_POISON_TOTAL, 0, "operation" => "unknown");
     counter!(VOICE_INTENT_CLASSIFIER_TOTAL, 0);
     counter!(VOICE_INTENT_ROUTED_TOTAL, 0, "intent" => "unknown");
     counter!(VOICE_WEATHER_SKILL_TOTAL, 0, "result" => "unknown");
@@ -350,6 +371,53 @@ pub fn register_metrics() {
         0.0_f64,
         "operation" => "unknown"
     );
+    counter!(
+        PROPERTY_AUTH_ATTEMPTS_TOTAL,
+        0,
+        "method" => "unknown",
+        "result" => "unknown"
+    );
+    counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 0, "action" => "unknown");
+    counter!(FLEET_PROVISIONING_TOTAL, 0, "result" => "unknown");
+    counter!(FLEET_HEARTBEAT_MISSED_TOTAL, 0);
+    gauge!(FLEET_DEVICES, 0.0, "status" => "unknown");
+    counter!(FLEET_FIRMWARE_MANIFEST_TOTAL, 0, "result" => "unknown");
+    counter!(FLEET_FIRMWARE_DOWNLOADS_TOTAL, 0, "version" => "unknown");
+    counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 0, "action" => "unknown");
+    counter!(POD_BRIDGE_TURNS_TOTAL, 0, "result" => "unknown");
+    gauge!(BACKEND_QUEUE_DEPTH, 0.0, "stage" => "unknown");
+    counter!(BACKEND_INFERENCE_HOST_ERRORS_TOTAL, 0, "host" => "unknown");
+    counter!(BACKEND_HELP_REQUESTS_TOTAL, 0, "result" => "unknown");
+    counter!(BACKEND_WAKE_WORD_TURNS_TOTAL, 0, "result" => "unknown");
+    histogram!(BACKEND_QUEUE_WAIT_SECONDS, 0.0_f64, "stage" => "unknown");
+    counter!(BACKEND_QUEUE_REJECTIONS_TOTAL, 0, "stage" => "unknown");
+    histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, 0.0_f64);
+    counter!(
+        PROPERTY_ALERTS_SENT_TOTAL,
+        0,
+        "channel" => "unknown",
+        "result" => "unknown"
+    );
+    counter!(
+        PROPERTY_SLA_BREACHES_TOTAL,
+        0,
+        "pack" => "unknown",
+        "tool" => "unknown"
+    );
+    histogram!(
+        PROPERTY_TICKET_ACK_DURATION_SECONDS,
+        0.0_f64,
+        "pack" => "unknown",
+        "tool" => "unknown"
+    );
+    counter!(MEMORY_RECALL_SCOPED_TOTAL, 0, "scope" => "unknown");
+    counter!(MEMORY_RETENTION_PURGES_TOTAL, 0, "result" => "unknown");
+    counter!(BACKEND_AUTH_REJECTIONS_TOTAL, 0, "reason" => "unknown");
+    histogram!(
+        BACKEND_DEVICE_AUTH_DURATION_SECONDS,
+        0.0_f64,
+        "result" => "unknown"
+    );
 }
 
 /// Record a new voice session start.
@@ -491,14 +559,6 @@ pub fn record_pod_tts_chunk(device_id: &str, bytes: usize) {
     let id = device_id.to_string();
     counter!(POD_TTS_CHUNKS_TOTAL, 1, "device_id" => id.clone());
     counter!(POD_TTS_BYTES_TOTAL, bytes as u64, "device_id" => id);
-}
-
-pub fn record_pod_egress_device_lock_poison(operation: &str) {
-    counter!(
-        POD_EGRESS_DEVICE_LOCK_POISON_TOTAL,
-        1,
-        "operation" => operation.to_string()
-    );
 }
 
 pub fn record_backend_turn_total(path: &str, result: &str) {
@@ -1092,4 +1152,149 @@ pub fn record_property_mcp_duration(operation: &str, duration: Duration) {
         duration.as_secs_f64(),
         "operation" => operation.to_string()
     );
+}
+
+/// Desk logins, desk sessions, and service-token checks, by outcome.
+pub fn record_property_auth_attempt(method: &str, result: &str) {
+    counter!(
+        PROPERTY_AUTH_ATTEMPTS_TOTAL,
+        1,
+        "method" => method.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Rows appended to the facilitator audit log, by action.
+pub fn record_property_audit_event(action: &str) {
+    counter!(PROPERTY_AUDIT_EVENTS_TOTAL, 1, "action" => action.to_string());
+}
+
+/// Pod enrolment and assignment steps, by result.
+pub fn record_fleet_provisioning(result: &str) {
+    counter!(FLEET_PROVISIONING_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Turn-stream connections refused for a missing, unknown, or unverifiable device token.
+pub fn record_backend_auth_rejection(reason: &str) {
+    counter!(BACKEND_AUTH_REJECTIONS_TOTAL, 1, "reason" => reason.to_string());
+}
+
+/// Time to verify a device token, by result.
+pub fn record_backend_device_auth_duration(result: &str, duration: Duration) {
+    histogram!(
+        BACKEND_DEVICE_AUTH_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "result" => result.to_string()
+    );
+}
+
+/// Stays opened, continued, closed, and purged.
+pub fn record_memory_stay_transition(action: &str) {
+    counter!(MEMORY_STAY_TRANSITIONS_TOTAL, 1, "action" => action.to_string());
+}
+
+/// Memory reads by scope: `global` (home), `stay`, or `disabled` (room without a stay).
+pub fn record_memory_recall_scoped(scope: &str) {
+    counter!(MEMORY_RECALL_SCOPED_TOTAL, 1, "scope" => scope.to_string());
+}
+
+/// Stay memory wings deleted by the retention job, by result.
+pub fn record_memory_retention_purge(result: &str) {
+    counter!(MEMORY_RETENTION_PURGES_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Alerts handed to a channel, by channel name and result.
+pub fn record_property_alert_sent(channel: &str, result: &str) {
+    counter!(
+        PROPERTY_ALERTS_SENT_TOTAL,
+        1,
+        "channel" => channel.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Tickets nobody acknowledged within their rule's window.
+pub fn record_property_sla_breach(pack: &str, tool: &str) {
+    counter!(
+        PROPERTY_SLA_BREACHES_TOTAL,
+        1,
+        "pack" => pack.to_string(),
+        "tool" => tool.to_string()
+    );
+}
+
+/// Time from ticket creation to its first acknowledgement.
+pub fn record_property_ticket_ack_duration(pack: &str, tool: &str, duration: Duration) {
+    histogram!(
+        PROPERTY_TICKET_ACK_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "pack" => pack.to_string(),
+        "tool" => tool.to_string()
+    );
+}
+
+/// Pod bridge turns and refusals, by result.
+pub fn record_pod_bridge_turn(result: &str) {
+    counter!(POD_BRIDGE_TURNS_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Time from speech start to the answer being queued on the pod.
+pub fn record_pod_bridge_turn_duration(duration: Duration) {
+    histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+/// An active pod stopped reporting.
+pub fn record_fleet_heartbeat_missed() {
+    counter!(FLEET_HEARTBEAT_MISSED_TOTAL, 1);
+}
+
+/// Pods by fleet status (`pending`, `online`, `offline`, `revoked`).
+pub fn record_fleet_devices(status: &str, count: i64) {
+    gauge!(FLEET_DEVICES, count as f64, "status" => status.to_string());
+}
+
+/// Pod update checks, by result (`offered`, `up_to_date`, `not_in_cohort`, `no_release`).
+pub fn record_fleet_firmware_manifest(result: &str) {
+    counter!(FLEET_FIRMWARE_MANIFEST_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Firmware images served to pods.
+pub fn record_fleet_firmware_download(version: &str) {
+    counter!(FLEET_FIRMWARE_DOWNLOADS_TOTAL, 1, "version" => version.to_string());
+}
+
+/// Jobs holding or waiting for a permit when one more arrives, by stage (`turn`, `stt`).
+pub fn record_backend_queue_depth(stage: &str, depth: usize) {
+    gauge!(BACKEND_QUEUE_DEPTH, depth as f64, "stage" => stage.to_string());
+}
+
+/// Time a job waited for a permit, by stage.
+pub fn record_backend_queue_wait(stage: &str, duration: Duration) {
+    histogram!(
+        BACKEND_QUEUE_WAIT_SECONDS,
+        duration.as_secs_f64(),
+        "stage" => stage.to_string()
+    );
+}
+
+/// Jobs turned away after waiting the maximum time, by stage.
+pub fn record_backend_queue_rejection(stage: &str) {
+    counter!(BACKEND_QUEUE_REJECTIONS_TOTAL, 1, "stage" => stage.to_string());
+}
+
+/// An LLM host failed a call (the call moved to the next host).
+pub fn record_backend_inference_host_error(host: &str) {
+    counter!(BACKEND_INFERENCE_HOST_ERRORS_TOTAL, 1, "host" => host.to_string());
+}
+
+/// Help-button presses, by result (`raised`, `unavailable`, `no_property`).
+pub fn record_backend_help_request(result: &str) {
+    counter!(BACKEND_HELP_REQUESTS_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Wake-word decision for a finished turn: `woken` (idle, wake word said),
+/// `awake` (conversation in flight, no wake word needed), `ignored` (idle, no
+/// wake word; the turn is dropped).
+pub fn record_backend_wake_word_turn(result: &str) {
+    counter!(BACKEND_WAKE_WORD_TURNS_TOTAL, 1, "result" => result.to_string());
 }

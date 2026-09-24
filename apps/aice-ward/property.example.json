@@ -1,8 +1,19 @@
 {
   "pack": "ward",
-  "bind": "127.0.0.1:8793",
+  "bind": "0.0.0.0:8793",
+  "tls": {
+    "mode": "auto",
+    "hostnames": [
+      "desk.ward.local"
+    ]
+  },
+  "metrics_bind": "127.0.0.1:9793",
   "database_path": "property.sqlite",
+  "service_token_file": "service.token",
   "property_mcp_url": null,
   "delegated_tools": [],
-  "extensions": {}
+  "extensions": {},
+  "memory_retention": {
+    "mode": "wipe_on_close"
+  }
 }

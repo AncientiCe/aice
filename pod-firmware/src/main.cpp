@@ -1,5 +1,5 @@
 /**
- * ATOM Echo pod firmware — full production implementation.
+ * ATOM Echo pod firmware — transport test bed, not a guest-room pod.
  *
  * Hardware (M5Stack ATOM Echo, ESP32-PICO-D4):
  *   PDM mic  : SPM1423 — CLK G33 / DATA G23 (PDM digital mic, not I²S input)
@@ -8,11 +8,18 @@
  *   Button   : G39 (active LOW) — tap to stop playback / wake
  *
  * Official PinMap: G33 = AMP LRCK and MIC CLK (shared). Single I2S0, mode-switch;
- * mic off during playback. Say "Computer stop" when listening; button to stop mid-play.
+ * mic off during playback, so speech cannot interrupt an answer; only a button tap
+ * stops playback. Spoken barge-in needs full-duplex hardware (docs/hardware/signal-pod.md).
  *
  * Protocol: see crates/pod-protocol/src/lib.rs
  *   Pod → Gateway  : Hello, Audio, Identify, TapActivate, Ping
  *   Gateway → Pod  : HelloAck, Audio, StopAudio, Led, Pong, Error
+ *
+ * Trust: the pod enrols with the property facilitator over HTTPS (property CA
+ * from property_trust.h), gets a device token once a supervisor assigns its
+ * room, and connects to the room bridge over WSS with that token. Updates are
+ * installed only when their ECDSA signature verifies. Hold the button while
+ * booting for 5 s to forget the pod's identity.
  *
  * Audio path:
  *   PDM mic → I2S0 RX PDM (16 kHz, 16-bit, mono) → WebSocket Audio frames
@@ -27,7 +34,18 @@
 #include <driver/i2s.h>
 #include <cstring>
 
+#if __has_include("pod_config.h")
 #include "pod_config.h"
+#else
+#include "pod_config.example.h"
+#endif
+#if __has_include("property_trust.h")
+#include "property_trust.h"
+#else
+#include "property_trust.example.h"
+#endif
+#include "pod_defaults.h"
+#include "provisioning.h"
 
 // ── Pin definitions (Atom-Echo PinMap SPK & MIC) ──────────────────────────────
 //   G22      G19      G33        G23
@@ -70,6 +88,7 @@ Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED, NEO_GRBW + NEO_KHZ800);
 enum class PodState {
     Booting,
     WifiConnecting,
+    Provisioning,
     WsConnecting,
     Listening,
     Thinking,
@@ -89,6 +108,10 @@ static constexpr uint32_t TTS_END_GRACE_MS = 180;
 
 static WebSocketsClient g_ws;
 static uint32_t g_ws_disconnects = 0;
+static String   g_device_id;
+static bool     g_muted = false;
+static String   g_token;
+static uint32_t g_last_update_check_ms = 0;
 enum class AudioDriverMode { None, Mic, Speaker };
 static AudioDriverMode g_audio_mode = AudioDriverMode::None;
 static int32_t g_tts_gain_q10 = 1024; // smoothed gain state (1.0x)
@@ -110,6 +133,7 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length);
 static void send_hello();
 static void send_ping();
 static void send_tap_activate();
+static void send_help_button();
 static void start_mic();
 static void stop_mic();
 static void start_speaker();
@@ -134,8 +158,9 @@ void setup() {
     strip.show();
     set_state(PodState::Booting);
 
-    // Button
+    // Button (held at boot: factory reset)
     pinMode(PIN_BTN, INPUT_PULLUP);
+    pod_factory_reset_if_held(PIN_BTN);
     // Enable the onboard NS4168 amp; without this, speaker stays silent.
     pinMode(PIN_SPK_EN, OUTPUT);
     digitalWrite(PIN_SPK_EN, HIGH);
@@ -157,10 +182,38 @@ void setup() {
         led_update(); // blink while connecting
     }
     Serial.printf("[aice-pod] Wi-Fi OK, IP: %s\n", WiFi.localIP().toString().c_str());
+    g_device_id = pod_device_id();
+    Serial.printf("[aice-pod] device id %s, firmware %s\n", g_device_id.c_str(), FIRMWARE_VERSION);
 
-    // WebSocket
+    // Enrol until a supervisor assigns this pod a room.
+    g_token = pod_load_token();
+    if (g_token.length() == 0) {
+        set_state(PodState::Provisioning);
+        while (true) {
+            EnrollResult result = pod_enroll(false);
+            if (result == EnrollResult::Enrolled) {
+                g_token = pod_load_token();
+                break;
+            }
+            set_state(result == EnrollResult::Pending || result == EnrollResult::Failed
+                          ? PodState::Provisioning
+                          : PodState::Error);
+            uint32_t wait_started = millis();
+            while (millis() - wait_started < ENROLL_POLL_MS) {
+                led_update();
+                delay(50);
+            }
+        }
+    }
+
+    pod_check_for_update(g_token);
+    g_last_update_check_ms = millis();
+
+    // WebSocket to the room bridge, TLS with the property CA, device token as bearer.
     set_state(PodState::WsConnecting);
-    g_ws.begin(GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH);
+    g_ws.beginSslWithCA(GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH, PROPERTY_CA_PEM);
+    String auth_header = "Authorization: Bearer " + g_token;
+    g_ws.setExtraHeaders(auth_header.c_str());
     g_ws.onEvent(ws_event_handler);
     g_ws.setReconnectInterval(RECONNECT_BACKOFF_MS);
 
@@ -172,14 +225,34 @@ void loop() {
     g_ws.loop();
     led_update();
 
-    // Button: tap-to-activate
+    // Button: tap stops playback, double tap toggles the privacy mute, and a
+    // long press calls for help without speech (also while muted).
     static bool btn_last = HIGH;
+    static uint32_t btn_down_ms = 0;
+    static uint32_t tap_released_ms = 0;
+    static bool tap_pending = false;
     bool btn_now = digitalRead(PIN_BTN);
     if (btn_last == HIGH && btn_now == LOW) {
-        Serial.println("[aice-pod] button pressed — tap activate");
-        if (g_ws_connected) {
-            send_tap_activate();
+        btn_down_ms = millis();
+    } else if (btn_last == LOW && btn_now == HIGH && g_ws_connected) {
+        if (millis() - btn_down_ms >= HELP_PRESS_MS) {
+            Serial.println("[aice-pod] long press — calling for help");
+            tap_pending = false;
+            send_help_button();
+        } else if (tap_pending && millis() - tap_released_ms <= DOUBLE_TAP_MS) {
+            tap_pending = false;
+            g_muted = !g_muted;
+            Serial.printf("[aice-pod] privacy mute %s\n", g_muted ? "on" : "off");
+            led_update();
+        } else {
+            tap_pending = true;
+            tap_released_ms = millis();
         }
+    }
+    if (tap_pending && millis() - tap_released_ms > DOUBLE_TAP_MS) {
+        tap_pending = false;
+        Serial.println("[aice-pod] button tap — stop");
+        send_tap_activate();
     }
     btn_last = btn_now;
 
@@ -189,14 +262,22 @@ void loop() {
         g_last_ping_ms = millis();
     }
 
-    // Mic capture only when mic is active (G33 shared → off during playback).
-    if (g_ws_connected && g_mic_running &&
+    // Mic capture only when mic is active (G33 shared → off during playback)
+    // and the room has not muted the pod.
+    if (g_ws_connected && g_mic_running && !g_muted &&
         (g_state == PodState::Listening || g_state == PodState::Thinking)) {
         capture_and_send_audio();
     }
 
     // Drain one queued TTS chunk per loop; keeps WS reader non-blocking.
     playback_drain_once();
+
+    // Look for signed updates while idle.
+    if (g_state == PodState::Listening && g_playback_count == 0 &&
+        millis() - g_last_update_check_ms >= OTA_CHECK_INTERVAL_MS) {
+        g_last_update_check_ms = millis();
+        pod_check_for_update(g_token);
+    }
 }
 
 // ── LED ───────────────────────────────────────────────────────────────────────
@@ -213,6 +294,14 @@ static void led_update() {
         case PodState::Booting:
             strip.setPixelColor(0, strip.Color(20, 20, 20, 20));   // dim white
             break;
+        case PodState::Provisioning:
+            // Slow amber blink: waiting for a supervisor to assign a room.
+            if (millis() - last_blink > 700) {
+                blink_on = !blink_on;
+                last_blink = millis();
+            }
+            strip.setPixelColor(0, blink_on ? strip.Color(60, 30, 0, 0) : strip.Color(0, 0, 0, 0));
+            break;
         case PodState::WifiConnecting:
         case PodState::WsConnecting:
             if (millis() - last_blink > 300) {
@@ -222,7 +311,8 @@ static void led_update() {
             strip.setPixelColor(0, blink_on ? strip.Color(0, 0, 60, 0) : strip.Color(0, 0, 0, 0));
             break;
         case PodState::Listening:
-            strip.setPixelColor(0, strip.Color(0, 60, 0, 0));      // green
+            // Magenta while muted so the room can see nothing is being heard.
+            strip.setPixelColor(0, g_muted ? strip.Color(60, 0, 60, 0) : strip.Color(0, 60, 0, 0));
             break;
         case PodState::Thinking:
             strip.setPixelColor(0, strip.Color(60, 40, 0, 0));     // amber
@@ -318,8 +408,15 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length) {
                 // Keepalive acknowledged; nothing to do.
 
             } else if (strcmp(msg_type, "error") == 0) {
+                const char *code = doc["code"] | "";
                 Serial.printf("[aice-pod] gateway error %s: %s\n",
-                    (const char *)doc["code"], (const char *)doc["message"]);
+                    code, (const char *)(doc["message"] | ""));
+                if (strcmp(code, "unauthorized") == 0) {
+                    // Token revoked or lost: forget it and enrol again after a restart.
+                    pod_clear_token();
+                    delay(500);
+                    ESP.restart();
+                }
             }
             break;
         }
@@ -339,18 +436,25 @@ static void send_hello() {
     JsonDocument doc;
     doc["type"]             = "hello";
     doc["protocol_version"] = PROTOCOL_VERSION;
-    doc["device_id"]        = DEVICE_ID;
-    doc["room"]             = DEVICE_ROOM;
+    doc["device_id"]        = g_device_id;
     String out;
     serializeJson(doc, out);
     g_ws.sendTXT(out);
-    Serial.printf("[aice-pod] sent hello device_id=%s\n", DEVICE_ID);
+    Serial.printf("[aice-pod] sent hello device_id=%s\n", g_device_id.c_str());
 }
 
 static void send_ping() {
     JsonDocument doc;
     doc["type"] = "ping";
     doc["seq"]  = g_ping_seq++;
+    String out;
+    serializeJson(doc, out);
+    g_ws.sendTXT(out);
+}
+
+static void send_help_button() {
+    JsonDocument doc;
+    doc["type"] = "help_button";
     String out;
     serializeJson(doc, out);
     g_ws.sendTXT(out);

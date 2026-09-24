@@ -58,6 +58,13 @@ pub enum TurnStreamClientMessage {
     },
     TurnDone,
     TurnCancel,
+    /// The room's help button was pressed; raise a staff ticket directly.
+    HelpRequest,
+    /// The client started playing an answer; the conversation stays awake.
+    PlaybackStarted,
+    /// The client finished (or stopped) playing an answer; the wake-word
+    /// awake window runs from now.
+    PlaybackFinished,
     FrontendSkillResult {
         turn_id: String,
         intent_id: String,
@@ -84,6 +91,12 @@ pub enum TurnStreamServerEvent {
     FrontendSkillIntent(FrontendSkillIntent),
     Done {
         turn_id: String,
+    },
+    /// Answer to `help_request`: the ticket (if the desk was reached) and what to say.
+    HelpRaised {
+        #[serde(default)]
+        ticket_id: Option<String>,
+        spoken: String,
     },
     Error {
         #[serde(default)]

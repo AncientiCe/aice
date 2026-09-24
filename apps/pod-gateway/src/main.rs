@@ -1,60 +1,68 @@
-//! Pod gateway server for M5Stack pod audio and control.
+//! Room bridge: pods on `pod_bind`, turns on the backend, answers spoken back.
 
-use pod_gateway::{run_gateway, PodEgressCommand, PodIngestEvent};
-use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use std::path::Path;
+use std::sync::Arc;
 
-async fn run_health_server(bind: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = TcpListener::bind(&bind).await?;
-    tracing::info!(%bind, "health endpoint listening");
-    loop {
-        let (mut stream, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf).await;
-            let response =
-                b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nok";
-            let _ = stream.write_all(response).await;
-            let _ = stream.shutdown().await;
-        });
-    }
-}
+use core_config::Config;
+use pod_gateway::{spawn_bridge, BridgeSettings, PiperSpeech, VadSettings};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     core_observability::init_json_logging().ok();
-    let config = core_config::Config::load(std::path::Path::new("config.json")).unwrap_or_default();
-    if !config.service.health_bind.trim().is_empty() {
-        let bind = config.service.health_bind.clone();
-        tokio::spawn(async move {
-            if let Err(e) = run_health_server(bind).await {
-                tracing::warn!(error = %e, "health endpoint stopped");
-            }
-        });
-    }
-    let addr: SocketAddr = config.pod_bind.parse().unwrap_or_else(|error| {
-        tracing::warn!(
-            pod_bind = %config.pod_bind,
-            %error,
-            "invalid pod_bind, defaulting to 0.0.0.0:8765"
-        );
-        SocketAddr::from(([0, 0, 0, 0], 8765))
-    });
-    let listener = TcpListener::bind(addr).await?;
-    let (tx, mut rx) = mpsc::unbounded_channel::<PodIngestEvent>();
-    let (egress_tx, egress_rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            tracing::info!(device_id = %event.device_id, samples = event.pcm.len(), "pod ingest");
-            let _ = egress_tx.send(PodEgressCommand::ToDevice {
-                device_id: event.device_id,
-                msg: pod_protocol::GatewayToPod::Led {
-                    state: pod_protocol::LedState::Listening,
-                },
-            });
+    core_observability::register_metrics();
+    let config = Config::load(Path::new("config.json"))?;
+    let gateway = &config.pod_gateway;
+    if !config.service.metrics_bind.trim().is_empty() && config.service.metrics_enabled {
+        if let Err(error) = core_observability::init_prometheus_exporter(&gateway.metrics_bind) {
+            tracing::warn!(%error, "pod bridge metrics exporter failed to start");
         }
-    });
-    run_gateway(listener, tx, egress_rx, None).await
+    }
+    let pod_tls = match &gateway.tls {
+        Some(files) => Some(core_tls::acceptor(
+            Path::new(&files.cert_file),
+            Path::new(&files.key_file),
+        )?),
+        None => None,
+    };
+    if pod_tls.is_none()
+        && !is_loopback(&config.pod_bind)
+        && config.property.is_configured()
+        && !config.service.allow_plaintext_lan
+    {
+        return Err(format!(
+            "refusing plain WebSocket for pods on {}; set pod_gateway.tls or service.allow_plaintext_lan",
+            config.pod_bind
+        )
+        .into());
+    }
+    let backend_tls = match gateway.backend_ca_file.as_deref() {
+        Some(ca) if !ca.trim().is_empty() => Some(core_tls::client_config_trusting(Path::new(ca))?),
+        _ => None,
+    };
+    let speech = PiperSpeech(core_tts::PiperSynth::new(Path::new(
+        &config.tts.piper_model_path,
+    ))?);
+    let handle = spawn_bridge(
+        &config.pod_bind,
+        BridgeSettings {
+            backend_url: gateway.backend_url.clone(),
+            backend_tls,
+            pod_tls,
+            vad: VadSettings {
+                start_level: gateway.vad_start_level,
+                end_silence: std::time::Duration::from_millis(gateway.vad_end_silence_ms),
+                ..VadSettings::default()
+            },
+        },
+        Arc::new(speech),
+    )
+    .await?;
+    tracing::info!(bind = %handle.bind, backend = %gateway.backend_url, "pod bridge started");
+    handle.until_ctrl_c().await
+}
+
+fn is_loopback(bind: &str) -> bool {
+    bind.parse::<std::net::SocketAddr>()
+        .map(|addr| addr.ip().is_loopback())
+        .unwrap_or(false)
 }
