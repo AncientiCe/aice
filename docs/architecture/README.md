@@ -817,7 +817,7 @@ stateDiagram-v2
 
 **Notes:**
 - **State is per connection:** each `/turns/stream` WebSocket (one per pod through the bridge, one per desktop frontend) keeps its own conversation state. A reconnect starts idle.
-- **Awake when a turn starts** if a previous turn is still open, the last answer was cancelled (`turn_cancel`, e.g. a tap or barge-in), the client reported `playback_started` without `playback_finished`, or the last answer or playback ended less than `wake_word.cooldown_secs` ago. Clients that never send playback messages get a window from the backend's `done`.
+- **Awake when a turn starts** if a previous turn is still open, the last answer was cancelled (`turn_cancel`, e.g. a tap or barge-in), the client reported `playback_started` without `playback_finished`, or the last answer or playback ended less than `wake_word.cooldown_secs` ago (default 8 s). Clients that never send playback messages get a window from the backend's `done`.
 - **Transcript:** a leading wake phrase is dropped from the transcript whether or not the conversation is awake. An awake turn is passed to the LLM unchanged otherwise; an idle turn without a wake phrase is dropped and answered with `done` only.
 - **Failure paths:** a client that sends `playback_started` and disconnects loses the state with the connection; a missing `playback_finished` on a live connection keeps the conversation awake until the next turn is answered.
 - **Metrics:** `backend_wake_word_turns_total{result}` per finished turn: `woken`, `awake`, `ignored` (not recorded when the wake word is disabled).

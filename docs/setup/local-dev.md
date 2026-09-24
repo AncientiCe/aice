@@ -444,6 +444,6 @@ Persisted local data paths:
 
 - Missing STT/TTS output: verify `whisper-cli`, `piper`, and model paths.
 - Wake word not triggering: verify `wake_word.enabled` and `wake_word.phrases`.
-- Follow-ups need the wake word again: raise `wake_word.cooldown_secs`, the seconds a conversation stays awake after an answer finishes playing ([architecture 31](../architecture/README.md#31-wake-word-conversation-window)).
+- Follow-ups need the wake word again: raise `wake_word.cooldown_secs`, the seconds a conversation stays awake after an answer finishes playing (default 8; see [architecture 31](../architecture/README.md#31-wake-word-conversation-window)).
 - Pod cannot connect: verify `pod_bind`, firewall, and same-LAN host IP.
 - LLM issues: verify Ollama process and model availability.

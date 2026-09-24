@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Wake word detection settings (configurable phrase, sensitivity, cooldown).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WakeWordConfig {
     /// Whether wake word detection is enabled.
     #[serde(default)]
@@ -25,7 +25,18 @@ fn default_sensitivity() -> f32 {
 }
 
 fn default_cooldown_secs() -> u64 {
-    2
+    8
+}
+
+impl Default for WakeWordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            phrases: Vec::new(),
+            sensitivity: default_sensitivity(),
+            cooldown_secs: default_cooldown_secs(),
+        }
+    }
 }
 
 /// Search provider settings (fallback web search after user confirms).
@@ -1305,5 +1316,15 @@ mod tests {
         std::fs::create_dir_all(home.join(".palace")).must();
         assert_eq!(super::palace_data_dir(&home), home.join(".palace"));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn wake_word_stays_awake_eight_seconds_by_default() {
+        use super::WakeWordConfig;
+        assert_eq!(WakeWordConfig::default().cooldown_secs, 8);
+        let parsed: WakeWordConfig =
+            serde_json::from_str(r#"{"enabled": true, "phrases": ["computer"]}"#).must();
+        assert_eq!(parsed.cooldown_secs, 8);
+        assert_eq!(parsed.sensitivity, WakeWordConfig::default().sensitivity);
     }
 }
