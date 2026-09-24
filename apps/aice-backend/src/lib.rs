@@ -16,9 +16,9 @@ use core_observability::{
     record_backend_skill_execute, record_backend_skill_execute_duration,
     record_backend_turn_cancellation, record_backend_turn_duration,
     record_backend_turn_first_token_duration, record_backend_turn_partial_transcript_duration,
-    record_backend_turn_stage_duration, record_backend_turn_total, record_briefing_skill,
-    record_calculator_skill, record_calendar_skill, record_currency_skill, record_dictionary_skill,
-    record_email_skill, record_journal_skill, record_meeting_notes_skill,
+    record_backend_turn_stage_duration, record_backend_turn_total, record_backend_wake_word_turn,
+    record_briefing_skill, record_calculator_skill, record_calendar_skill, record_currency_skill,
+    record_dictionary_skill, record_email_skill, record_journal_skill, record_meeting_notes_skill,
     record_memory_recall_scoped, record_model_preload, record_model_preload_duration,
     record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_kg_add,
     record_palace_kg_query, record_palace_open, record_palace_search, record_palace_wake_up,
@@ -57,6 +57,7 @@ use core_skills::{
     WeatherSkill, ENABLED_SKILL_IDS,
 };
 use core_stt::WhisperSttStream;
+use core_vad::WakeWordGate;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -721,13 +722,45 @@ fn context_str(context: Option<&serde_json::Value>, key: &str) -> Option<String>
         .map(str::to_string)
 }
 
-fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> String {
+/// Wake-word decision for one turn; the label is the metric `result`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WakeOutcome {
+    Disabled,
+    Woken,
+    Awake,
+    Ignored,
+}
+
+impl WakeOutcome {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            WakeOutcome::Disabled => None,
+            WakeOutcome::Woken => Some("woken"),
+            WakeOutcome::Awake => Some("awake"),
+            WakeOutcome::Ignored => Some("ignored"),
+        }
+    }
+}
+
+/// An idle conversation starts only with a wake phrase; an awake one (a turn
+/// or its playback in flight, or inside the awake window) needs none. A
+/// leading wake phrase is dropped from the transcript either way.
+fn apply_backend_wake_word(
+    config: &WakeWordConfig,
+    awake: bool,
+    transcript: String,
+) -> (String, WakeOutcome) {
     let trimmed = transcript.trim();
     if !config.enabled {
-        return trimmed.to_string();
+        return (trimmed.to_string(), WakeOutcome::Disabled);
     }
+    let unmatched = if awake {
+        WakeOutcome::Awake
+    } else {
+        WakeOutcome::Ignored
+    };
     if trimmed.is_empty() {
-        return String::new();
+        return (String::new(), unmatched);
     }
     let lowered = trimmed.to_lowercase();
     for phrase in &config.phrases {
@@ -737,12 +770,72 @@ fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> Strin
         }
         if let Some(remainder) = lowered.strip_prefix(&normalized_phrase) {
             let remainder = &trimmed[trimmed.len() - remainder.len()..];
-            return remainder
+            let remainder = remainder
                 .trim_matches(|c: char| c == ',' || c == ':' || c.is_whitespace())
                 .to_string();
+            let matched = if awake {
+                WakeOutcome::Awake
+            } else {
+                WakeOutcome::Woken
+            };
+            return (remainder, matched);
         }
     }
-    String::new()
+    if awake {
+        (trimmed.to_string(), WakeOutcome::Awake)
+    } else {
+        (String::new(), WakeOutcome::Ignored)
+    }
+}
+
+/// Whether a connection's conversation is awake. The wake word wakes it; it
+/// stays awake while a turn or its playback is in flight and for the awake
+/// window (`wake_word.cooldown_secs`) after the last answer, then goes idle.
+#[derive(Debug)]
+struct ConversationWake {
+    gate: WakeWordGate,
+    playing: bool,
+    interrupted: bool,
+}
+
+impl ConversationWake {
+    fn new(config: WakeWordConfig) -> Self {
+        Self {
+            gate: WakeWordGate::new(config),
+            playing: false,
+            interrupted: false,
+        }
+    }
+
+    /// Decides a new turn: awake if the previous turn was still open or was
+    /// just cancelled, if an answer is playing, or inside the awake window.
+    fn start_turn(&mut self, previous_open: bool, now: Instant) -> bool {
+        let awake =
+            previous_open || self.interrupted || self.playing || self.gate.should_listen(now);
+        self.interrupted = false;
+        awake
+    }
+
+    /// An answer finished; the awake window runs from now.
+    fn answered(&mut self, now: Instant) {
+        self.gate.activate(now);
+    }
+
+    /// The guest cut in on an answer; the next turn continues the conversation.
+    fn cancelled(&mut self, now: Instant) {
+        self.interrupted = true;
+        self.gate.activate(now);
+    }
+
+    fn playback_started(&mut self) {
+        self.playing = true;
+    }
+
+    /// Playback ended or was stopped; the awake window runs from now.
+    fn playback_finished(&mut self, now: Instant) {
+        self.playing = false;
+        self.gate.activate(now);
+    }
 }
 
 #[derive(Debug)]
@@ -768,6 +861,8 @@ struct WsTurnState {
     completed_generation: Option<u64>,
     active_task: Option<tokio::task::JoinHandle<()>>,
     awaiting_skill_result: bool,
+    /// The conversation was awake when this turn started (no wake word needed).
+    awake: bool,
 }
 
 impl WsTurnState {
@@ -778,6 +873,7 @@ impl WsTurnState {
         memory: Option<Option<String>>,
         turn_id: String,
         supported_frontend_intents: Vec<String>,
+        awake: bool,
     ) -> Self {
         Self {
             session_id,
@@ -798,6 +894,7 @@ impl WsTurnState {
             completed_generation: None,
             active_task: None,
             awaiting_skill_result: false,
+            awake,
         }
     }
 }
@@ -1032,8 +1129,11 @@ async fn process_binary_audio_frame(
         }
         state.transcript_accum.push_str(&transcript);
     }
-    let transcript =
-        apply_backend_wake_word(&audio_config.wake_word, state.transcript_accum.clone());
+    let (transcript, _) = apply_backend_wake_word(
+        &audio_config.wake_word,
+        state.awake,
+        state.transcript_accum.clone(),
+    );
     if transcript.is_empty() {
         return Ok(());
     }
@@ -1071,6 +1171,7 @@ async fn handle_turn_stream_socket(
         .map(|authenticated| authenticated.auth.track(&authenticated.identity.device_id));
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TurnStreamInternalEvent>();
     let mut turn: Option<WsTurnState> = None;
+    let mut wake = ConversationWake::new(audio_config.wake_word.clone());
     let mut ws_session_id: Option<String> = None;
     let mut ws_device_id: Option<String> = None;
 
@@ -1130,11 +1231,13 @@ async fn handle_turn_stream_socket(
                                     supported_frontend_intents,
                                     ..
                                 } => {
+                                    let previous_open = turn.is_some();
                                     if let Some(mut previous) = turn.take() {
                                         if let Some(task) = previous.active_task.take() {
                                             task.abort();
                                         }
                                     }
+                                    let awake = wake.start_turn(previous_open, Instant::now());
                                     // Re-check the pod every turn: revocation and the
                                     // room's stay (guest) can change mid-connection.
                                     if let Some(authenticated) = device.as_mut() {
@@ -1186,7 +1289,7 @@ async fn handle_turn_stream_socket(
                                         supported_frontend_intents = intents.len(),
                                         "turn_start"
                                     );
-                                    turn = Some(WsTurnState::new(session_id, device_id, room, memory, turn_id, intents));
+                                    turn = Some(WsTurnState::new(session_id, device_id, room, memory, turn_id, intents, awake));
                                 }
                                 TurnStreamClientMessage::TurnDone => {
                                     let raw_since_turn_start_ms = turn
@@ -1230,24 +1333,21 @@ async fn handle_turn_stream_socket(
                                             }
                                             state.transcript_accum.push_str(&final_transcript_chunk);
                                         }
-                                        let final_transcript = apply_backend_wake_word(
-                                            &audio_config.wake_word,
-                                            state.transcript_accum.clone(),
-                                        );
-                                        if !final_transcript.is_empty() {
-                                            state.active_transcript = Some(final_transcript);
-                                        }
+                                    }
+                                    let (gated_transcript, wake_outcome) = apply_backend_wake_word(
+                                        &audio_config.wake_word,
+                                        state.awake,
+                                        state.transcript_accum.clone(),
+                                    );
+                                    if let Some(result) = wake_outcome.label() {
+                                        record_backend_wake_word_turn(result);
+                                    }
+                                    if !gated_transcript.is_empty() {
+                                        state.active_transcript = Some(gated_transcript);
                                     }
                                     if state.active_task.is_none() && !state.awaiting_skill_result {
-                                        let transcript = state
-                                            .active_transcript
-                                            .clone()
-                                            .unwrap_or_else(|| {
-                                                apply_backend_wake_word(
-                                                    &audio_config.wake_word,
-                                                    state.transcript_accum.clone(),
-                                                )
-                                            });
+                                        let transcript =
+                                            state.active_transcript.clone().unwrap_or_default();
                                         if !transcript.is_empty() {
                                             state.completed_generation = None;
                                             spawn_speculative_turn(
@@ -1305,8 +1405,13 @@ async fn handle_turn_stream_socket(
                                     };
                                     emit_turn_stream_event(&mut ws, &raised).await?;
                                 }
+                                TurnStreamClientMessage::PlaybackStarted => wake.playback_started(),
+                                TurnStreamClientMessage::PlaybackFinished => {
+                                    wake.playback_finished(Instant::now());
+                                }
                                 TurnStreamClientMessage::TurnCancel => {
                                     if let Some(mut state) = turn.take() {
+                                        wake.cancelled(Instant::now());
                                         if let Some(task) = state.active_task.take() {
                                             task.abort();
                                         }
@@ -1419,6 +1524,7 @@ async fn handle_turn_stream_socket(
                                         &TurnStreamServerEvent::Done { turn_id },
                                     )
                                     .await?;
+                                    wake.answered(Instant::now());
                                     turn = None;
                                 }
                             }
@@ -1520,6 +1626,7 @@ async fn handle_turn_stream_socket(
                                     },
                                 )
                                 .await?;
+                                wake.answered(Instant::now());
                                 turn = None;
                             }
                         }

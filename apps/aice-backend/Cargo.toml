@@ -32,6 +32,7 @@ core-llm = { path = "../../crates/core-llm" }
 core-observability = { path = "../../crates/core-observability" }
 core-orchestrator = { path = "../../crates/core-orchestrator" }
 core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
+core-vad = { path = "../../crates/core-vad" }
 property-facilitator = { path = "../../crates/property-facilitator" }
 thiserror = "1.0"
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
