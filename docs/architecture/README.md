@@ -110,7 +110,7 @@ sequenceDiagram
 - **Outputs:** `hello_ack`, `led` (`listening`, `thinking`, `speaking`), `audio` chunks of at most 2 KiB, `stop_audio`, `pong`, `error`. Audio is paced at playback speed with three chunks of lead, because the pod queues only six 2 KiB chunks (about 0.4 s); the pod returns to listening by itself when playback ends.
 - **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`); `help_button` (long press) calls staff without speech (section 29).
 - **Playback:** the bridge sends `playback_started` to the backend before it sends an answer to the pod, and `playback_finished` when the answer has been sent or a tap stops it, so the wake-word awake window runs from the end of playback (section 31).
-- **No spoken barge-in yet:** the pod board records while it plays (with a hardware echo reference), but the firmware does not send audio during playback and the bridge has no barge-in path yet, so section 2 barge-in never fires here; the button is the only interrupt. Any speech during playback interrupting the answer is specified in [Signal Pod requirements](../hardware/signal-pod.md).
+- **Barge-in:** a full-duplex pod keeps streaming during playback with its speaker reference; the bridge cancels the echo and lets speech interrupt the answer (section 32). A half-duplex pod's audio is ignored during playback and the button is the only interrupt.
 - **Local skills:** pods have none; a `frontend_skill_intent` is answered with an error result so the backend replies instead of waiting.
 - **Failure paths:** the backend refuses the token → `error {code: unauthorized}` and the pod connection closes; backend unreachable → `error {code: backend_unavailable}`; invalid JSON → `invalid_message`; audio over 64 KiB → `payload_too_large`; binary frames → `binary_not_supported`; Piper failure → the turn ends without audio (`pod_bridge_turns_total{result="speech_failed"}`). A property deployment refuses plain WebSocket pods on a network bind unless `service.allow_plaintext_lan` is set.
 - **Metrics:** `pod_bridge_turns_total{result}` (`answered`, `no_answer`, `cancelled`, `backend_error`, `speech_failed`, `unauthorized`, `backend_unavailable`), `pod_bridge_turn_duration_seconds`, `pod_connections_total`, `pod_disconnects_total`, `pod_audio_frames_total`, `pod_tts_chunks_total`, `pod_egress_queue_drops_total`, `pod_egress_send_errors_total`.
@@ -821,3 +821,37 @@ stateDiagram-v2
 - **Transcript:** a leading wake phrase is dropped from the transcript whether or not the conversation is awake. An awake turn is passed to the LLM unchanged otherwise; an idle turn without a wake phrase is dropped and answered with `done` only.
 - **Failure paths:** a client that sends `playback_started` and disconnects loses the state with the connection; a missing `playback_finished` on a live connection keeps the conversation awake until the next turn is answered.
 - **Metrics:** `backend_wake_word_turns_total{result}` per finished turn: `woken`, `awake`, `ignored` (not recorded when the wake word is disabled).
+
+## 32. Spoken barge-in (full-duplex pods)
+
+**Purpose:** A guest can talk over an answer and be heard: the answer stops and what they said becomes the next turn, with the conversation so far (including where the answer was cut) available to the model. The bridge detects speech by audio energy only; the LLM decides what it means ([Signal Pod](../hardware/signal-pod.md), rules 10 and 10.1).
+
+```mermaid
+sequenceDiagram
+    participant Pod as Pod (full_duplex)
+    participant Bridge as Room bridge
+    participant Backend as aice-backend
+    Pod->>Bridge: hello {full_duplex: true}
+    loop every 40 ms, also while speaking
+        Pod->>Bridge: audio {payload: mic, reference: speaker}
+        Note over Bridge: delay search + NLMS echo canceller
+    end
+    Bridge->>Pod: led speaking, audio chunks (answer)
+    Note over Bridge: cleaned level > barge_in_start_level and > echo_ratio x predicted echo, for barge_in_start_frames frames
+    Bridge->>Pod: stop_audio
+    Bridge->>Backend: playback_finished, playback_interrupted {spoken_ratio}
+    Bridge->>Backend: turn_cancel (only if the answer was still being prepared)
+    Bridge->>Backend: turn_start + preroll frames (first words kept)
+    Backend->>Backend: conversation log: cut the last answer at spoken_ratio, mark it interrupted
+    Bridge->>Backend: audio, turn_done
+    Backend-->>Bridge: answer that sees the recent exchanges
+```
+
+**Notes:**
+- **Inputs:** `hello.full_duplex`, `audio.reference` (the pod's playback loopback, same samples as the mic), `pod_gateway.barge_in_start_level` (default 600), `pod_gateway.barge_in_start_frames` (3), `pod_gateway.barge_in_echo_ratio` (1.5), `memory.max_recent_turns` (exchanges kept per session).
+- **Echo cancellation:** per pod in the bridge (`apps/pod-gateway/src/echo.rs`). A cross-correlation search every 0.25 s of playback finds how far the echo lags the reference (0.8 ms or one 40 ms frame more, depending on the session) and moves a delay line; a 256-tap normalized LMS filter learns the rest, pausing when the microphone carries clearly more than the predicted echo (double talk). Measured on the Waveshare pod: 11–14 dB of echo removed; the small speaker's distortion caps linear cancellation there, which is why onset also has to beat the predicted echo, not only a fixed level.
+- **Answer tail:** after the last chunk is sent, a full-duplex pod still plays what it queued; the bridge keeps answering (interruptible, no new turns) until the reference has been quiet for 400 ms.
+- **Conversation log:** the backend keeps the last `memory.max_recent_turns` exchanges per session in memory only (never on disk), passes them to chat replies, and drops them when the room's stay changes or after 10 minutes without a turn. `playback_interrupted` cuts the latest answer to the words played and marks it, so "no, the other one" can be resolved.
+- **Outputs:** `stop_audio` to the pod; `playback_interrupted {spoken_ratio}`, `turn_cancel`, and a new `turn_start` to the backend.
+- **Failure paths:** a half-duplex pod (no `full_duplex`) keeps the old behaviour: no speech during playback, the button is the only interrupt. Noise that opens a barge-in turn but transcribes to nothing is answered with nothing and counted as `empty`. A failed skill in the new turn is spoken as an apology instead of silence.
+- **Metrics:** `pod_bridge_barge_in_total{result}` (`turn`, `empty`), `pod_bridge_barge_in_latency_seconds` (onset to `stop_audio`), plus the debug log line `echo levels (mean abs per second)` (mic, speaker, left) for tuning.

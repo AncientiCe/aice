@@ -30,12 +30,14 @@ sequenceDiagram
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `horoscope_sign` | `String` | Zodiac sign (required). |
+| `horoscope_sign` | `String` | Zodiac sign (required). The classifier schema limits it to the 12 signs (`aries` … `pisces`), so other words from the request ("today") cannot land here. |
 | `horoscope_date` | `Option<NaiveDate>` | Optional date filter (defaults to today in backend). |
 
 ## Outputs
 
 `HoroscopeDailyResult { sign, day, summary, mood, color, lucky_number, as_of }`
+
+The provider is `freehoroscopeapi.com` (`GET /api/v1/get-horoscope/daily?sign=<sign>&day=TODAY|TOMORROW|YESTERDAY`). It returns only the text, so `mood`, `color`, and `lucky_number` are `None`. The earlier provider (aztro) answers 404 for every sign.
 
 ## Failure Paths
 
@@ -45,7 +47,9 @@ sequenceDiagram
 | `UnsupportedDate` | Date is not supported by the provider. |
 | `ProviderUnavailable` | Upstream provider is unavailable. |
 | `UpstreamTimeout` | Provider request timed out. |
-| `UpstreamParse` | Provider response could not be parsed. |
+| `UpstreamParse` | Provider response could not be parsed or had no text. |
+
+A failed lookup is spoken as a short apology on the pod instead of silence.
 
 ## Metrics
 

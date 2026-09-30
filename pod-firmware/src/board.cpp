@@ -43,20 +43,28 @@
 
 #define I2S_PORT I2S_NUM_0
 
-// Mic level: the ES7210 at its maximum analog gain, then a fixed digital gain so
-// normal speech at a metre clears the bridge's turn-start level.
+// Mic level: the ES7210 at its maximum analog gain. No digital gain: the echo of
+// the pod's own voice must stay below full scale, because clipped echo cannot be
+// cancelled (a clipped capture left 8.7 dB for even an ideal linear filter).
 #ifndef POD_MIC_GAIN_DB
 #define POD_MIC_GAIN_DB 37.5f
 #endif
-#ifndef POD_MIC_DIGITAL_GAIN
-#define POD_MIC_DIGITAL_GAIN 2
+// Playback reference (DAC loopback) level: low enough that the loudest answer
+// never clips it. The echo canceller learns the gain, so only headroom matters.
+#ifndef POD_REF_GAIN_DB
+#define POD_REF_GAIN_DB 18.0f
 #endif
 // Speaker level in dB relative to full scale (ES8311 DAC volume).
 #ifndef POD_SPEAKER_DB
-#define POD_SPEAKER_DB -12.0f
+#define POD_SPEAKER_DB -20.0f
 #endif
 
 static constexpr int ADC_CHANNELS = 4;  // int16 values per I²S frame
+static constexpr int REF_CHANNEL  = 0;  // DAC loopback: what the speaker played
+// The mic at frame position 1 is ES7210 input MIC1 (lowering that input's gain
+// lowered it). Every other input gets the reference gain: the loopback sits on
+// one of them, and the others are unused.
+static constexpr int MIC_ADC_INPUT = 0;  // zero-based: MIC1
 static constexpr int MIC_CHANNEL  = 1;
 static constexpr int SAMPLES_PER_FRAME = PDM_SAMPLE_RATE * AUDIO_FRAME_MS / 1000;
 
@@ -193,7 +201,8 @@ static bool codecs_init() {
         return false;
     }
     for (int ch = 0; ch < ADC_CHANNELS; ch++) {
-        g_adc->set_mic_channel_gain(g_adc, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), POD_MIC_GAIN_DB);
+        float gain = ch == MIC_ADC_INPUT ? POD_MIC_GAIN_DB : POD_REF_GAIN_DB;
+        g_adc->set_mic_channel_gain(g_adc, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(ch), gain);
     }
 
     es8311_codec_cfg_t dac_cfg = {};
@@ -258,7 +267,7 @@ void board_mic_stop() {
     g_mic_on = false;
 }
 
-bool board_mic_read(int16_t *pcm, size_t samples) {
+bool board_mic_read(int16_t *pcm, int16_t *reference, size_t samples) {
     if (!g_mic_on || samples != (size_t)SAMPLES_PER_FRAME) return false;
     uint8_t *raw = reinterpret_cast<uint8_t *>(g_rx_frame);
     size_t got = 0;
@@ -267,10 +276,8 @@ bool board_mic_read(int16_t *pcm, size_t samples) {
     if (g_rx_filled < sizeof(g_rx_frame)) return false;
     g_rx_filled = 0;
     for (size_t i = 0; i < samples; i++) {
-        int32_t s = (int32_t)g_rx_frame[ADC_CHANNELS * i + MIC_CHANNEL] * POD_MIC_DIGITAL_GAIN;
-        if (s > 32767) s = 32767;
-        if (s < -32768) s = -32768;
-        pcm[i] = (int16_t)s;
+        pcm[i] = g_rx_frame[ADC_CHANNELS * i + MIC_CHANNEL];
+        reference[i] = g_rx_frame[ADC_CHANNELS * i + REF_CHANNEL];
     }
     return true;
 }

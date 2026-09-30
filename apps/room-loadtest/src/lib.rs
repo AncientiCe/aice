@@ -253,6 +253,7 @@ async fn room(index: usize, shared: &Shared, token: &str) -> RoomOutcome {
         protocol_version: 1,
         device_id: format!("loadtest-{index}"),
         room: None,
+        full_duplex: false,
     };
     if write
         .send(Message::Text(
@@ -281,6 +282,7 @@ async fn room(index: usize, shared: &Shared, token: &str) -> RoomOutcome {
             }
             let audio = PodToGateway::Audio {
                 payload: AudioPayload(frame),
+                reference: None,
             };
             if write
                 .send(Message::Text(

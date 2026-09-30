@@ -2,7 +2,7 @@
 
 How to build, provision, update, and operate a room pod: a microphone and speaker in each room, connected to the room bridge (`pod-gateway`) and trusted through the property facilitator.
 
-> **Voice barge-in is not implemented yet.** The board can listen while it speaks (its ES7210 records the speaker's own signal as an echo-cancellation reference), but the firmware still stops sending audio while an answer plays, and the bridge work in [Signal Pod](../hardware/signal-pod.md) (P1–P5) is not done. Until then a guest stops an answer with the button, not by speaking.
+> **Talking over an answer works, with limits.** The pod keeps its mic on while it speaks and sends its speaker signal along; the bridge cancels the echo and stops the answer when the guest speaks ([architecture 32](../architecture/README.md#32-spoken-barge-in-full-duplex-pods)). The board's small speaker limits echo cancellation, so the guest may need to speak up a little; the button always stops an answer.
 
 > **Tested on hardware:** enrolment, room assignment, TLS to the facilitator and the bridge, spoken turns, and hotel requests reaching the desk. **Not yet tested on hardware:** signed updates, lost-token recovery, factory reset, and echo cancellation.
 
@@ -11,8 +11,8 @@ How to build, provision, update, and operate a room pod: a microphone and speake
 | Part | Detail |
 |------|--------|
 | Board | Waveshare ESP32-S3-AUDIO-Board (ESP32-S3R8: 8 MB octal PSRAM, 16 MB flash, native USB) |
-| Speaker DAC | ES8311 on I²S (DOUT G16); the amp is enabled by TCA9555 EXIO8 |
-| Microphones | ES7210 4-channel ADC on I²S (DIN G15): ch1 and ch3 are the two mics, ch0 is the playback reference, ch2 is unused |
+| Speaker DAC | ES8311 on I²S (DOUT G16) at -20 dB, so the small speaker distorts less (its echo cancels better); the amp is enabled by TCA9555 EXIO8 |
+| Microphones | ES7210 4-channel ADC on I²S (DIN G15): frame position 1 is the mic (input MIC1, 37.5 dB), position 0 is the playback reference (18 dB so it never clips), positions 2–3 unused |
 | I²S clocks | MCLK G12 / BCLK G13 / LRCK G14 (one port, capture and playback at the same time) |
 | Control bus | I²C SDA G11 / SCL G10: ES8311 (0x18), ES7210 (0x40), TCA9555 I/O expander (0x20) |
 | Buttons | TCA9555 EXIO9–11, active low (any of the three) |
@@ -55,7 +55,7 @@ LED states: dim white booting, blue blink connecting, slow amber blink waiting f
 
 ## Operating
 
-- Speak a request; the bridge detects speech, the backend answers, and the pod speaks it. The mic is not sent while the pod speaks; press a button to stop an answer.
+- Speak a request; the bridge detects speech, the backend answers, and the pod speaks it. Talk over an answer to interrupt it, or press a button.
 - **Buttons:** tap stops the answer, double tap toggles the privacy mute (magenta), a press of 1.5 s calls staff (`help_button` ticket).
 - The backend reports each connected pod every 30 s. A pod silent for `device_offline_after_secs` (default 120) opens an escalated `device_offline` ticket for its room.
 - **Move a pod:** assign it a new room on the desk; the next turn uses the new room.

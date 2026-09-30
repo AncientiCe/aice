@@ -65,6 +65,12 @@ pub enum TurnStreamClientMessage {
     /// The client finished (or stopped) playing an answer; the wake-word
     /// awake window runs from now.
     PlaybackFinished,
+    /// The user talked over (or tapped to stop) the answer after about
+    /// `spoken_ratio` (0 to 1) of it had played, so the conversation keeps
+    /// only what was heard.
+    PlaybackInterrupted {
+        spoken_ratio: f32,
+    },
     FrontendSkillResult {
         turn_id: String,
         intent_id: String,
@@ -103,4 +109,20 @@ pub enum TurnStreamServerEvent {
         turn_id: Option<String>,
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TurnStreamClientMessage;
+
+    #[test]
+    fn an_interruption_says_how_much_of_the_answer_was_heard() {
+        let message: TurnStreamClientMessage =
+            serde_json::from_str(r#"{"type":"playback_interrupted","spoken_ratio":0.4}"#)
+                .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            message,
+            TurnStreamClientMessage::PlaybackInterrupted { spoken_ratio: 0.4 }
+        );
+    }
 }

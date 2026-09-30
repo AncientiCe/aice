@@ -10,9 +10,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 - Pod firmware for the Waveshare ESP32-S3-AUDIO-Board (ES8311 speaker, ES7210 mics with a playback echo reference, 7-LED ring, three buttons); the ATOM Echo target is removed. Docs moved to `docs/deployment/pod.md`.
 - The pod sets its clock over NTP before any TLS connection and resolves `.local` host names over mDNS.
+- Talking over an answer on a full-duplex pod: the pod streams its mic and its playback loopback during answers; the bridge cancels the echo (delay search + NLMS) and stops the answer on speech that clearly beats the predicted echo (`pod_gateway.barge_in_start_level`, `barge_in_start_frames`, `barge_in_echo_ratio`). `pod_bridge_barge_in_total{result}`, `pod_bridge_barge_in_latency_seconds`.
+- Short-term conversation context: the backend keeps the last `memory.max_recent_turns` exchanges per session in memory for chat replies, cleared on a new stay or after 10 idle minutes; `playback_interrupted {spoken_ratio}` cuts an interrupted answer to what was heard.
 
 ### Fixed
 
+- A failed skill (a provider timed out, a place was not found) was silent on the pod; it now says it could not get the information.
+- The horoscope classifier slot is limited to the 12 signs (it took "today" as the sign).
+- A full-duplex pod's last buffered words after an answer were heard as a new request; the bridge waits until the pod's speaker is quiet.
 - Room pods could never make hotel requests: the classifier only offered them to clients that declared `skill_hotel`. A backend with a property facilitator now always offers them.
 - The classifier's answer was capped at 24 tokens, so hotel requests with details were cut off, failed to parse, and fell back to chat. The cap is 64 (decoding still stops when the JSON is complete).
 - Chat replies could promise actions that never happened ("I'll get you an extra pillow right away"). Chat is now told it cannot act and must say the request could not be sent.

@@ -775,6 +775,19 @@ pub struct PodGatewayConfig {
     /// Quiet time that ends a turn.
     #[serde(default = "default_pod_gateway_vad_end_silence_ms")]
     pub vad_end_silence_ms: u64,
+    /// Mean absolute level of echo-cancelled speech that interrupts an answer
+    /// on a full-duplex pod. Above `vad_start_level` so leftover echo of the
+    /// pod's own voice never interrupts it.
+    #[serde(default = "default_pod_gateway_barge_in_start_level")]
+    pub barge_in_start_level: i16,
+    /// Consecutive 40 ms frames at that level that interrupt.
+    #[serde(default = "default_pod_gateway_barge_in_start_frames")]
+    pub barge_in_start_frames: usize,
+    /// How many times the echo predicted for a frame the guest's speech must
+    /// reach. A small pod speaker distorts, so some of its voice always
+    /// survives cancelling; this keeps that leftover from interrupting.
+    #[serde(default = "default_pod_gateway_barge_in_echo_ratio")]
+    pub barge_in_echo_ratio: f32,
     /// Prometheus exporter bind for the bridge.
     #[serde(default = "default_pod_gateway_metrics_bind")]
     pub metrics_bind: String,
@@ -788,6 +801,9 @@ impl Default for PodGatewayConfig {
             tls: None,
             vad_start_level: default_pod_gateway_vad_start_level(),
             vad_end_silence_ms: default_pod_gateway_vad_end_silence_ms(),
+            barge_in_start_level: default_pod_gateway_barge_in_start_level(),
+            barge_in_start_frames: default_pod_gateway_barge_in_start_frames(),
+            barge_in_echo_ratio: default_pod_gateway_barge_in_echo_ratio(),
             metrics_bind: default_pod_gateway_metrics_bind(),
         }
     }
@@ -798,11 +814,23 @@ fn default_pod_gateway_backend_url() -> String {
 }
 
 fn default_pod_gateway_vad_start_level() -> i16 {
-    900
+    400
 }
 
 fn default_pod_gateway_vad_end_silence_ms() -> u64 {
     700
+}
+
+fn default_pod_gateway_barge_in_start_level() -> i16 {
+    600
+}
+
+fn default_pod_gateway_barge_in_start_frames() -> usize {
+    3
+}
+
+fn default_pod_gateway_barge_in_echo_ratio() -> f32 {
+    1.5
 }
 
 fn default_pod_gateway_metrics_bind() -> String {
@@ -919,7 +947,7 @@ mod tests {
             }
         }
     }
-    use super::{Config, MacOsMusicConfig};
+    use super::{Config, MacOsMusicConfig, PodGatewayConfig};
     use std::io::Write;
     use std::path::Path;
 
@@ -1097,6 +1125,43 @@ mod tests {
         let config = Config::load(&path).must();
         assert!(!config.llm.preload_model_on_startup);
         assert_eq!(config.llm.model_keep_alive.as_deref(), Some("2h"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn barge_in_needs_more_than_the_turn_start_level_by_default() {
+        let gateway = PodGatewayConfig::default();
+        assert!(gateway.barge_in_start_level > gateway.vad_start_level);
+        assert!(gateway.barge_in_start_frames >= 1);
+        assert!(
+            gateway.barge_in_echo_ratio > 1.0,
+            "speech must beat the echo left over"
+        );
+    }
+
+    #[test]
+    fn load_parses_barge_in_overrides() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("aice_config_barge_in.json");
+        let mut f = std::fs::File::create(&path).must();
+        f.write_all(
+            br#"{
+                "pod_gateway": {
+                    "barge_in_start_level": 2500,
+                    "barge_in_start_frames": 4,
+                    "barge_in_echo_ratio": 2.0
+                }
+            }"#,
+        )
+        .must();
+        f.sync_all().must();
+        drop(f);
+
+        let config = Config::load(&path).must();
+        assert_eq!(config.pod_gateway.barge_in_start_level, 2500);
+        assert_eq!(config.pod_gateway.barge_in_start_frames, 4);
+        assert!((config.pod_gateway.barge_in_echo_ratio - 2.0).abs() < f32::EPSILON);
 
         let _ = std::fs::remove_file(&path);
     }
