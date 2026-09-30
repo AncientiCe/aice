@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use core_config::WakeWordConfig;
 use core_runtime_protocol::{FrontendSkillResultRequest, TurnRequest};
 use futures_util::{SinkExt, StreamExt};
-use pod_gateway::{spawn_bridge, BridgeSettings, Speech, VadSettings};
+use pod_gateway::{spawn_bridge, BargeInSettings, BridgeSettings, Speech, VadSettings};
 use pod_protocol::{AudioPayload, GatewayToPod, LedState, PodToGateway};
 use property_facilitator::{assign_device, serve, Pack, PropertyClient, Running, Settings};
 use serde_json::json;
@@ -27,6 +27,7 @@ const ANSWER: &str = "Towels are on the way.";
 
 struct Answering {
     rooms: Mutex<Vec<Option<String>>>,
+    interruptions: Mutex<Vec<(String, f32)>>,
 }
 
 #[async_trait]
@@ -54,6 +55,12 @@ impl BackendEngine for Answering {
         _request: FrontendSkillResultRequest,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         Ok(String::new())
+    }
+
+    fn conversation_interrupted(&self, session_id: &str, spoken_ratio: f32) {
+        if let Ok(mut seen) = self.interruptions.lock() {
+            seen.push((session_id.to_string(), spoken_ratio));
+        }
     }
 }
 
@@ -165,6 +172,7 @@ async fn stack_with(
         .unwrap_or_else(|error| panic!("client: {error}"));
     let engine = Arc::new(Answering {
         rooms: Mutex::new(Vec::new()),
+        interruptions: Mutex::new(Vec::new()),
     });
     let engine_dyn: Arc<dyn BackendEngine> = engine.clone();
     let backend = spawn_server_with_options(
@@ -195,6 +203,11 @@ fn fast_vad() -> VadSettings {
         end_silence: Duration::from_millis(300),
         max_turn: Duration::from_secs(5),
         preroll_frames: 3,
+        barge_in: BargeInSettings {
+            start_level: 3_000,
+            start_frames: 2,
+            echo_ratio: 1.5,
+        },
     }
 }
 
@@ -263,6 +276,7 @@ fn frame(level: i16) -> PodToGateway {
         .collect();
     PodToGateway::Audio {
         payload: AudioPayload(samples),
+        reference: None,
     }
 }
 
@@ -273,6 +287,7 @@ async fn hello(socket: &mut PodSocket) {
             protocol_version: 1,
             device_id: "pod-204".to_string(),
             room: Some("ignored-by-server".to_string()),
+            full_duplex: false,
         },
     )
     .await;
@@ -397,6 +412,7 @@ async fn bad_frames_are_reported_without_dropping_the_pod() {
         &mut socket,
         &PodToGateway::Audio {
             payload: AudioPayload(vec![0; 70 * 1024]),
+            reference: None,
         },
     )
     .await;
@@ -496,6 +512,140 @@ async fn a_follow_up_after_a_long_answer_needs_no_wake_word() {
         .map(|rooms| rooms.len())
         .unwrap_or_default();
     assert_eq!(turns, 2, "the follow-up was answered without the wake word");
+    stack.backend.shutdown().await;
+    let _ = std::fs::remove_file(stack.db);
+}
+
+/// A frame from a full-duplex pod: its microphone plus what its speaker played.
+fn duplex_frame(level: i16, speaker: i16) -> PodToGateway {
+    let pcm = |level: i16| -> Vec<u8> {
+        (0..640)
+            .flat_map(|i| {
+                let value = if i % 2 == 0 { level } else { -level };
+                value.to_le_bytes()
+            })
+            .collect()
+    };
+    PodToGateway::Audio {
+        payload: AudioPayload(pcm(level)),
+        reference: Some(AudioPayload(pcm(speaker))),
+    }
+}
+
+async fn hello_duplex(socket: &mut PodSocket, full_duplex: bool) {
+    send(
+        socket,
+        &PodToGateway::Hello {
+            protocol_version: 1,
+            device_id: "pod-204".to_string(),
+            room: None,
+            full_duplex,
+        },
+    )
+    .await;
+    assert!(matches!(
+        next(socket).await,
+        Some(GatewayToPod::HelloAck { .. })
+    ));
+    let _listening = next(socket).await;
+}
+
+/// Waits until the pod has been sent the first chunk of an answer.
+async fn wait_for_answer_audio(socket: &mut PodSocket) {
+    loop {
+        match next(socket).await {
+            Some(GatewayToPod::Audio { .. }) => return,
+            Some(GatewayToPod::Led { .. }) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}
+
+fn answered_turns(stack: &Stack) -> usize {
+    stack
+        .engine
+        .rooms
+        .lock()
+        .map(|rooms| rooms.len())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn talking_over_an_answer_stops_it_and_is_answered() {
+    let stack = stack("barge-in").await;
+    let bridge = bridge_with(&stack.backend, Arc::new(LongSpeech)).await;
+    let mut socket = pod(&bridge.bind, &stack.token).await;
+    hello_duplex(&mut socket, true).await;
+
+    for _ in 0..8 {
+        send(&mut socket, &duplex_frame(8_000, 0)).await;
+    }
+    for _ in 0..12 {
+        send(&mut socket, &duplex_frame(0, 0)).await;
+    }
+    wait_for_answer_audio(&mut socket).await;
+
+    // The guest talks over the answer.
+    for _ in 0..4 {
+        send(&mut socket, &duplex_frame(8_000, 0)).await;
+    }
+    loop {
+        match next(&mut socket).await {
+            Some(GatewayToPod::StopAudio) => break,
+            Some(GatewayToPod::Audio { .. }) | Some(GatewayToPod::Led { .. }) => {}
+            other => panic!("expected stop_audio, got {other:?}"),
+        }
+    }
+    for _ in 0..12 {
+        send(&mut socket, &duplex_frame(0, 0)).await;
+    }
+    wait_for_answer_audio(&mut socket).await;
+    assert_eq!(
+        answered_turns(&stack),
+        2,
+        "the interrupting speech was its own turn"
+    );
+    let interruptions = stack
+        .engine
+        .interruptions
+        .lock()
+        .map(|seen| seen.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        interruptions.len(),
+        1,
+        "the backend heard where the answer was cut: {interruptions:?}"
+    );
+    assert_eq!(interruptions[0].0, "pod-204");
+    assert!(
+        (0.0..1.0).contains(&interruptions[0].1),
+        "{interruptions:?}"
+    );
+    stack.backend.shutdown().await;
+    let _ = std::fs::remove_file(stack.db);
+}
+
+#[tokio::test]
+async fn a_half_duplex_pod_keeps_playing_when_the_room_is_loud() {
+    let stack = stack("no-barge-in").await;
+    let bridge = bridge_with(&stack.backend, Arc::new(LongSpeech)).await;
+    let mut socket = pod(&bridge.bind, &stack.token).await;
+    hello_duplex(&mut socket, false).await;
+    speak_request(&mut socket).await;
+    wait_for_answer_audio(&mut socket).await;
+    for _ in 0..6 {
+        send(&mut socket, &frame(8_000)).await;
+    }
+    // The rest of the answer arrives; no stop.
+    let mut audio = 2048usize;
+    while audio < LONG_SPEECH_BYTES {
+        match next(&mut socket).await {
+            Some(GatewayToPod::Audio { payload }) => audio += payload.0.len(),
+            Some(GatewayToPod::Led { .. }) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+    assert_eq!(answered_turns(&stack), 1);
     stack.backend.shutdown().await;
     let _ = std::fs::remove_file(stack.db);
 }

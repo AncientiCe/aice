@@ -2,7 +2,7 @@
 
 What a room pod must do so a guest can interrupt Aice at any time by speaking, and what the room bridge (`pod-gateway`) and backend must do with that speech.
 
-> **Status: hardware chosen, barge-in not implemented.** The pod firmware targets the Waveshare ESP32-S3-AUDIO-Board ([pod deployment](../deployment/pod.md)). It captures and plays at the same time and its ES7210 records the speaker signal as an echo reference (channel 0), so it meets H1 and H4 on the bench. Echo cancellation (H2), the acceptance criteria below, and the protocol and bridge work (P1–P5, B2) are not done yet. This page is the requirement set a pod must meet before it goes into a guest room.
+> **Status: implemented on the Waveshare ESP32-S3-AUDIO-Board, acceptance criteria not met yet.** The pod streams its mic and its playback loopback during answers; the bridge cancels the echo and interrupts on speech ([architecture 32](../architecture/README.md#32-spoken-barge-in-full-duplex-pods)). P1–P6 and B1–B3 are in place. **Deviation from H2:** echo cancellation runs in the bridge, not on the pod (decided 2026-09-30): the pod's reference channel is sample-aligned with the mic, the canceller is testable in CI, and the ESP-SR library is not in the pod's Arduino core. Measured on the pod: 11–14 dB of echo removed (the small speaker's distortion limits linear cancellation); with the default settings no self-interruption over 27 s of answers and normal speech caught within a second about 60% of the time, so the "95 of 100 at 2 m" criterion is not met on this board. A pod with a better speaker or a hardware voice front end (XMOS) should get closer.
 
 ## Why listening while speaking matters
 

@@ -170,6 +170,8 @@ const BACKEND_WAKE_WORD_TURNS_TOTAL: &str = "backend_wake_word_turns_total";
 const BACKEND_QUEUE_WAIT_SECONDS: &str = "backend_queue_wait_seconds";
 const BACKEND_QUEUE_REJECTIONS_TOTAL: &str = "backend_queue_rejections_total";
 const POD_BRIDGE_TURN_DURATION_SECONDS: &str = "pod_bridge_turn_duration_seconds";
+const POD_BRIDGE_BARGE_IN_TOTAL: &str = "pod_bridge_barge_in_total";
+const POD_BRIDGE_BARGE_IN_LATENCY_SECONDS: &str = "pod_bridge_barge_in_latency_seconds";
 const PROPERTY_SLA_BREACHES_TOTAL: &str = "property_sla_breaches_total";
 const PROPERTY_TICKET_ACK_DURATION_SECONDS: &str = "property_ticket_ack_duration_seconds";
 const MEMORY_RECALL_SCOPED_TOTAL: &str = "memory_recall_scoped_total";
@@ -392,6 +394,8 @@ pub fn register_metrics() {
     histogram!(BACKEND_QUEUE_WAIT_SECONDS, 0.0_f64, "stage" => "unknown");
     counter!(BACKEND_QUEUE_REJECTIONS_TOTAL, 0, "stage" => "unknown");
     histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, 0.0_f64);
+    counter!(POD_BRIDGE_BARGE_IN_TOTAL, 0, "result" => "unknown");
+    histogram!(POD_BRIDGE_BARGE_IN_LATENCY_SECONDS, 0.0_f64);
     counter!(
         PROPERTY_ALERTS_SENT_TOTAL,
         0,
@@ -1241,6 +1245,17 @@ pub fn record_pod_bridge_turn(result: &str) {
 /// Time from speech start to the answer being queued on the pod.
 pub fn record_pod_bridge_turn_duration(duration: Duration) {
     histogram!(POD_BRIDGE_TURN_DURATION_SECONDS, duration.as_secs_f64());
+}
+
+/// Speech interrupted an answer on a full-duplex pod: `turn` (the interrupting
+/// speech got an answer) or `empty` (noise or leftover echo, nothing answered).
+pub fn record_pod_bridge_barge_in(result: &str) {
+    counter!(POD_BRIDGE_BARGE_IN_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Speech onset (first loud frame, in audio time) to `stop_audio` sent.
+pub fn record_pod_bridge_barge_in_latency(duration: Duration) {
+    histogram!(POD_BRIDGE_BARGE_IN_LATENCY_SECONDS, duration.as_secs_f64());
 }
 
 /// An active pod stopped reporting.

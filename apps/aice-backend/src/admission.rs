@@ -115,6 +115,12 @@ impl BackendEngine for AdmittedEngine {
             .finalize_frontend_skill(turn_id, intent_id, request)
             .await
     }
+
+    fn conversation_interrupted(&self, session_id: &str, spoken_ratio: f32) {
+        // Bookkeeping only: no model work, so no admission gate.
+        self.inner
+            .conversation_interrupted(session_id, spoken_ratio);
+    }
 }
 
 /// An `AudioTranscriber` that runs at most `max_concurrent_stt` jobs at once.

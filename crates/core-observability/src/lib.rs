@@ -44,7 +44,8 @@ pub use metrics::{
     record_model_preload, record_model_preload_duration, record_news_summary_chunk,
     record_news_summary_duration, record_palace_add_memory, record_palace_error,
     record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
-    record_palace_search, record_palace_wake_up, record_pod_audio_frame, record_pod_bridge_turn,
+    record_palace_search, record_palace_wake_up, record_pod_audio_frame,
+    record_pod_bridge_barge_in, record_pod_bridge_barge_in_latency, record_pod_bridge_turn,
     record_pod_bridge_turn_duration, record_pod_connection, record_pod_disconnect,
     record_pod_egress_queue_drop, record_pod_egress_send_error, record_pod_tts_chunk,
     record_policy_denied, record_property_alert_sent, record_property_audit_event,
@@ -146,6 +147,8 @@ mod tests {
         super::record_fleet_firmware_manifest("offered");
         super::record_fleet_firmware_download("1.1.0");
         super::record_pod_bridge_turn_duration(Duration::from_millis(900));
+        super::record_pod_bridge_barge_in("turn");
+        super::record_pod_bridge_barge_in_latency(Duration::from_millis(180));
         super::record_property_sla_breach("care", "report_fall");
         super::record_property_ticket_ack_duration("care", "report_fall", Duration::from_secs(30));
         super::record_memory_recall_scoped("stay");
@@ -267,6 +270,8 @@ mod tests {
                         && payload.contains("fleet_firmware_downloads_total")
                         && payload.contains("fleet_devices")
                         && payload.contains("pod_bridge_turn_duration_seconds")
+                        && payload.contains("pod_bridge_barge_in_total")
+                        && payload.contains("pod_bridge_barge_in_latency_seconds")
                         && payload.contains("property_sla_breaches_total")
                         && payload.contains("property_ticket_ack_duration_seconds")
                         && payload.contains("memory_recall_scoped_total")

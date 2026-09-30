@@ -27,7 +27,7 @@ Order matters. **Hotels first** (non-clinical, guests can phone reception); **ca
 
 ## 3. Pods
 
-> **Blocker:** the pod firmware (Waveshare ESP32-S3-AUDIO-Board) does not support spoken barge-in yet, so guests cannot interrupt an answer by voice. Use it for a dry run of enrolment, TLS, requests, and the desk. A guest pilot needs a pod that meets the [Signal Pod requirements](../hardware/signal-pod.md).
+> **Blocker:** on the Waveshare ESP32-S3-AUDIO-Board, talking over an answer works but misses normal speech too often (caught within a second about 60% of the time), below the [Signal Pod acceptance criteria](../hardware/signal-pod.md). Use it for a dry run of enrolment, TLS, requests, and the desk; tell guests the button always stops an answer.
 
 Follow [the pod deployment guide](../deployment/pod.md): generate `property_trust.h`, build, flash, place one pod per room, and assign each pod its room on the desk. Label each pod with its device id and room.
 

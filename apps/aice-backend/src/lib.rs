@@ -1,4 +1,5 @@
 pub mod admission;
+pub mod conversation;
 pub mod device_auth;
 pub mod discovery_broadcast;
 pub mod llm_adapters;
@@ -208,6 +209,10 @@ pub trait BackendEngine: Send + Sync {
         intent_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError>;
+
+    /// The session's latest answer was cut off after `spoken_ratio` of it
+    /// played. Engines without conversation context have nothing to update.
+    fn conversation_interrupted(&self, _session_id: &str, _spoken_ratio: f32) {}
 }
 
 #[async_trait]
@@ -1417,6 +1422,11 @@ async fn handle_turn_stream_socket(
                                 TurnStreamClientMessage::PlaybackFinished => {
                                     wake.playback_finished(Instant::now());
                                 }
+                                TurnStreamClientMessage::PlaybackInterrupted { spoken_ratio } => {
+                                    if let Some(session) = ws_session_id.as_deref() {
+                                        engine.conversation_interrupted(session, spoken_ratio);
+                                    }
+                                }
                                 TurnStreamClientMessage::TurnCancel => {
                                     if let Some(mut state) = turn.take() {
                                         wake.cancelled(Instant::now());
@@ -1819,6 +1829,8 @@ pub struct AiceBackendEngine {
     news_summary_streaming_enabled: bool,
     palace: PalaceHandle,
     turn_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// Recent exchanges per session, for chat replies that follow on.
+    conversation: conversation::ConversationLog,
     resolved_location: Option<ResolvedLocation>,
     skip_secondary_llm_for_skill_answers: bool,
     classifier_prompt_cache: ClassifierPromptCache,
@@ -2074,6 +2086,10 @@ impl AiceBackendEngine {
             news_summary_streaming_enabled: config.news.enable_summary_streaming,
             palace,
             turn_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            conversation: conversation::ConversationLog::new(
+                config.memory.max_recent_turns,
+                conversation::CONVERSATION_IDLE,
+            ),
             resolved_location,
             skip_secondary_llm_for_skill_answers: config.llm.skip_secondary_llm_for_skill_answers,
             classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -2699,6 +2715,28 @@ fn chat_system_prompt(base: &str, memory_context: Option<&str>) -> String {
         .join("\n\n")
 }
 
+/// What a turn says when its skill fails (a provider timed out, a place was
+/// not found). Spoken as is, not composed by the model, so it cannot invent an
+/// answer the skill never gave.
+const SKILL_FAILED_REPLY: &str =
+    "Sorry, I couldn't get that information right now. Please try again in a moment.";
+
+/// A failed skill still answers out loud: a room pod has no screen for an
+/// error, and a silent turn looks broken. A failure of the chat model itself
+/// stays an error.
+fn speak_skill_failure(
+    outcome: Result<BackendEngineDecision, DynError>,
+    skill_turn: bool,
+) -> Result<BackendEngineDecision, DynError> {
+    match outcome {
+        Err(error) if skill_turn => {
+            warn!(%error, "skill failed; telling the user");
+            Ok(BackendEngineDecision::Chat(SKILL_FAILED_REPLY.to_string()))
+        }
+        other => other,
+    }
+}
+
 /// Context size for classifier requests. Ollama reloads a model whenever
 /// `num_ctx` changes, so a classifier sharing the main host uses the default
 /// size like every other call (and the startup warm-up); only a dedicated
@@ -3087,6 +3125,10 @@ fn compose_direct_skill_answer(context: &str) -> Option<String> {
 
 #[async_trait]
 impl BackendEngine for AiceBackendEngine {
+    fn conversation_interrupted(&self, session_id: &str, spoken_ratio: f32) {
+        self.conversation.interrupted(session_id, spoken_ratio);
+    }
+
     async fn process_turn(&self, request: TurnRequest) -> Result<BackendEngineDecision, DynError> {
         if request.transcript.trim().is_empty() {
             return Ok(BackendEngineDecision::Chat(
@@ -3134,35 +3176,55 @@ impl BackendEngine for AiceBackendEngine {
                 user_text: request_text.clone(),
             })
         };
+        let skill_turn = !matches!(decision, IntentDecision::Chat);
         let outcome: Result<BackendEngineDecision, DynError> = match decision {
             IntentDecision::SkillWeather { location } => {
                 let skill_started = Instant::now();
-                let result = self
+                // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
+                match self
                     .weather_skill
                     .execute(location.as_deref(), self.resolved_location.as_ref())
                     .await
-                    .map_err(|error| format!("weather skill failed: {error}"))?;
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                let answer = compose_weather_answer(&result);
-                Ok(BackendEngineDecision::BackendSkill(answer))
+                {
+                    Ok(result) => {
+                        record_backend_turn_stage_duration(
+                            "skill_execute",
+                            skill_started.elapsed(),
+                        );
+                        Ok(BackendEngineDecision::BackendSkill(compose_weather_answer(
+                            &result,
+                        )))
+                    }
+                    Err(error) => Err(format!("weather skill failed: {error}").into()),
+                }
             }
             IntentDecision::SkillTime { location } => {
                 let skill_started = Instant::now();
-                let result = self
+                // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
+                match self
                     .time_skill
                     .execute(location.as_deref(), self.resolved_location.as_ref())
                     .await
-                    .map_err(|error| format!("time skill failed: {error}"))?;
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                let answer = compose_time_answer(&result);
-                Ok(BackendEngineDecision::BackendSkill(answer))
+                {
+                    Ok(result) => {
+                        record_backend_turn_stage_duration(
+                            "skill_execute",
+                            skill_started.elapsed(),
+                        );
+                        Ok(BackendEngineDecision::BackendSkill(compose_time_answer(
+                            &result,
+                        )))
+                    }
+                    Err(error) => Err(format!("time skill failed: {error}").into()),
+                }
             }
             IntentDecision::SkillDistance {
                 origin,
                 destination,
             } => {
                 let skill_started = Instant::now();
-                let result = self
+                // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
+                match self
                     .distance_skill
                     .execute(
                         origin.as_deref(),
@@ -3170,10 +3232,18 @@ impl BackendEngine for AiceBackendEngine {
                         self.resolved_location.as_ref(),
                     )
                     .await
-                    .map_err(|error| format!("distance skill failed: {error}"))?;
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                let answer = compose_distance_answer(&result);
-                Ok(BackendEngineDecision::BackendSkill(answer))
+                {
+                    Ok(result) => {
+                        record_backend_turn_stage_duration(
+                            "skill_execute",
+                            skill_started.elapsed(),
+                        );
+                        Ok(BackendEngineDecision::BackendSkill(
+                            compose_distance_answer(&result),
+                        ))
+                    }
+                    Err(error) => Err(format!("distance skill failed: {error}").into()),
+                }
             }
             IntentDecision::SkillSportsLive { query, date } => {
                 let skill_started = Instant::now();
@@ -3893,11 +3963,16 @@ impl BackendEngine for AiceBackendEngine {
                 let chat_started = Instant::now();
                 let system_prompt =
                     chat_system_prompt(&self.llm.base_system_prompt(), memory_context.as_deref());
+                let history = conversation::chat_history(&self.conversation.recent(
+                    &request.session_id,
+                    &scope,
+                    Instant::now(),
+                ));
                 let text = self
                     .collect_llm(
                         "chat",
                         &request.transcript,
-                        &[],
+                        &history,
                         Some(system_prompt.as_str()),
                         None,
                     )
@@ -3906,9 +3981,22 @@ impl BackendEngine for AiceBackendEngine {
                 Ok(BackendEngineDecision::Chat(text))
             }
         };
-        let outcome = outcome?;
-        self.finalize_voice_outcome(&request_text, outcome, memory_context.as_deref(), &scope)
-            .await
+        let outcome = speak_skill_failure(outcome, skill_turn)?;
+        let finalized = self
+            .finalize_voice_outcome(&request_text, outcome, memory_context.as_deref(), &scope)
+            .await?;
+        if let BackendEngineDecision::Chat(answer) | BackendEngineDecision::BackendSkill(answer) =
+            &finalized
+        {
+            self.conversation.record(
+                &request.session_id,
+                &scope,
+                &request_text,
+                answer,
+                Instant::now(),
+            );
+        }
+        Ok(finalized)
     }
 
     async fn finalize_frontend_skill(
@@ -4135,8 +4223,9 @@ mod tests {
         classifier_num_ctx_for_host, compose_distance_answer, compose_frontend_skill_error_outcome,
         compose_frontend_skill_success_echo, compose_palace_memory_context, compose_time_answer,
         compose_weather_answer, journal_room_from_sentiment, parse_extracted_kg_triples,
-        parse_focus_entities, parse_validated_intent, persist_kg_triples, MemoryScope,
-        CLASSIFIER_MAX_OUTPUT_TOKENS, FRONTEND_CLASSIFIER_SKILLS,
+        parse_focus_entities, parse_validated_intent, persist_kg_triples, speak_skill_failure,
+        BackendEngineDecision, MemoryScope, CLASSIFIER_MAX_OUTPUT_TOKENS,
+        FRONTEND_CLASSIFIER_SKILLS, SKILL_FAILED_REPLY,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -4480,6 +4569,23 @@ mod tests {
         assert!(!skills.contains(&"skill_timer".to_string()));
         assert!(!skills.contains(&"skill_smart_home".to_string()));
         assert!(!skills.contains(&"skill_memory".to_string()));
+    }
+
+    #[test]
+    fn a_failed_skill_still_answers_out_loud() {
+        let failed: Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> =
+            Err("news-headlines skill failed: provider timeout".into());
+        match speak_skill_failure(failed, true) {
+            Ok(BackendEngineDecision::Chat(text)) => assert_eq!(text, SKILL_FAILED_REPLY),
+            other => panic!("expected a spoken apology, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failing_model_is_still_an_error() {
+        let failed: Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> =
+            Err("LLM request failed".into());
+        assert!(speak_skill_failure(failed, false).is_err());
     }
 
     #[test]

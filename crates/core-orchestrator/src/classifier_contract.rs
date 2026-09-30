@@ -35,6 +35,23 @@ const ALL_CLASSIFIER_SKILLS: [&str; 31] = [
 ];
 
 /// Canonical hotel concierge intent kinds (mirrors `skill_hotel::HotelIntentKind`).
+/// The signs the horoscope provider accepts. An enum stops the model from
+/// filling the sign with other words from the request ("today").
+const ZODIAC_SIGNS: [&str; 12] = [
+    "aries",
+    "taurus",
+    "gemini",
+    "cancer",
+    "leo",
+    "virgo",
+    "libra",
+    "scorpio",
+    "sagittarius",
+    "capricorn",
+    "aquarius",
+    "pisces",
+];
+
 const HOTEL_INTENT_KINDS: [&str; 25] = [
     "set_room_temperature",
     "set_lights",
@@ -126,7 +143,7 @@ fn schema_fields_for_skill(skill: &str) -> &'static [(&'static str, &'static str
             ("hy", "number"),
         ],
         "skill_fuel_price_lookup" => &[("fcc", "string"), ("fr", "string"), ("ft", "string")],
-        "skill_horoscope_daily" => &[("hs", "string"), ("w", "string")],
+        "skill_horoscope_daily" => &[("hs", "zodiac_sign"), ("w", "string")],
         "skill_news_headlines" => &[("q", "string"), ("ncc", "string"), ("nl", "number")],
         "skill_calculator" => &[("q", "string")],
         "skill_unit_conversion" => &[
@@ -216,6 +233,10 @@ pub fn intent_classifier_json_schema_for_skills(available_skills: &[&str]) -> se
                 "hotel_intent_kind" => serde_json::json!({
                     "type": "string",
                     "enum": HOTEL_INTENT_KINDS,
+                }),
+                "zodiac_sign" => serde_json::json!({
+                    "type": "string",
+                    "enum": ZODIAC_SIGNS,
                 }),
                 _ => serde_json::json!({ "type": "string" }),
             };
@@ -983,6 +1004,20 @@ mod tests {
                 "expected hotel few-shot for '{needle}'"
             );
         }
+    }
+
+    #[test]
+    fn the_horoscope_sign_can_only_be_one_of_the_twelve_signs() {
+        // A free-text slot let the model answer "today" as the sign.
+        let schema = intent_classifier_json_schema_for_skills(&["skill_horoscope_daily"]);
+        let signs = schema["properties"]["hs"]["enum"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(signs.len(), 12, "{schema}");
+        assert!(signs.contains(&serde_json::json!("aries")));
+        assert!(signs.contains(&serde_json::json!("pisces")));
+        assert!(!signs.contains(&serde_json::json!("today")));
     }
 
     #[test]

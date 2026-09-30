@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use core_config::Config;
-use pod_gateway::{spawn_bridge, BridgeSettings, PiperSpeech, VadSettings};
+use pod_gateway::{spawn_bridge, BargeInSettings, BridgeSettings, PiperSpeech, VadSettings};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -51,6 +51,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             vad: VadSettings {
                 start_level: gateway.vad_start_level,
                 end_silence: std::time::Duration::from_millis(gateway.vad_end_silence_ms),
+                barge_in: BargeInSettings {
+                    start_level: gateway.barge_in_start_level,
+                    start_frames: gateway.barge_in_start_frames,
+                    echo_ratio: gateway.barge_in_echo_ratio,
+                },
                 ..VadSettings::default()
             },
         },

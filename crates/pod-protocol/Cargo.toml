@@ -2,7 +2,7 @@
 name = "pod-protocol"
 version = "0.1.0"
 edition = "2021"
-description = "Protocol types for M5Stack pod communication"
+description = "Protocol types for room pod communication"
 
 [dependencies]
 base64 = "0.22"

@@ -14,8 +14,9 @@
  * Audio path:
  *   ES7210 mic → 16 kHz mono PCM16 → WebSocket Audio frames
  *   TTS playback: Gateway Audio (base64 PCM) → queue → ES8311 → speaker
- * The mic is not sent while an answer plays; spoken barge-in needs echo
- * cancellation and the bridge work in docs/hardware/signal-pod.md.
+ * Full duplex: the mic keeps streaming while an answer plays, each frame with
+ * the speaker signal of the same samples; the bridge cancels the echo and lets
+ * the guest's speech interrupt the answer (docs/hardware/signal-pod.md).
  */
 
 #include <Arduino.h>
@@ -42,6 +43,8 @@
 // ── Audio sizing ──────────────────────────────────────────────────────────────
 static constexpr int SAMPLES_PER_FRAME = PDM_SAMPLE_RATE * AUDIO_FRAME_MS / 1000;
 static constexpr int BYTES_PER_FRAME   = SAMPLES_PER_FRAME * sizeof(int16_t);
+// Frames sent per loop at most; the capture buffer holds six.
+static constexpr int MAX_FRAMES_PER_LOOP = 4;
 // Any clock before 2023-11 means NTP has not answered yet.
 static constexpr time_t MIN_VALID_EPOCH = 1700000000;
 static constexpr size_t POD_PLAYBACK_QUEUE_SLOTS = 6;
@@ -251,10 +254,9 @@ void loop() {
         g_last_ping_ms = millis();
     }
 
-    // Mic capture only while listening or thinking (not while an answer plays)
-    // and while the room has not muted the pod.
-    if (g_ws_connected && g_mic_running && !g_muted &&
-        (g_state == PodState::Listening || g_state == PodState::Thinking)) {
+    // Mic capture whenever connected (also while an answer plays, so the guest
+    // can talk over it) unless the room has muted the pod.
+    if (g_ws_connected && g_mic_running && !g_muted) {
         capture_and_send_audio();
     }
 
@@ -382,7 +384,6 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length) {
                 static uint8_t pcm_buf[16384];
                 size_t decoded = base64_decode(b64, pcm_buf, sizeof(pcm_buf));
                 if (decoded > 0) {
-                    // The mic stops while the answer plays.
                     start_speaker();
                     if (!enqueue_playback(pcm_buf, decoded)) {
                         Serial.println("[aice-pod] playback queue full; dropping chunk");
@@ -394,6 +395,7 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length) {
 
             } else if (strcmp(msg_type, "stop_audio") == 0) {
                 clear_playback_queue();
+                stop_speaker();
                 if (g_ws_connected && g_identified && !g_mic_running) {
                     start_mic();
                 }
@@ -433,6 +435,7 @@ static void send_hello() {
     doc["type"]             = "hello";
     doc["protocol_version"] = PROTOCOL_VERSION;
     doc["device_id"]        = g_device_id;
+    doc["full_duplex"]      = true;
     String out;
     serializeJson(doc, out);
     g_ws.sendTXT(out);
@@ -467,7 +470,6 @@ static void send_tap_activate() {
 // ── Microphone and speaker ────────────────────────────────────────────────────
 static void start_mic() {
     if (g_mic_running) return;
-    stop_speaker();
     if (!board_mic_start()) {
         set_state(PodState::Error);
         return;
@@ -484,7 +486,6 @@ static void stop_mic() {
 }
 
 static void start_speaker() {
-    stop_mic();
     board_speaker_start();
 }
 
@@ -495,21 +496,21 @@ static void stop_speaker() {
 // ── Audio capture → WebSocket ─────────────────────────────────────────────────
 static void capture_and_send_audio() {
     static int16_t pcm_buf[SAMPLES_PER_FRAME];
-    // Non-blocking: only send when a full frame is ready.
-    if (!board_mic_read(pcm_buf, SAMPLES_PER_FRAME)) {
-        return;
+    static int16_t ref_buf[SAMPLES_PER_FRAME];
+    // Send every frame that is ready: a speaker write can hold the loop for a
+    // whole 64 ms chunk, longer than one 40 ms frame.
+    for (int sent = 0; sent < MAX_FRAMES_PER_LOOP; sent++) {
+        if (!board_mic_read(pcm_buf, ref_buf, SAMPLES_PER_FRAME)) {
+            return;
+        }
+        JsonDocument doc;
+        doc["type"]      = "audio";
+        doc["payload"]   = base64_encode(reinterpret_cast<const uint8_t *>(pcm_buf), BYTES_PER_FRAME);
+        doc["reference"] = base64_encode(reinterpret_cast<const uint8_t *>(ref_buf), BYTES_PER_FRAME);
+        String out;
+        serializeJson(doc, out);
+        g_ws.sendTXT(out);
     }
-
-    // Encode as base64 for JSON transport.
-    String b64 = base64_encode(reinterpret_cast<const uint8_t *>(pcm_buf), BYTES_PER_FRAME);
-
-    // Build and send JSON frame.
-    JsonDocument doc;
-    doc["type"]    = "audio";
-    doc["payload"] = b64;
-    String out;
-    serializeJson(doc, out);
-    g_ws.sendTXT(out);
 }
 
 // ── TTS playback ──────────────────────────────────────────────────────────────
@@ -575,6 +576,7 @@ static void playback_drain_once() {
     if (g_playback_count == 0) {
         if (g_state == PodState::Speaking && g_ws_connected) {
             if ((millis() - g_last_tts_enqueue_ms) >= TTS_END_GRACE_MS) {
+                stop_speaker();
                 if (g_identified && !g_mic_running) {
                     start_mic();
                 }

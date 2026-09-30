@@ -1,4 +1,4 @@
-//! Protocol types for M5Stack pod communication (WebSocket control + audio frames).
+//! Protocol types for room pod communication (WebSocket control + audio frames).
 
 use base64::Engine;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -50,9 +50,20 @@ pub enum PodToGateway {
         protocol_version: u16,
         device_id: String,
         room: Option<String>,
+        /// The pod keeps its microphone on while it plays and sends the
+        /// speaker signal with each frame, so the bridge can cancel the echo
+        /// and let speech interrupt an answer. Absent (older pods) = false.
+        #[serde(default)]
+        full_duplex: bool,
     },
     /// Audio frame (PCM 16kHz mono 16-bit). Payload is base64 on wire.
-    Audio { payload: AudioPayload },
+    Audio {
+        payload: AudioPayload,
+        /// What the pod's speaker played during the same samples (full-duplex
+        /// pods only): the echo-cancellation reference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reference: Option<AudioPayload>,
+    },
     /// Pod identification / room label.
     Identify {
         device_id: String,
@@ -90,4 +101,68 @@ pub enum LedState {
     Listening,
     Thinking,
     Speaking,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AudioPayload, PodToGateway};
+
+    #[test]
+    fn a_pod_that_says_nothing_about_duplex_is_half_duplex() {
+        let hello: PodToGateway = serde_json::from_str(
+            r#"{"type":"hello","protocol_version":1,"device_id":"pod-1","room":null}"#,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(matches!(
+            hello,
+            PodToGateway::Hello {
+                full_duplex: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_full_duplex_pod_says_so_in_its_hello() {
+        let hello: PodToGateway = serde_json::from_str(
+            r#"{"type":"hello","protocol_version":1,"device_id":"pod-1","room":null,"full_duplex":true}"#,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert!(matches!(
+            hello,
+            PodToGateway::Hello {
+                full_duplex: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn audio_can_carry_what_the_speaker_was_playing() {
+        let audio = PodToGateway::Audio {
+            payload: AudioPayload(vec![1, 2]),
+            reference: Some(AudioPayload(vec![3, 4])),
+        };
+        let text = serde_json::to_string(&audio).unwrap_or_default();
+        let back: PodToGateway =
+            serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(back, audio);
+    }
+
+    #[test]
+    fn audio_without_a_reference_stays_as_it_was_on_the_wire() {
+        let old: PodToGateway = serde_json::from_str(r#"{"type":"audio","payload":"AQI="}"#)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            old,
+            PodToGateway::Audio {
+                payload: AudioPayload(vec![1, 2]),
+                reference: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&old).unwrap_or_default(),
+            r#"{"type":"audio","payload":"AQI="}"#
+        );
+    }
 }
