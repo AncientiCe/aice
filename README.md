@@ -114,7 +114,7 @@ Skills are defined and implemented in the external [`aice-skills`](https://githu
 
 - `apps/aice-backend`: cross-platform core backend service (primary).
 - `crates/core-*`: runtime building blocks (`core-config`, `core-llm`, `core-stt`, `core-orchestrator`, `core-observability`, `core-runtime-protocol`).
-- `apps/pod-gateway`: room bridge between pods and the backend; `pod-firmware`: ATOM Echo transport test bed (half-duplex; the guest-room pod is the [Signal Pod](docs/hardware/signal-pod.md)); `apps/room-loadtest`: capacity measurement; `crates/core-tls`: property CA and TLS helpers.
+- `apps/pod-gateway`: room bridge between pods and the backend; `pod-firmware`: room pod firmware for the Waveshare ESP32-S3-AUDIO-Board (voice barge-in still to come: [Signal Pod](docs/hardware/signal-pod.md)); `apps/room-loadtest`: capacity measurement; `crates/core-tls`: property CA and TLS helpers.
 
 ## Public repository safety
 
@@ -159,12 +159,12 @@ A pod in each room, a room bridge, the voice backend, and one property pack (`ai
 - **Memory:** private to each stay and only with the guest's or resident's consent; retention `keep`, `archive`, or `wipe_on_close` ([architecture 26](docs/architecture/README.md#26-stays-and-stay-scoped-memory)).
 - **Staff alerts:** paging tiers with SLA re-escalation, a help button that works without speech, and offline-pod alerts ([architecture 27](docs/architecture/README.md#27-staff-alerting-and-sla-re-escalation), [29](docs/architecture/README.md#29-help-button-degraded-mode)).
 - **Capacity:** admission control, a Whisper worker pool, LLM host failover, and `room-loadtest` ([architecture 28](docs/architecture/README.md#28-capacity-admission-control-worker-pools-and-llm-failover), [30](docs/architecture/README.md#30-capacity-measurement-room-loadtest)).
-- **Runbooks:** [pilot runbook](docs/runbooks/property-pilot.md), [pod deployment](docs/deployment/m5stack-pod.md), [DPIA template](docs/compliance/dpia-template.md), [clinical safety starter](docs/compliance/clinical-safety-case.md).
+- **Runbooks:** [pilot runbook](docs/runbooks/property-pilot.md), [pod deployment](docs/deployment/pod.md), [DPIA template](docs/compliance/dpia-template.md), [clinical safety starter](docs/compliance/clinical-safety-case.md).
 
-Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a clinical safety case approved by a Clinical Safety Officer. The pod firmware compiles in CI but has not yet been exercised on hardware, and it targets the ATOM Echo test bed; a pilot needs a full-duplex [Signal Pod](docs/hardware/signal-pod.md), which does not exist yet.
+Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a clinical safety case approved by a Clinical Safety Officer. The pod firmware runs on the Waveshare ESP32-S3-AUDIO-Board: enrolment, TLS, spoken turns, and hotel requests are tested on hardware; signed updates and spoken barge-in are not yet, and a guest pilot needs barge-in ([Signal Pod](docs/hardware/signal-pod.md)).
 
 - **`apps/pod-gateway`** (`cargo aice-gateway`): the room bridge between pods and `aice-backend` ([architecture 4](docs/architecture/README.md#4-room-bridge-pods--backend)).
-- **`pod-firmware`**: M5Stack ATOM Echo transport test bed ([pod deployment](docs/deployment/m5stack-pod.md)). It cannot listen while it speaks, so guests cannot interrupt it by voice; it is not a guest-room pod. Requirements for the full-duplex guest-room pod: [Signal Pod](docs/hardware/signal-pod.md).
+- **`pod-firmware`**: room pod firmware for the Waveshare ESP32-S3-AUDIO-Board ([pod deployment](docs/deployment/pod.md)). The board records while it speaks, but spoken barge-in is not implemented yet, so guests stop an answer with the button. Requirements for barge-in: [Signal Pod](docs/hardware/signal-pod.md).
 
 ### Release v0.3.2
 

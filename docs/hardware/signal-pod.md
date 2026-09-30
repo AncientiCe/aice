@@ -2,13 +2,13 @@
 
 What a room pod must do so a guest can interrupt Aice at any time by speaking, and what the room bridge (`pod-gateway`) and backend must do with that speech.
 
-> **Status: not implemented.** No Signal Pod hardware or firmware exists yet. The only firmware in this repository targets the [ATOM Echo](../deployment/m5stack-pod.md), a half-duplex transport test bed. This page is the requirement set a pod must meet before it goes into a guest room.
+> **Status: hardware chosen, barge-in not implemented.** The pod firmware targets the Waveshare ESP32-S3-AUDIO-Board ([pod deployment](../deployment/pod.md)). It captures and plays at the same time and its ES7210 records the speaker signal as an echo reference (channel 0), so it meets H1 and H4 on the bench. Echo cancellation (H2), the acceptance criteria below, and the protocol and bridge work (P1–P5, B2) are not done yet. This page is the requirement set a pod must meet before it goes into a guest room.
 
-## Why the ATOM Echo is not enough
+## Why listening while speaking matters
 
 A natural conversation lets the guest cut in when Aice gets something wrong ("no, the other room") or when they want to add something ("and a towel too"). That requires the pod to **listen while it speaks**.
 
-The ATOM Echo shares pin G33 between the microphone clock and the speaker's word clock, so its single I2S port is switched between capture and playback. While the pod speaks, the microphone is off and nothing the guest says reaches the bridge. The backend's barge-in path ([architecture 2](../architecture/README.md#2-barge-in-interruptibility)) never fires; only the button can stop an answer.
+A pod that switches one audio port between capture and playback (as the earlier M5Stack ATOM Echo test bed did) hears nothing while it speaks. The backend's barge-in path ([architecture 2](../architecture/README.md#2-barge-in-interruptibility)) then never fires; only the button can stop an answer.
 
 ## Interrupt rule
 
@@ -43,7 +43,7 @@ sequenceDiagram
 Failure branches:
 
 - **Onset was noise or residual echo** (the new turn ends with an empty transcript) → the backend returns `EmptyInput`, nothing is spoken, and the bridge records `pod_bridge_barge_in_total{result="empty"}`. The interrupted answer is not replayed; the pod returns to listening.
-- **Pod without full duplex** (ATOM Echo) → the bridge keeps today's behaviour: audio is ignored during playback and the button is the only interrupt.
+- **Pod without full duplex** (no `full_duplex` in `hello`) → the bridge keeps today's behaviour: audio is ignored during playback and the button is the only interrupt.
 - **Backend unreachable during cancel** → same as any turn: `error {code: backend_unavailable}` and the pod returns to listening.
 
 ## Pod hardware requirements

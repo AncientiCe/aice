@@ -92,9 +92,9 @@ bool pod_trust_configured() {
            strlen(FACILITATOR_URL) > 0;
 }
 
-void pod_factory_reset_if_held(int pin) {
+void pod_factory_reset_if_held(bool (*button_down)()) {
     uint32_t started = millis();
-    while (digitalRead(pin) == LOW) {
+    while (button_down()) {
         if (millis() - started >= FACTORY_RESET_HOLD_MS) {
             Preferences prefs;
             prefs.begin(PREFS_NAMESPACE, false);
