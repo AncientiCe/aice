@@ -3177,7 +3177,9 @@ impl BackendEngine for AiceBackendEngine {
             })
         };
         let skill_turn = !matches!(decision, IntentDecision::Chat);
-        let outcome: Result<BackendEngineDecision, DynError> = match decision {
+        // Every branch runs inside this block, so a skill's `return Err(..)` or `?`
+        // becomes the outcome (spoken as an apology) instead of leaving the turn.
+        let outcome: Result<BackendEngineDecision, DynError> = async { match decision {
             IntentDecision::SkillWeather { location } => {
                 let skill_started = Instant::now();
                 // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
@@ -3980,7 +3982,8 @@ impl BackendEngine for AiceBackendEngine {
                 record_backend_turn_stage_duration("chat_generate", chat_started.elapsed());
                 Ok(BackendEngineDecision::Chat(text))
             }
-        };
+        } }
+        .await;
         let outcome = speak_skill_failure(outcome, skill_turn)?;
         let finalized = self
             .finalize_voice_outcome(&request_text, outcome, memory_context.as_deref(), &scope)
