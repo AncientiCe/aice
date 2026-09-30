@@ -72,6 +72,14 @@ impl CradleLlmStream {
         )
     }
 
+    /// The base system prompt (every host is built with the same settings).
+    pub fn base_system_prompt(&self) -> String {
+        self.hosts
+            .first()
+            .map(|host| host.client.base_system_prompt())
+            .unwrap_or_default()
+    }
+
     /// One client per host URL; calls rotate across them with failover.
     pub fn new_with_hosts(
         base_urls: Vec<String>,

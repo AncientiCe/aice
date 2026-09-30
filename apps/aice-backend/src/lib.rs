@@ -161,9 +161,11 @@ struct ClassifierPromptArtifacts {
     json_schema: Option<serde_json::Value>,
 }
 
-/// Hardcoded classifier output token cap. Kept small for decode-speed on
-/// memory-bandwidth-limited devices (each token costs ~25ms on M4 Mini with 7B).
-const CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 24;
+/// Classifier output token cap. It only bounds the answer: decoding stops when
+/// the JSON is complete, so short intents cost the same as before. It must fit
+/// the longest taught answer (a hotel request with slots), or the cut-off JSON
+/// fails to parse and the turn falls back to chat.
+const CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 64;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FrontendSessionKey {
@@ -659,8 +661,14 @@ fn frontend_classifier_skills_from_context(context: Option<&Value>) -> Vec<Strin
     normalized
 }
 
-fn build_available_classifier_skills(context: Option<&Value>) -> Vec<String> {
-    let frontend_intents = frontend_classifier_skills_from_context(context);
+/// Skills the classifier may pick for one turn. `property_desk` is true when
+/// the backend has a facilitator: it then runs hotel requests itself, so they
+/// are offered even to clients (room pods) that declare no frontend intents.
+fn build_available_classifier_skills(context: Option<&Value>, property_desk: bool) -> Vec<String> {
+    let mut frontend_intents = frontend_classifier_skills_from_context(context);
+    if property_desk && !frontend_intents.iter().any(|skill| skill == "skill_hotel") {
+        frontend_intents.push("skill_hotel".to_string());
+    }
     let backend_skills: Vec<String> = ENABLED_SKILL_IDS
         .iter()
         .map(|skill| skill.to_string())
@@ -2069,7 +2077,10 @@ impl AiceBackendEngine {
             resolved_location,
             skip_secondary_llm_for_skill_answers: config.llm.skip_secondary_llm_for_skill_answers,
             classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
-            classifier_num_ctx: config.llm.classifier_num_ctx,
+            classifier_num_ctx: classifier_num_ctx_for_host(
+                config.llm.classifier_num_ctx,
+                config.llm.classifier_ollama_url.is_some(),
+            ),
             classifier_llm,
             property_client,
             discovered_property_tools,
@@ -2124,7 +2135,8 @@ impl AiceBackendEngine {
             format_json: true,
             format_json_schema: None,
             max_output_tokens: Some(max_output_tokens),
-            num_ctx: self.classifier_num_ctx,
+            // Main host: keep the preloaded context size (a change reloads the model).
+            num_ctx: None,
         };
         self.collect_llm(
             operation,
@@ -2342,7 +2354,6 @@ impl AiceBackendEngine {
                 self.palace.clone(),
                 user_text,
                 assistant_text,
-                self.classifier_num_ctx,
                 scope.clone(),
             );
         }
@@ -2665,12 +2676,46 @@ fn schedule_palace_ingest(
     });
 }
 
+/// Chat replies run no skill. Without this the model happily promises staff,
+/// devices, and bookings ("I'll get you an extra pillow right away") when the
+/// request never reached anyone.
+const CHAT_CANNOT_ACT_RULE: &str = "You cannot take actions. You cannot contact staff, \
+create requests or orders, book anything, control devices, set reminders or timers, or \
+change settings. Never say that you did, are doing, or will do any of these. If you are \
+asked to, say that the request could not be sent and ask the person to try again.";
+
+/// System prompt for a chat reply: the assistant's base prompt, the room or
+/// shared memory for this turn, and the rule that chat cannot act.
+fn chat_system_prompt(base: &str, memory_context: Option<&str>) -> String {
+    let mut sections = vec![base.trim()];
+    if let Some(memory) = memory_context.map(str::trim).filter(|m| !m.is_empty()) {
+        sections.push(memory);
+    }
+    sections.push(CHAT_CANNOT_ACT_RULE);
+    sections
+        .into_iter()
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Context size for classifier requests. Ollama reloads a model whenever
+/// `num_ctx` changes, so a classifier sharing the main host uses the default
+/// size like every other call (and the startup warm-up); only a dedicated
+/// classifier host gets `llm.classifier_num_ctx`.
+fn classifier_num_ctx_for_host(configured: Option<u32>, dedicated_host: bool) -> Option<u32> {
+    if dedicated_host {
+        configured
+    } else {
+        None
+    }
+}
+
 fn schedule_palace_kg_extract(
     llm: Arc<CradleLlmStream>,
     palace: PalaceHandle,
     user_text: String,
     assistant_text: String,
-    num_ctx: Option<u32>,
     scope: MemoryScope,
 ) {
     tokio::spawn(async move {
@@ -2680,7 +2725,8 @@ fn schedule_palace_kg_extract(
             format_json: true,
             format_json_schema: None,
             max_output_tokens: Some(256),
-            num_ctx,
+            // Main host: keep the preloaded context size (a change reloads the model).
+            num_ctx: None,
         };
         let mut stream = match llm
             .chat_stream(
@@ -3054,7 +3100,10 @@ impl BackendEngine for AiceBackendEngine {
             .unwrap_or_else(|| next_backend_turn_id(&self.turn_counter));
         let request_text = request.transcript.clone();
         let scope = self.effective_scope(MemoryScope::from_context(request.context.as_ref()));
-        let mut available_skills = build_available_classifier_skills(request.context.as_ref());
+        let mut available_skills = build_available_classifier_skills(
+            request.context.as_ref(),
+            self.property_client.is_some(),
+        );
         if scope != MemoryScope::Shared {
             // The journal keeps entries in one shared store; rooms must not use it.
             available_skills.retain(|skill| skill != "skill_journal");
@@ -3842,12 +3891,14 @@ impl BackendEngine for AiceBackendEngine {
             }
             IntentDecision::Chat => {
                 let chat_started = Instant::now();
+                let system_prompt =
+                    chat_system_prompt(&self.llm.base_system_prompt(), memory_context.as_deref());
                 let text = self
                     .collect_llm(
                         "chat",
                         &request.transcript,
                         &[],
-                        memory_context.as_deref(),
+                        Some(system_prompt.as_str()),
                         None,
                     )
                     .await?;
@@ -4080,11 +4131,12 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 mod tests {
     use super::{
         aice_palace_handle, build_available_classifier_skills, build_classifier_prompt_artifacts,
-        build_intent_classification_prompt, classifier_cache_key, compose_distance_answer,
-        compose_frontend_skill_error_outcome, compose_frontend_skill_success_echo,
-        compose_palace_memory_context, compose_time_answer, compose_weather_answer,
-        journal_room_from_sentiment, parse_extracted_kg_triples, parse_focus_entities,
-        parse_validated_intent, persist_kg_triples, MemoryScope, FRONTEND_CLASSIFIER_SKILLS,
+        build_intent_classification_prompt, chat_system_prompt, classifier_cache_key,
+        classifier_num_ctx_for_host, compose_distance_answer, compose_frontend_skill_error_outcome,
+        compose_frontend_skill_success_echo, compose_palace_memory_context, compose_time_answer,
+        compose_weather_answer, journal_room_from_sentiment, parse_extracted_kg_triples,
+        parse_focus_entities, parse_validated_intent, persist_kg_triples, MemoryScope,
+        CLASSIFIER_MAX_OUTPUT_TOKENS, FRONTEND_CLASSIFIER_SKILLS,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -4096,6 +4148,21 @@ mod tests {
     use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
     use serde_json::json;
     use std::time::SystemTime;
+
+    #[test]
+    fn classifier_on_the_shared_host_uses_the_preloaded_context_size() {
+        // Ollama reloads a model whenever num_ctx changes, so a classifier that
+        // shares the main host must ask for the same (default) size as every
+        // other call and the startup warm-up.
+        assert_eq!(classifier_num_ctx_for_host(Some(1024), false), None);
+        assert_eq!(classifier_num_ctx_for_host(None, false), None);
+    }
+
+    #[test]
+    fn a_dedicated_classifier_host_keeps_its_configured_context_size() {
+        assert_eq!(classifier_num_ctx_for_host(Some(1024), true), Some(1024));
+        assert_eq!(classifier_num_ctx_for_host(None, true), None);
+    }
 
     fn sample_search_result(text: &str, similarity: f64) -> SearchResult {
         SearchResult {
@@ -4370,7 +4437,7 @@ mod tests {
                 "unknown_intent"
             ]
         });
-        let skills = build_available_classifier_skills(Some(&context));
+        let skills = build_available_classifier_skills(Some(&context), false);
         assert_eq!(
             skills,
             vec![
@@ -4390,7 +4457,7 @@ mod tests {
 
     #[test]
     fn available_classifier_skills_include_enabled_core_common_defaults() {
-        let skills = build_available_classifier_skills(None);
+        let skills = build_available_classifier_skills(None, false);
         assert_eq!(
             skills,
             vec![
@@ -4408,11 +4475,62 @@ mod tests {
 
     #[test]
     fn available_classifier_skills_do_not_include_macos_only_defaults() {
-        let skills = build_available_classifier_skills(None);
+        let skills = build_available_classifier_skills(None, false);
         assert!(!skills.contains(&"skill_message".to_string()));
         assert!(!skills.contains(&"skill_timer".to_string()));
         assert!(!skills.contains(&"skill_smart_home".to_string()));
         assert!(!skills.contains(&"skill_memory".to_string()));
+    }
+
+    #[test]
+    fn chat_replies_are_told_they_cannot_take_actions() {
+        // A chat reply runs no skill, so it must never promise staff, devices
+        // or bookings ("I'll get you a pillow right away").
+        for memory in [None, Some("Guest prefers feather pillows.")] {
+            let prompt = chat_system_prompt("You are the room assistant.", memory);
+            assert!(prompt.contains("You are the room assistant."), "{prompt}");
+            assert!(prompt.contains("You cannot take actions"), "{prompt}");
+            assert!(prompt.contains("Never say that you did"), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn chat_replies_keep_the_room_memory() {
+        let prompt = chat_system_prompt("Base.", Some("Guest prefers feather pillows."));
+        assert!(
+            prompt.contains("Guest prefers feather pillows."),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn the_classifier_output_cap_fits_every_answer_it_is_taught() {
+        // A cut-off answer is not valid JSON and the turn falls back to chat.
+        // JSON runs at roughly three characters per token; 2.5 leaves margin.
+        for (_, answer) in intent_classifier_few_shots() {
+            let estimated_tokens = (answer.len() as f64 / 2.5).ceil() as u32;
+            assert!(
+                estimated_tokens <= CLASSIFIER_MAX_OUTPUT_TOKENS,
+                "{answer} needs about {estimated_tokens} tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn a_property_backend_offers_hotel_requests_to_clients_that_declare_nothing() {
+        // Room pods declare no frontend intents; the backend runs hotel
+        // requests itself through the facilitator.
+        let skills = build_available_classifier_skills(None, true);
+        assert!(
+            skills.contains(&"skill_hotel".to_string()),
+            "expected skill_hotel for a property backend; got {skills:?}"
+        );
+    }
+
+    #[test]
+    fn a_home_backend_does_not_offer_hotel_requests_unless_a_client_declares_them() {
+        let skills = build_available_classifier_skills(None, false);
+        assert!(!skills.contains(&"skill_hotel".to_string()));
     }
 
     #[test]
@@ -4428,7 +4546,7 @@ mod tests {
         let context = json!({
             "frontend_supported_intents": ["skill_hotel"]
         });
-        let skills = build_available_classifier_skills(Some(&context));
+        let skills = build_available_classifier_skills(Some(&context), false);
         assert!(
             skills.contains(&"skill_hotel".to_string()),
             "expected skill_hotel to be enabled when frontend declares it; got {:?}",
