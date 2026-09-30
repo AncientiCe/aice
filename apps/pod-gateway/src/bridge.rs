@@ -287,6 +287,9 @@ where
     let mut answer_playback = Playback::started(&[]);
     // True from a barge-in until its turn is answered (or comes back empty).
     let mut barge_in_turn = false;
+    // Audio of the latest turn, so speech that goes on after a pause (before
+    // any answer) is sent again as one request.
+    let mut last_turn_audio: Vec<Vec<u8>> = Vec::new();
     let mut answer = String::new();
     let mut turn_counter: u64 = 0;
     let mut turn_started_at = Instant::now();
@@ -353,10 +356,30 @@ where
                                         turn_counter += 1;
                                         turn_started_at = Instant::now();
                                         answer.clear();
+                                        last_turn_audio = preroll.clone();
                                         backend_tx.send(Message::Text(turn_start(&device_label, turn_counter)?)).await?;
                                         for frame in preroll {
                                             backend_tx.send(Message::Binary(frame)).await?;
                                         }
+                                    }
+                                    TurnStep::BargeIn(preroll) if awaiting_answer && speaking.is_none() && !speaker_tail.waiting() => {
+                                        // Nothing has been said yet: the guest paused and went on
+                                        // ("Computer, ... how do I make tahini"). Ask again with
+                                        // both parts as one request instead of losing the first.
+                                        awaiting_answer = false;
+                                        backend_tx
+                                            .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::TurnCancel)?))
+                                            .await?;
+                                        turn_counter += 1;
+                                        answer.clear();
+                                        let mut audio = std::mem::take(&mut last_turn_audio);
+                                        audio.extend(preroll);
+                                        backend_tx.send(Message::Text(turn_start(&device_label, turn_counter)?)).await?;
+                                        for frame in &audio {
+                                            backend_tx.send(Message::Binary(frame.clone())).await?;
+                                        }
+                                        last_turn_audio = audio;
+                                        push(GatewayToPod::Led { state: LedState::Listening });
                                     }
                                     TurnStep::BargeIn(preroll) => {
                                         // The guest spoke over the answer: the tap_activate
@@ -384,12 +407,14 @@ where
                                         turn_counter += 1;
                                         turn_started_at = Instant::now();
                                         answer.clear();
+                                        last_turn_audio = preroll.clone();
                                         backend_tx.send(Message::Text(turn_start(&device_label, turn_counter)?)).await?;
                                         for frame in preroll {
                                             backend_tx.send(Message::Binary(frame)).await?;
                                         }
                                     }
                                     TurnStep::Audio(frame) => {
+                                        last_turn_audio.push(frame.clone());
                                         backend_tx.send(Message::Binary(frame)).await?;
                                     }
                                     TurnStep::Done => {
@@ -442,6 +467,10 @@ where
                     let Message::Text(text) = event? else { continue };
                     let Ok(event) = serde_json::from_str::<TurnStreamServerEvent>(&text) else { continue };
                     match event {
+                        // Events for a turn the bridge has since replaced (cancelled,
+                        // interrupted, or merged into a longer request) are ignored.
+                        TurnStreamServerEvent::Token { turn_id, .. } | TurnStreamServerEvent::Done { turn_id }
+                            if turn_id != current_turn_id(&device_label, turn_counter) => {}
                         TurnStreamServerEvent::Token { text, .. } => answer.push_str(&text),
                         TurnStreamServerEvent::Done { .. } => {
                             let text = std::mem::take(&mut answer);
@@ -570,11 +599,15 @@ where
     result
 }
 
+fn current_turn_id(device_label: &str, turn_counter: u64) -> String {
+    format!("{device_label}-{turn_counter}")
+}
+
 fn turn_start(device_label: &str, turn_counter: u64) -> Result<String, serde_json::Error> {
     serde_json::to_string(&TurnStreamClientMessage::TurnStart {
         session_id: device_label.to_string(),
         device_id: None,
-        turn_id: format!("{device_label}-{turn_counter}"),
+        turn_id: current_turn_id(device_label, turn_counter),
         supported_frontend_intents: Vec::new(),
         schema_version: None,
     })
@@ -624,6 +657,11 @@ impl SpeakerTail {
     fn answer_sent(&mut self) {
         self.waiting = true;
         self.quiet_frames = 0;
+    }
+
+    /// True while a sent answer is still playing on the pod.
+    fn waiting(&self) -> bool {
+        self.waiting
     }
 
     /// Stops waiting; true when the pod was still playing a sent answer.

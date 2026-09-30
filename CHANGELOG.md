@@ -15,7 +15,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
-- A failed skill (a provider timed out, a place was not found) was silent on the pod; it now says it could not get the information.
+- A failed skill (a provider timed out, a place was not found) was silent on the pod; it now says it could not get the information. This now covers every skill (most returned their error past the apology).
+- A pause after "Computer, ..." split one request into fragments ("of Tahini"); speech that goes on before any answer is now sent again together with the first part as one request.
+- The bridge ignores answers for turns it has replaced, so a cancelled turn's empty answer no longer swallows the real one.
 - The horoscope classifier slot is limited to the 12 signs (it took "today" as the sign).
 - A full-duplex pod's last buffered words after an answer were heard as a new request; the bridge waits until the pod's speaker is quiet.
 - Room pods could never make hotel requests: the classifier only offered them to clients that declared `skill_hotel`. A backend with a property facilitator now always offers them.

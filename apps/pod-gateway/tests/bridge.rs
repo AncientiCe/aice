@@ -28,6 +28,8 @@ const ANSWER: &str = "Towels are on the way.";
 struct Answering {
     rooms: Mutex<Vec<Option<String>>>,
     interruptions: Mutex<Vec<(String, f32)>>,
+    /// How long the engine takes before answering.
+    think: Duration,
 }
 
 #[async_trait]
@@ -36,6 +38,7 @@ impl BackendEngine for Answering {
         &self,
         request: TurnRequest,
     ) -> Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> {
+        tokio::time::sleep(self.think).await;
         let room = request
             .context
             .as_ref()
@@ -61,6 +64,25 @@ impl BackendEngine for Answering {
         if let Ok(mut seen) = self.interruptions.lock() {
             seen.push((session_id.to_string(), spoken_ratio));
         }
+    }
+}
+
+/// Explicit test double: hears "towels please" and records how many samples
+/// each transcription was given.
+struct Measuring(Mutex<Vec<usize>>);
+
+#[async_trait]
+impl AudioTranscriber for Measuring {
+    async fn transcribe(
+        &self,
+        samples: Vec<i16>,
+        _sample_rate_hz: u32,
+        _channels: u16,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        if let Ok(mut seen) = self.0.lock() {
+            seen.push(samples.len());
+        }
+        Ok("towels please".to_string())
     }
 }
 
@@ -146,6 +168,15 @@ async fn stack_with(
     transcriber: Arc<dyn AudioTranscriber>,
     audio: AudioIngressConfig,
 ) -> Stack {
+    stack_thinking(label, transcriber, audio, Duration::ZERO).await
+}
+
+async fn stack_thinking(
+    label: &str,
+    transcriber: Arc<dyn AudioTranscriber>,
+    audio: AudioIngressConfig,
+    think: Duration,
+) -> Stack {
     let db = temp_db(label);
     let mut settings = Settings::default_for(Pack::Hotels);
     settings.bind = "127.0.0.1:0".to_string();
@@ -173,6 +204,7 @@ async fn stack_with(
     let engine = Arc::new(Answering {
         rooms: Mutex::new(Vec::new()),
         interruptions: Mutex::new(Vec::new()),
+        think,
     });
     let engine_dyn: Arc<dyn BackendEngine> = engine.clone();
     let backend = spawn_server_with_options(
@@ -646,6 +678,51 @@ async fn a_half_duplex_pod_keeps_playing_when_the_room_is_loud() {
         }
     }
     assert_eq!(answered_turns(&stack), 1);
+    stack.backend.shutdown().await;
+    let _ = std::fs::remove_file(stack.db);
+}
+
+#[tokio::test]
+async fn talking_on_after_a_pause_is_one_request() {
+    // A pause after "Computer, ..." closes the turn; the guest keeps talking
+    // before the answer is ready. The backend must get both parts as one turn.
+    let heard = Arc::new(Measuring(Mutex::new(Vec::new())));
+    let stack = stack_thinking(
+        "continuation",
+        heard.clone(),
+        AudioIngressConfig::default(),
+        Duration::from_millis(1500),
+    )
+    .await;
+    let bridge = bridge(&stack.backend).await;
+    let mut socket = pod(&bridge.bind, &stack.token).await;
+    hello_duplex(&mut socket, true).await;
+
+    for _ in 0..8 {
+        send(&mut socket, &duplex_frame(8_000, 0)).await;
+    }
+    // 10 quiet frames (400 ms) end the first part.
+    for _ in 0..10 {
+        send(&mut socket, &duplex_frame(0, 0)).await;
+    }
+    for _ in 0..8 {
+        send(&mut socket, &duplex_frame(8_000, 0)).await;
+    }
+    for _ in 0..12 {
+        send(&mut socket, &duplex_frame(0, 0)).await;
+    }
+    wait_for_answer_audio(&mut socket).await;
+
+    assert_eq!(answered_turns(&stack), 1, "one request, not two");
+    let longest = heard
+        .0
+        .lock()
+        .map(|seen| seen.iter().copied().max().unwrap_or(0))
+        .unwrap_or(0);
+    assert!(
+        longest >= 16 * 640,
+        "the answered turn holds both parts: {longest} samples"
+    );
     stack.backend.shutdown().await;
     let _ = std::fs::remove_file(stack.db);
 }
