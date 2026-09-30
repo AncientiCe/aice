@@ -8,6 +8,17 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Pod firmware for the Waveshare ESP32-S3-AUDIO-Board (ES8311 speaker, ES7210 mics with a playback echo reference, 7-LED ring, three buttons); the ATOM Echo target is removed. Docs moved to `docs/deployment/pod.md`.
+- The pod sets its clock over NTP before any TLS connection and resolves `.local` host names over mDNS.
+
+### Fixed
+
+- Room pods could never make hotel requests: the classifier only offered them to clients that declared `skill_hotel`. A backend with a property facilitator now always offers them.
+- The classifier's answer was capped at 24 tokens, so hotel requests with details were cut off, failed to parse, and fell back to chat. The cap is 64 (decoding still stops when the JSON is complete).
+- Chat replies could promise actions that never happened ("I'll get you an extra pillow right away"). Chat is now told it cannot act and must say the request could not be sent.
+- Ollama reloaded the model on every call (about 3 s each) because classifier and memory calls asked for a different context size than the warm-up and answers. Calls to a shared host now use one size, so the model loaded at startup stays loaded.
+- Whisper encoded a full 30 s window for every clip; it now encodes only the audio plus a margin, so a short request transcribes about four times faster on the CPU.
+
 - Staff desk login with `staff` and `supervisor` roles, CSRF protection, lockout after five failed passwords, and an append-only audit log; `user add|remove|list` on every pack.
 - A service token between backend and facilitator (`service.token`, `property.service_token_file`).
 - Room pod provisioning: pods enrol with a nonce, a supervisor assigns the room, the pod receives a device token; `device list|assign|revoke`. The backend verifies the token on every connection and turn and takes the room from it.

@@ -134,3 +134,18 @@ async fn all_hosts_down_is_an_error() {
     ]);
     assert!(llm.chat_stream("hello", &[], None, None).await.is_err());
 }
+
+#[test]
+fn the_base_system_prompt_carries_the_persona_and_spoken_style() {
+    let llm = CradleLlmStream::new(
+        "http://127.0.0.1:1".to_string(),
+        "tiny".to_string(),
+        true,
+        64,
+        Some("You are the room assistant.".to_string()),
+        None,
+    );
+    let prompt = llm.base_system_prompt();
+    assert!(prompt.contains("You are the room assistant."), "{prompt}");
+    assert!(prompt.contains("Do not use Markdown"), "{prompt}");
+}

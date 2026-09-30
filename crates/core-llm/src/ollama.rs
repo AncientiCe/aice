@@ -115,6 +115,13 @@ impl OllamaLlmStream {
         }
     }
 
+    /// The system prompt a call without an override gets: persona (or the
+    /// short-reply style) plus the plain spoken text rule. Callers that build
+    /// their own override start from this so they keep the assistant's voice.
+    pub fn base_system_prompt(&self) -> String {
+        self.compose_system_prompt(None).unwrap_or_default()
+    }
+
     fn compose_system_prompt(&self, system_prompt_override: Option<&str>) -> Option<String> {
         if let Some(override_prompt) = system_prompt_override {
             return Some(override_prompt.to_string());
