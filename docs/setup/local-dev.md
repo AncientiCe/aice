@@ -437,7 +437,7 @@ Persisted local data paths:
 ## 6. Hardware notes
 
 - Signal Pod is the intended product target.
-- M5Stack ATOM Echo support is experimental and useful for transport/firmware testing.
+- Room pods run on the Waveshare ESP32-S3-AUDIO-Board; see [pod deployment](../deployment/pod.md).
 - For home deployments, Mac mini is the recommended host computer.
 
 ## Troubleshooting

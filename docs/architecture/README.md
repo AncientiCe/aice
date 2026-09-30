@@ -81,7 +81,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant Pod as Room pod (ATOM Echo)
+    participant Pod as Room pod (Waveshare ESP32-S3-AUDIO-Board)
     participant Bridge as Room bridge
     participant Backend as aice-backend /turns/stream
     participant Fac as Facilitator
@@ -110,7 +110,7 @@ sequenceDiagram
 - **Outputs:** `hello_ack`, `led` (`listening`, `thinking`, `speaking`), `audio` chunks of at most 2 KiB, `stop_audio`, `pong`, `error`. Audio is paced at playback speed with three chunks of lead, because the pod queues only six 2 KiB chunks (about 0.4 s); the pod returns to listening by itself when playback ends.
 - **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`); `help_button` (long press) calls staff without speech (section 29).
 - **Playback:** the bridge sends `playback_started` to the backend before it sends an answer to the pod, and `playback_finished` when the answer has been sent or a tap stops it, so the wake-word awake window runs from the end of playback (section 31).
-- **Half-duplex limit:** the ATOM Echo cannot capture while it plays, so section 2 barge-in never fires on this path; the button is the only interrupt. The ATOM Echo is a transport test bed. Guest rooms need a full-duplex pod with echo cancellation, where any speech during playback interrupts the answer: see [Signal Pod requirements](../hardware/signal-pod.md).
+- **No spoken barge-in yet:** the pod board records while it plays (with a hardware echo reference), but the firmware does not send audio during playback and the bridge has no barge-in path yet, so section 2 barge-in never fires here; the button is the only interrupt. Any speech during playback interrupting the answer is specified in [Signal Pod requirements](../hardware/signal-pod.md).
 - **Local skills:** pods have none; a `frontend_skill_intent` is answered with an error result so the backend replies instead of waiting.
 - **Failure paths:** the backend refuses the token → `error {code: unauthorized}` and the pod connection closes; backend unreachable → `error {code: backend_unavailable}`; invalid JSON → `invalid_message`; audio over 64 KiB → `payload_too_large`; binary frames → `binary_not_supported`; Piper failure → the turn ends without audio (`pod_bridge_turns_total{result="speech_failed"}`). A property deployment refuses plain WebSocket pods on a network bind unless `service.allow_plaintext_lan` is set.
 - **Metrics:** `pod_bridge_turns_total{result}` (`answered`, `no_answer`, `cancelled`, `backend_error`, `speech_failed`, `unauthorized`, `backend_unavailable`), `pod_bridge_turn_duration_seconds`, `pod_connections_total`, `pod_disconnects_total`, `pod_audio_frames_total`, `pod_tts_chunks_total`, `pod_egress_queue_drops_total`, `pod_egress_send_errors_total`.
@@ -313,7 +313,7 @@ sequenceDiagram
 |------|-----|
 | Prerequisites, config, how to start everything | [Local development setup](../setup/local-dev.md) |
 | Local Prometheus/Grafana dashboards and metrics scrape ops | [Local observability runbook](../runbooks/local-observability.md) |
-| Build and flash M5Stack pod (push code to pod) | [M5Stack pod deployment](../deployment/m5stack-pod.md) |
+| Build and flash a room pod (push code to pod) | [Pod deployment](../deployment/pod.md) |
 | Wi‑Fi and gateway host/port for pods | [Wi‑Fi configuration](../network/wifi-configuration.md) |
 | Plan and implementation status | [Local voice AI plan](../local_voice_ai_plan.md) |
 | Cut and publish `v0.3.0` | [v0.3.0 release runbook](../runbooks/release-v0.3.0.md) |

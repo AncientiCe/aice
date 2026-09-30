@@ -18,8 +18,8 @@ String pod_device_id();
 // True when property_trust.h carries a CA, firmware key, and facilitator URL.
 bool pod_trust_configured();
 
-// Forget the nonce and token when `pin` is held low for FACTORY_RESET_HOLD_MS.
-void pod_factory_reset_if_held(int pin);
+// Forget the nonce and token when `button_down` stays true for FACTORY_RESET_HOLD_MS.
+void pod_factory_reset_if_held(bool (*button_down)());
 
 String pod_load_token();
 void pod_clear_token();

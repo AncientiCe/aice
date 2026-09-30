@@ -59,3 +59,18 @@
 #ifndef FACTORY_RESET_HOLD_MS
 #define FACTORY_RESET_HOLD_MS 5000
 #endif
+
+// Time servers. Certificates are checked against the clock, so the pod sets it
+// before any TLS connection. Point these at the property's NTP server when the
+// pod network has no internet access.
+#ifndef NTP_SERVER_1
+#define NTP_SERVER_1 "pool.ntp.org"
+#endif
+
+#ifndef NTP_SERVER_2
+#define NTP_SERVER_2 "time.google.com"
+#endif
+
+#ifndef NTP_TIMEOUT_MS
+#define NTP_TIMEOUT_MS 15000
+#endif
