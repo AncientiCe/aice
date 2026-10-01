@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use core_observability::{
-    record_pod_audio_frame, record_pod_bridge_barge_in, record_pod_bridge_barge_in_latency,
+    record_pod_audio_frame, record_pod_bridge_backend_wait, record_pod_bridge_barge_in,
+    record_pod_bridge_barge_in_latency, record_pod_bridge_synthesis_duration,
     record_pod_bridge_turn, record_pod_bridge_turn_duration, record_pod_connection,
     record_pod_disconnect, record_pod_egress_queue_drop, record_pod_egress_send_error,
-    record_pod_tts_chunk,
+    record_pod_tts_chunk, record_tts_first_audio_latency, record_turn_time_to_first_audio,
+    slow_turn_threshold, TurnTrace,
 };
 use core_runtime_protocol::{
     FrontendSkillResultRequest, TurnStreamClientMessage, TurnStreamServerEvent,
@@ -293,6 +295,12 @@ where
     let mut answer = String::new();
     let mut turn_counter: u64 = 0;
     let mut turn_started_at = Instant::now();
+    // The guest's wait for an answer: from the end of their speech to the answer being
+    // handed to the pod speaker. `trace` carries its stages, `speech_end` and
+    // `synthesis_started` time its metrics.
+    let mut trace: Option<TurnTrace> = None;
+    let mut speech_end: Option<Instant> = None;
+    let mut synthesis_started: Option<Instant> = None;
     // Speech is tagged with the turn it answers; an interrupted turn's speech is dropped.
     let (spoken_tx, mut spoken_rx) = mpsc::channel::<(u64, Result<Vec<u8>, String>)>(1);
     // True between turn_done and the answer; a cancelled turn's answer is dropped.
@@ -352,6 +360,9 @@ where
                             for step in turn.push_with_echo(&frame, echo_level) {
                                 match step {
                                     TurnStep::Start(preroll) => {
+                                        trace = None;
+                                        speech_end = None;
+                                        synthesis_started = None;
                                         barge_in_turn = false;
                                         turn_counter += 1;
                                         turn_started_at = Instant::now();
@@ -367,6 +378,9 @@ where
                                         // ("Computer, ... how do I make tahini"). Ask again with
                                         // both parts as one request instead of losing the first.
                                         awaiting_answer = false;
+                                        trace = None;
+                                        speech_end = None;
+                                        synthesis_started = None;
                                         backend_tx
                                             .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::TurnCancel)?))
                                             .await?;
@@ -395,6 +409,9 @@ where
                                             backend_tx.send(Message::Text(interrupted(&answer_playback)?)).await?;
                                         }
                                         push(GatewayToPod::StopAudio);
+                                        trace = None;
+                                        speech_end = None;
+                                        synthesis_started = None;
                                         // Only a turn still being answered is open on the backend.
                                         if std::mem::take(&mut awaiting_answer) {
                                             backend_tx
@@ -418,6 +435,11 @@ where
                                         backend_tx.send(Message::Binary(frame)).await?;
                                     }
                                     TurnStep::Done => {
+                                        let journey = TurnTrace::new("gateway", current_turn_id(&device_label, turn_counter));
+                                        journey.record("speech", turn_started_at.elapsed());
+                                        journey.mark_speech_end();
+                                        trace = Some(journey);
+                                        speech_end = Some(Instant::now());
                                         backend_tx
                                             .send(Message::Text(serde_json::to_string(&TurnStreamClientMessage::TurnDone)?))
                                             .await?;
@@ -439,6 +461,9 @@ where
                                 backend_tx.send(Message::Text(interrupted(&answer_playback)?)).await?;
                             }
                             awaiting_answer = false;
+                            trace = None;
+                            speech_end = None;
+                            synthesis_started = None;
                             push(GatewayToPod::StopAudio);
                             if turn.cancel() {
                                 backend_tx
@@ -479,6 +504,8 @@ where
                             }
                             awaiting_answer = false;
                             if text.trim().is_empty() {
+                                trace = None;
+                                speech_end = None;
                                 record_pod_bridge_turn("no_answer");
                                 if std::mem::take(&mut barge_in_turn) {
                                     record_pod_bridge_barge_in("empty");
@@ -487,6 +514,14 @@ where
                                 push(GatewayToPod::Led { state: LedState::Listening });
                                 continue;
                             }
+                            if let Some(at) = speech_end {
+                                let wait = at.elapsed();
+                                record_pod_bridge_backend_wait(wait);
+                                if let Some(journey) = &trace {
+                                    journey.record("backend_wait", wait);
+                                }
+                            }
+                            synthesis_started = Some(Instant::now());
                             let speech = Arc::clone(&speech);
                             let spoken_tx = spoken_tx.clone();
                             let for_turn = turn_counter;
@@ -497,6 +532,9 @@ where
                         TurnStreamServerEvent::Error { message, .. } => {
                             warn!(device = %device_label, %message, "backend turn error");
                             record_pod_bridge_turn("backend_error");
+                            trace = None;
+                            speech_end = None;
+                            synthesis_started = None;
                             barge_in_turn = false;
                             answer.clear();
                             turn.listen();
@@ -536,6 +574,20 @@ where
                     }
                     match spoken {
                         Ok(pcm) => {
+                            if let Some(started) = synthesis_started.take() {
+                                let synthesis = started.elapsed();
+                                record_pod_bridge_synthesis_duration(synthesis);
+                                record_tts_first_audio_latency(synthesis);
+                                if let Some(journey) = &trace {
+                                    journey.record("synthesis", synthesis);
+                                }
+                            }
+                            if let Some(at) = speech_end.take() {
+                                record_turn_time_to_first_audio(at.elapsed());
+                            }
+                            if let Some(journey) = trace.take() {
+                                journey.finish(slow_turn_threshold());
+                            }
                             record_pod_bridge_turn("answered");
                             if std::mem::take(&mut barge_in_turn) {
                                 record_pod_bridge_barge_in("turn");

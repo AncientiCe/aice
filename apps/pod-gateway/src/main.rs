@@ -11,6 +11,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     core_observability::init_json_logging().ok();
     core_observability::register_metrics();
     let config = Config::load(Path::new("config.json"))?;
+    core_observability::set_slow_turn_threshold(std::time::Duration::from_millis(
+        config.service.slow_turn_threshold_ms,
+    ));
     let gateway = &config.pod_gateway;
     if !config.service.metrics_bind.trim().is_empty() && config.service.metrics_enabled {
         if let Err(error) = core_observability::init_prometheus_exporter(&gateway.metrics_bind) {

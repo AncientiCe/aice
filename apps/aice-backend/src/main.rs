@@ -45,6 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _ = init_json_logging();
     let config = Config::load(Path::new("config.json"))?;
     register_metrics();
+    core_observability::set_slow_turn_threshold(std::time::Duration::from_millis(
+        config.service.slow_turn_threshold_ms,
+    ));
     let metrics_bind = resolve_metrics_bind(
         config.service.metrics_enabled,
         &config.service.metrics_bind,

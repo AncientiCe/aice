@@ -726,3 +726,101 @@ async fn talking_on_after_a_pause_is_one_request() {
     stack.backend.shutdown().await;
     let _ = std::fs::remove_file(stack.db);
 }
+
+/// Explicit test double: speech that takes a noticeable time to synthesize.
+struct SlowSpeech;
+
+impl Speech for SlowSpeech {
+    fn synthesize(&self, text: &str) -> Result<Vec<u8>, String> {
+        std::thread::sleep(Duration::from_millis(150));
+        Ok(vec![7u8; text.chars().count() * BYTES_PER_CHAR])
+    }
+}
+
+fn scrape_metrics(bind: &str) -> String {
+    use std::io::{Read, Write};
+    let Ok(mut stream) = std::net::TcpStream::connect(bind) else {
+        return String::new();
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+    let _ =
+        stream.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    let mut body = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while let Ok(read) = stream.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8_lossy(&body).to_string()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_answer_is_timed_and_traced_across_the_journey() {
+    let metrics_bind = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|error| panic!("reserve bind: {error}"));
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("local addr: {error}"));
+        drop(listener);
+        addr.to_string()
+    };
+    core_observability::init_prometheus_exporter(&metrics_bind)
+        .unwrap_or_else(|error| panic!("exporter: {error}"));
+    core_observability::register_metrics();
+    core_observability::set_slow_turn_threshold(Duration::from_millis(100));
+
+    let stack = stack_thinking(
+        "journey",
+        Arc::new(HeardTowels),
+        AudioIngressConfig::default(),
+        Duration::from_millis(200),
+    )
+    .await;
+    let bridge = bridge_with(&stack.backend, Arc::new(SlowSpeech)).await;
+    let mut socket = pod(&bridge.bind, &stack.token).await;
+    hello(&mut socket).await;
+    assert!(matches!(
+        next(&mut socket).await,
+        Some(GatewayToPod::HelloAck { .. })
+    ));
+    let _listening = next(&mut socket).await;
+    speak_request(&mut socket).await;
+    receive_answer_audio(&mut socket, ANSWER.chars().count() * BYTES_PER_CHAR).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let payload = loop {
+        let payload = scrape_metrics(&metrics_bind);
+        let ready = payload.contains("pod_bridge_backend_wait_seconds")
+            && payload.contains("pod_bridge_synthesis_duration_seconds")
+            && payload.contains("voice_turn_time_to_first_audio_seconds")
+            && payload.contains("voice_tts_first_audio_latency_seconds")
+            && payload.contains("slowest_stage=\"backend_wait\"");
+        if ready || std::time::Instant::now() >= deadline {
+            break payload;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        payload.contains("pod_bridge_backend_wait_seconds_count"),
+        "{payload}"
+    );
+    assert!(
+        payload.contains("pod_bridge_synthesis_duration_seconds_count"),
+        "{payload}"
+    );
+    assert!(
+        payload.contains("voice_turn_time_to_first_audio_seconds_count"),
+        "{payload}"
+    );
+    assert!(payload.contains("component=\"gateway\""), "{payload}");
+    assert!(
+        payload.contains("slowest_stage=\"backend_wait\""),
+        "{payload}"
+    );
+
+    stack.backend.shutdown().await;
+    let _ = std::fs::remove_file(stack.db);
+}

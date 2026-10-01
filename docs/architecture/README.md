@@ -434,25 +434,30 @@ Full skill journey, inputs, outputs, failure paths, and metrics are documented a
 
 ---
 
-## 18. Local observability stack (backend-only metrics dashboards)
+## 18. Local observability stack (metrics dashboards)
 
-**Purpose:** Provide local, on-demand operational visibility for backend runtime metrics with Prometheus + Grafana.
+**Purpose:** Provide local, on-demand operational visibility for runtime metrics with Prometheus + Grafana.
 
 ```mermaid
 flowchart LR
     Backend[aice-backend process] --> Exporter[Prometheus exporter at service.metrics_bind]
-    Exporter --> Scrape[Prometheus scrape target aice-backend]
+    Gateway[pod-gateway process] --> GwExporter[Prometheus exporter at pod_gateway.metrics_bind]
+    Hotels[aice-hotels process] --> HotelExporter[Prometheus exporter at property metrics_bind]
+    Exporter --> Scrape[Prometheus scrape targets aice-backend, pod-gateway, aice-hotels]
+    GwExporter --> Scrape
+    HotelExporter --> Scrape
     Scrape --> Store[Prometheus TSDB local persistence]
     Store --> Grafana[Grafana dashboards]
     Grafana --> Runtime[Backend Service Overview]
     Grafana --> Timings[Backend Latency]
     Grafana --> Skills[Backend Skills]
     Grafana --> Deps[Backend Dependency Latency]
+    Grafana --> Journey[Guest Journey]
 ```
 
 **Notes:**
 - **Inputs:** Runtime metrics emitted via `core-observability`; `service.metrics_enabled` and `service.metrics_bind` config.
-- **Outputs:** Local dashboards at Grafana (`127.0.0.1:3000`) and raw Prometheus query UI (`127.0.0.1:9090`).
+- **Outputs:** Local dashboards at Grafana (`127.0.0.1:3000`) and raw Prometheus query UI (`127.0.0.1:9090`). Every `*_seconds` metric is exported as a histogram with fixed buckets (5 ms to 4 h), so `histogram_quantile` panels work and series from several processes can be combined. See [section 33](#33-guest-journey-timing-and-slow-turn-tracing) for the Guest Journey dashboard.
 - **Failure paths:** If exporter bind is invalid or unavailable, runtime logs a warning and continues; Prometheus target shows down until endpoint is reachable.
 - **Operations:** Bring-up/tear-down is via `./scripts/observability.sh` and `ops/observability/docker-compose.yml`.
 
@@ -856,3 +861,41 @@ sequenceDiagram
 - **Outputs:** `stop_audio` to the pod; `playback_interrupted {spoken_ratio}`, `turn_cancel`, and a new `turn_start` to the backend.
 - **Failure paths:** a half-duplex pod (no `full_duplex`) keeps the old behaviour: no speech during playback, the button is the only interrupt. Noise that opens a barge-in turn but transcribes to nothing is answered with nothing and counted as `empty`. A failed skill in the new turn is spoken as an apology instead of silence.
 - **Metrics:** `pod_bridge_barge_in_total{result}` (`turn`, `empty`), `pod_bridge_barge_in_latency_seconds` (onset to `stop_audio`), plus the debug log line `echo levels (mean abs per second)` (mic, speaker, left) for tuning.
+
+---
+
+## 33. Guest journey timing and slow-turn tracing
+
+**Purpose:** Show how long a guest waits for an answer, where that time goes across the pod gateway, backend and staff desk, and explain any slow turn from one log line.
+
+```mermaid
+sequenceDiagram
+    participant Guest
+    participant Gateway as pod-gateway
+    participant Backend as aice-backend
+    participant Desk as aice-hotels (staff desk)
+    Guest->>Gateway: speech ends (VAD)
+    Note over Gateway: gateway trace starts: speech span, speech-end clock
+    Gateway->>Backend: turn_done
+    Note over Backend: backend trace: stt_final, classify_intent, palace_memory_context, skill_execute, dependency and llm spans
+    Backend->>Desk: hotel tool call (ticket created)
+    Backend-->>Gateway: answer text
+    Note over Gateway: pod_bridge_backend_wait_seconds
+    Gateway->>Gateway: speech synthesis
+    Note over Gateway: pod_bridge_synthesis_duration_seconds
+    Gateway->>Guest: answer audio handed to the pod speaker
+    Note over Gateway: voice_turn_time_to_first_audio_seconds, then finish: slow? log slow_turn + voice_slow_turns_total
+    Desk->>Desk: staff acknowledge, then done
+    Note over Desk: property_ticket_ack_duration_seconds, property_ticket_resolve_duration_seconds
+```
+
+**Notes:**
+- **Inputs:** `service.slow_turn_threshold_ms` (default 3000) read by `aice-backend` and `pod-gateway`. Stage durations already reported through `record_backend_turn_stage_duration`, `record_backend_dependency_request_duration` and `record_backend_llm_provider_duration` join the trace of the turn being processed (task-local scope in `core-observability::trace`); no call site changes were needed.
+- **The clock:** a turn is slow when the wait after the guest stopped speaking reaches the threshold; time spent speaking is shown in the timeline (`speech`) but never counts as slow. The gateway measures from its end-of-speech decision (after the VAD silence window), so the gateway figure is shorter than what the guest feels by that window.
+- **Outputs:** one `WARN slow_turn` log line per slow turn with `turn_id`, `component` (`backend` or `gateway`), `total_ms`, `slowest_stage`, `unaccounted_ms` and `timeline` (a JSON array of stage, offset and duration). The same `turn_id` appears in the `turn_start`, `turn_done` and `llm_classified_response` lines, and a ticket is created at the moment the backend logs `turn_done` for its turn.
+- **Unaccounted time:** `unaccounted_ms` is the part of the wait that no stage covers (overlapping stages count once). A large value means a step is not instrumented yet; `voice_turn_unaccounted_duration_seconds{component}` charts it for every turn.
+- **Metrics:** `voice_slow_turns_total{component,slowest_stage}`, `voice_turn_unaccounted_duration_seconds{component}`, `pod_bridge_backend_wait_seconds`, `pod_bridge_synthesis_duration_seconds`, `voice_turn_time_to_first_audio_seconds`, `voice_tts_first_audio_latency_seconds` (synthesis), `property_ticket_resolve_duration_seconds{pack,tool}` (ticket raised to done), next to the existing `property_ticket_ack_duration_seconds` and `property_sla_breaches_total`.
+- **First audio:** measured when the synthesized answer is handed to the pod speaker task. The pod then plays it at its own pace, so playback start on the device is a few milliseconds later and is not measured.
+- **Failure paths:** a cancelled, interrupted, empty or failed turn drops its trace without a report. A poisoned trace lock is recovered, so tracing never panics a turn. A trace holds at most 256 spans.
+- **Not traced:** the ticket carries no `turn_id`, so a slow staff-desk step is matched to its turn by time (ticket creation equals the backend `turn_done` instant) rather than by id.
+- **Dashboards:** `ops/observability/grafana/provisioning/dashboards/json/guest-journey.json` ("Aice Guest Journey").

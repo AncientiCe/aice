@@ -24,6 +24,7 @@ use core_observability::{
     record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_kg_add,
     record_palace_kg_query, record_palace_open, record_palace_search, record_palace_wake_up,
     record_screen_ocr_skill, record_translate_skill, record_unit_conversion_skill,
+    slow_turn_threshold, TurnTrace,
 };
 use core_orchestrator::{
     intent_classifier_few_shots_for_skills,
@@ -876,6 +877,8 @@ struct WsTurnState {
     awaiting_skill_result: bool,
     /// The conversation was awake when this turn started (no wake word needed).
     awake: bool,
+    /// Every stage of this turn, reported with its timeline when the turn is slow.
+    trace: TurnTrace,
 }
 
 impl WsTurnState {
@@ -888,6 +891,7 @@ impl WsTurnState {
         supported_frontend_intents: Vec<String>,
         awake: bool,
     ) -> Self {
+        let trace = TurnTrace::new("backend", turn_id.clone());
         Self {
             session_id,
             device_id,
@@ -908,6 +912,7 @@ impl WsTurnState {
             active_task: None,
             awaiting_skill_result: false,
             awake,
+            trace,
         }
     }
 }
@@ -1045,9 +1050,10 @@ fn spawn_speculative_turn(
         context,
     };
     let started = Instant::now();
+    let trace = state.trace.clone();
     let task = tokio::spawn(async move {
-        let result = engine
-            .process_turn(request)
+        let result = trace
+            .scope(engine.process_turn(request))
             .await
             .map_err(|error| error.to_string());
         record_backend_llm_provider_duration("cradle", started.elapsed());
@@ -1129,6 +1135,7 @@ async fn process_binary_audio_frame(
         .unwrap_or_default();
     let stt_elapsed = stt_started.elapsed();
     record_backend_turn_stage_duration("stt_incremental", stt_elapsed);
+    state.trace.record("stt_incremental", stt_elapsed);
     info!(
         turn_id = %state.turn_id,
         stt_elapsed_ms = stt_elapsed.as_millis(),
@@ -1334,12 +1341,16 @@ async fn handle_turn_stream_socket(
                                         "turn_done_received"
                                     );
                                     state.done_requested = true;
+                                    state.trace.record("speech", state.started_at.elapsed());
+                                    state.trace.mark_speech_end();
                                     if !state.samples.is_empty() {
+                                        let final_stt_started = Instant::now();
                                         let final_transcript_chunk = transcriber
                                             .transcribe(std::mem::take(&mut state.samples), 16_000, 1)
                                             .await
                                             .map(|value| value.trim().to_string())
                                             .unwrap_or_default();
+                                        state.trace.record("stt_final", final_stt_started.elapsed());
                                         if !final_transcript_chunk.is_empty() {
                                             if !state.transcript_accum.is_empty() {
                                                 state.transcript_accum.push(' ');
@@ -1375,6 +1386,7 @@ async fn handle_turn_stream_socket(
                                                 since_turn_start_ms = state.started_at.elapsed().as_millis(),
                                                 "turn_done"
                                             );
+                                            state.trace.finish(slow_turn_threshold());
                                             emit_turn_stream_event(
                                                 &mut ws,
                                                 &TurnStreamServerEvent::Done {
@@ -1471,9 +1483,15 @@ async fn handle_turn_stream_socket(
                                         info!(turn_id = %turn_id, "frontend_skill_interpret_request");
                                     }
                                     let skill_started = Instant::now();
-                                    let finalize_result = engine
-                                        .finalize_frontend_skill(&turn_id, &intent_id, result)
-                                        .await;
+                                    let turn_trace = turn
+                                        .as_ref()
+                                        .filter(|state| state.turn_id == turn_id)
+                                        .map(|state| state.trace.clone());
+                                    let finalize = engine.finalize_frontend_skill(&turn_id, &intent_id, result);
+                                    let finalize_result = match &turn_trace {
+                                        Some(trace) => trace.scope(finalize).await,
+                                        None => finalize.await,
+                                    };
                                     let finalize_elapsed = skill_started.elapsed();
                                     record_backend_turn_duration("frontend_skill_finalize", finalize_elapsed);
                                     match finalize_result {
@@ -1536,6 +1554,9 @@ async fn handle_turn_stream_socket(
                                         );
                                     } else {
                                         info!(turn_id = %turn_id, "turn_done");
+                                    }
+                                    if let Some(trace) = &turn_trace {
+                                        trace.finish(slow_turn_threshold());
                                     }
                                     emit_turn_stream_event(
                                         &mut ws,
@@ -1637,6 +1658,7 @@ async fn handle_turn_stream_socket(
                                     since_turn_start_ms = state.started_at.elapsed().as_millis(),
                                     "turn_done"
                                 );
+                                state.trace.finish(slow_turn_threshold());
                                 emit_turn_stream_event(
                                     &mut ws,
                                     &TurnStreamServerEvent::Done {

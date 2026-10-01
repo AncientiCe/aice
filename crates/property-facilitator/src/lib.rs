@@ -22,7 +22,7 @@ use core_observability::{
     record_fleet_devices, record_fleet_firmware_manifest, record_fleet_heartbeat_missed,
     record_fleet_provisioning, record_memory_stay_transition, record_property_auth_attempt,
     record_property_mcp_duration, record_property_mcp_error, record_property_request,
-    record_property_ticket_ack_duration,
+    record_property_ticket_ack_duration, record_property_ticket_resolve_duration,
 };
 use core_policy::decide_ward_tool;
 use serde::Deserialize;
@@ -662,13 +662,26 @@ impl Facilitator {
         actor: &str,
     ) -> Result<Ticket, FacilitatorError> {
         let ticket = self.store.set_status(id, status, actor)?;
-        if status == TicketStatus::Acknowledged {
-            let waited = store::unix_millis().saturating_sub(ticket.created_millis);
-            record_property_ticket_ack_duration(
-                &ticket.pack,
-                &ticket.tool_name,
-                Duration::from_millis(u64::try_from(waited).unwrap_or(0)),
-            );
+        let since_created = || {
+            let elapsed = store::unix_millis().saturating_sub(ticket.created_millis);
+            Duration::from_millis(u64::try_from(elapsed).unwrap_or(0))
+        };
+        match status {
+            TicketStatus::Acknowledged => {
+                record_property_ticket_ack_duration(
+                    &ticket.pack,
+                    &ticket.tool_name,
+                    since_created(),
+                );
+            }
+            TicketStatus::Done => {
+                record_property_ticket_resolve_duration(
+                    &ticket.pack,
+                    &ticket.tool_name,
+                    since_created(),
+                );
+            }
+            _ => {}
         }
         Ok(ticket)
     }

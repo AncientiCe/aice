@@ -6,6 +6,7 @@
 mod exporter;
 mod log;
 mod metrics;
+mod trace;
 
 pub use exporter::{init_prometheus_exporter, ExporterInitError, ExporterInitState};
 pub use log::init_json_logging;
@@ -45,19 +46,25 @@ pub use metrics::{
     record_news_summary_duration, record_palace_add_memory, record_palace_error,
     record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
     record_palace_search, record_palace_wake_up, record_pod_audio_frame,
-    record_pod_bridge_barge_in, record_pod_bridge_barge_in_latency, record_pod_bridge_turn,
-    record_pod_bridge_turn_duration, record_pod_connection, record_pod_disconnect,
-    record_pod_egress_queue_drop, record_pod_egress_send_error, record_pod_tts_chunk,
-    record_policy_denied, record_property_alert_sent, record_property_audit_event,
-    record_property_auth_attempt, record_property_mcp_duration, record_property_mcp_error,
-    record_property_request, record_property_sla_breach, record_property_ticket_ack_duration,
-    record_reminder_skill, record_screen_ocr_skill, record_screenshot_skill, record_session_start,
-    record_shopping_list_skill, record_shutdown_signal, record_skill_duration,
-    record_smart_home_execute, record_smart_home_execute_duration, record_smart_home_skill,
-    record_speech_voiced_duration, record_stage_duration, record_time_skill, record_timer_skill,
-    record_translate_skill, record_tts_first_audio_latency, record_tts_flush_duration,
-    record_turn_time_to_first_audio, record_unit_conversion_skill, record_volume_skill,
+    record_pod_bridge_backend_wait, record_pod_bridge_barge_in, record_pod_bridge_barge_in_latency,
+    record_pod_bridge_synthesis_duration, record_pod_bridge_turn, record_pod_bridge_turn_duration,
+    record_pod_connection, record_pod_disconnect, record_pod_egress_queue_drop,
+    record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
+    record_property_alert_sent, record_property_audit_event, record_property_auth_attempt,
+    record_property_mcp_duration, record_property_mcp_error, record_property_request,
+    record_property_sla_breach, record_property_ticket_ack_duration,
+    record_property_ticket_resolve_duration, record_reminder_skill, record_screen_ocr_skill,
+    record_screenshot_skill, record_session_start, record_shopping_list_skill,
+    record_shutdown_signal, record_skill_duration, record_slow_turn, record_smart_home_execute,
+    record_smart_home_execute_duration, record_smart_home_skill, record_speech_voiced_duration,
+    record_stage_duration, record_time_skill, record_timer_skill, record_translate_skill,
+    record_tts_first_audio_latency, record_tts_flush_duration, record_turn_time_to_first_audio,
+    record_turn_unaccounted_duration, record_unit_conversion_skill, record_volume_skill,
     record_weather_skill, register_metrics, Stage,
+};
+pub use trace::{
+    record_active_stage, set_slow_turn_threshold, slow_turn_threshold, SlowTurn, TraceSpan,
+    TurnTrace,
 };
 
 #[cfg(test)]
@@ -289,6 +296,112 @@ mod tests {
             }
             if Instant::now() >= deadline {
                 panic!("timing metrics not visible before timeout");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+    #[test]
+    fn journey_and_trace_metrics_are_emitted() {
+        let bind = match shared_bind() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to reserve local bind: {error}"),
+        };
+        let _ = match init_prometheus_exporter(bind) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to initialize exporter: {error}"),
+        };
+        register_metrics();
+        super::record_slow_turn("backend", "classifier_llm_roundtrip");
+        super::record_turn_unaccounted_duration("backend", Duration::from_millis(900));
+        super::record_pod_bridge_backend_wait(Duration::from_millis(1700));
+        super::record_pod_bridge_synthesis_duration(Duration::from_millis(250));
+        super::record_property_ticket_resolve_duration(
+            "hotels",
+            "request_extra_towels",
+            Duration::from_secs(2160),
+        );
+        super::record_turn_time_to_first_audio(Duration::from_millis(2100));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match scrape(bind) {
+                Ok(payload) => {
+                    if payload.contains("voice_slow_turns_total")
+                        && payload.contains("slowest_stage=\"classifier_llm_roundtrip\"")
+                        && payload.contains("voice_turn_unaccounted_duration_seconds")
+                        && payload.contains("pod_bridge_backend_wait_seconds")
+                        && payload.contains("pod_bridge_synthesis_duration_seconds")
+                        && payload.contains("property_ticket_resolve_duration_seconds")
+                        && payload.contains("voice_turn_time_to_first_audio_seconds")
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    if Instant::now() >= deadline {
+                        panic!("failed to scrape metrics endpoint before timeout: {error}");
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("journey metrics not visible before timeout");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn dependency_and_provider_durations_join_the_active_trace() {
+        let runtime = match tokio::runtime::Builder::new_current_thread().build() {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("failed to build runtime: {error}"),
+        };
+        let trace = super::TurnTrace::new("backend", "pod-1-1");
+        runtime.block_on(trace.scope(async {
+            record_backend_turn_stage_duration("classify_intent", Duration::from_millis(20));
+            super::record_backend_dependency_request_duration(
+                "weather",
+                "forecast",
+                Duration::from_millis(30),
+            );
+            super::record_backend_llm_provider_duration("cradle", Duration::from_millis(40));
+        }));
+        let stages: Vec<String> = trace.spans().into_iter().map(|span| span.stage).collect();
+        assert_eq!(
+            stages,
+            vec![
+                "classify_intent",
+                "dependency:weather.forecast",
+                "llm:cradle"
+            ]
+        );
+    }
+    #[test]
+    fn durations_are_exported_as_histogram_buckets() {
+        let bind = match shared_bind() {
+            Ok(value) => value,
+            Err(error) => panic!("failed to reserve local bind: {error}"),
+        };
+        let _ = match init_prometheus_exporter(bind) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to initialize exporter: {error}"),
+        };
+        register_metrics();
+        record_tts_flush_duration(Duration::from_millis(42));
+        super::record_property_ticket_resolve_duration("hotels", "t", Duration::from_secs(2160));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(payload) = scrape(bind) {
+                if payload.contains("voice_tts_flush_duration_seconds_bucket{le=\"0.05\"}")
+                    && payload.contains("property_ticket_resolve_duration_seconds_bucket{")
+                    && payload.contains("le=\"3600\"")
+                {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("duration metrics are not exported as histograms with buckets");
             }
             thread::sleep(Duration::from_millis(25));
         }
