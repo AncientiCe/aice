@@ -8,6 +8,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Guest journey timing and slow-turn tracing: `pod_bridge_backend_wait_seconds`, `pod_bridge_synthesis_duration_seconds`, `voice_turn_time_to_first_audio_seconds`, `voice_tts_first_audio_latency_seconds`, `property_ticket_resolve_duration_seconds{pack,tool}`; a turn whose wait after speech reaches `service.slow_turn_threshold_ms` (default 3000) is logged once as `slow_turn` with its full stage timeline and counted in `voice_slow_turns_total{component,slowest_stage}`, with `voice_turn_unaccounted_duration_seconds{component}` for time no stage covers. New "Aice Guest Journey" dashboard; Prometheus also scrapes `pod-gateway` and `aice-hotels`.
 - Pod firmware for the Waveshare ESP32-S3-AUDIO-Board (ES8311 speaker, ES7210 mics with a playback echo reference, 7-LED ring, three buttons); the ATOM Echo target is removed. Docs moved to `docs/deployment/pod.md`.
 - The pod sets its clock over NTP before any TLS connection and resolves `.local` host names over mDNS.
 - Talking over an answer on a full-duplex pod: the pod streams its mic and its playback loopback during answers; the bridge cancels the echo (delay search + NLMS) and stops the answer on speech that clearly beats the predicted echo (`pod_gateway.barge_in_start_level`, `barge_in_start_frames`, `barge_in_echo_ratio`). `pod_bridge_barge_in_total{result}`, `pod_bridge_barge_in_latency_seconds`.
@@ -15,6 +16,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- Duration metrics were exported as summaries, so every dashboard panel built on `histogram_quantile` over `_bucket` series was empty; every `*_seconds` metric is now exported as a histogram with fixed buckets (5 ms to 4 h).
 - A failed skill (a provider timed out, a place was not found) was silent on the pod; it now says it could not get the information. This now covers every skill (most returned their error past the apology).
 - A pause after "Computer, ..." split one request into fragments ("of Tahini"); speech that goes on before any answer is now sent again together with the first part as one request.
 - The bridge ignores answers for turns it has replaced, so a cancelled turn's empty answer no longer swallows the real one.

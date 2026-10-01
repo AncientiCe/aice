@@ -1,4 +1,4 @@
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 
@@ -30,6 +30,13 @@ impl std::fmt::Display for ExporterInitError {
 }
 
 impl std::error::Error for ExporterInitError {}
+
+/// Bucket upper bounds, in seconds, for every `*_seconds` metric: milliseconds for audio
+/// and skill steps, seconds for turns, minutes to hours for staff tickets.
+const DURATION_BUCKETS_SECONDS: [f64; 22] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 34.0, 60.0,
+    120.0, 300.0, 900.0, 1800.0, 3600.0, 14400.0,
+];
 
 #[derive(Debug, Default)]
 struct ExporterState {
@@ -63,7 +70,14 @@ pub fn init_prometheus_exporter(bind: &str) -> Result<ExporterInitState, Exporte
             });
         }
     };
-    match PrometheusBuilder::new().with_http_listener(addr).install() {
+    let builder = PrometheusBuilder::new()
+        .with_http_listener(addr)
+        .set_buckets_for_metric(
+            Matcher::Suffix("_seconds".to_string()),
+            &DURATION_BUCKETS_SECONDS,
+        )
+        .map_err(|error| ExporterInitError::InstallFailed(error.to_string()))?;
+    match builder.install() {
         Ok(()) => {
             guard.started_bind = Some(bind.to_string());
             Ok(ExporterInitState::Started)

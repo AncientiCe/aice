@@ -8,5 +8,6 @@ mod devices;
 mod firmware;
 mod fleet;
 mod loop_tests;
+mod metrics;
 mod stays;
 mod tls;

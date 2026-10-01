@@ -375,6 +375,13 @@ pub struct ServiceConfig {
     /// Longest a turn or STT job waits before a busy reply, in milliseconds.
     #[serde(default = "default_turn_queue_max_wait_ms")]
     pub turn_queue_max_wait_ms: u64,
+    /// A turn at least this long is logged with its full stage timeline, in milliseconds.
+    #[serde(default = "default_slow_turn_threshold_ms")]
+    pub slow_turn_threshold_ms: u64,
+}
+
+fn default_slow_turn_threshold_ms() -> u64 {
+    3_000
 }
 
 fn default_max_concurrent_turns() -> usize {
@@ -406,6 +413,7 @@ impl Default for ServiceConfig {
             allow_plaintext_lan: false,
             max_concurrent_turns: default_max_concurrent_turns(),
             turn_queue_max_wait_ms: default_turn_queue_max_wait_ms(),
+            slow_turn_threshold_ms: default_slow_turn_threshold_ms(),
         }
     }
 }
@@ -982,6 +990,7 @@ mod tests {
         assert_eq!(config.service.metrics_bind, "127.0.0.1:9001");
         assert_eq!(config.service.audio_session_idle_timeout_ms, 5_000);
         assert_eq!(config.service.audio_session_max_duration_ms, 20_000);
+        assert_eq!(config.service.slow_turn_threshold_ms, 3_000);
         assert_eq!(config.assistant_profile.unit_system, "metric");
         assert_eq!(config.assistant_profile.time_format, "24h");
         assert!(config.memory.enabled);
@@ -1017,7 +1026,8 @@ mod tests {
                     "metrics_enabled":false,
                     "metrics_bind":"127.0.0.1:9100",
                     "audio_session_idle_timeout_ms":2500,
-                    "audio_session_max_duration_ms":12000
+                    "audio_session_max_duration_ms":12000,
+                    "slow_turn_threshold_ms":1500
                 }
             }"#,
         )
@@ -1055,6 +1065,7 @@ mod tests {
         assert_eq!(config.service.metrics_bind, "127.0.0.1:9100");
         assert_eq!(config.service.audio_session_idle_timeout_ms, 2500);
         assert_eq!(config.service.audio_session_max_duration_ms, 12000);
+        assert_eq!(config.service.slow_turn_threshold_ms, 1500);
 
         let _ = std::fs::remove_file(&path);
     }

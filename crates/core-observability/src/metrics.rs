@@ -2,6 +2,7 @@
 //!
 //! Names follow convention: voice_<subsystem>_<operation>_<unit>.
 
+use crate::trace::record_active_stage;
 use metrics::{counter, gauge, histogram};
 use std::time::Duration;
 
@@ -178,6 +179,11 @@ const MEMORY_RECALL_SCOPED_TOTAL: &str = "memory_recall_scoped_total";
 const MEMORY_RETENTION_PURGES_TOTAL: &str = "memory_retention_purges_total";
 const BACKEND_AUTH_REJECTIONS_TOTAL: &str = "backend_auth_rejections_total";
 const BACKEND_DEVICE_AUTH_DURATION_SECONDS: &str = "backend_device_auth_duration_seconds";
+const VOICE_SLOW_TURNS_TOTAL: &str = "voice_slow_turns_total";
+const VOICE_TURN_UNACCOUNTED_DURATION_SECONDS: &str = "voice_turn_unaccounted_duration_seconds";
+const POD_BRIDGE_BACKEND_WAIT_SECONDS: &str = "pod_bridge_backend_wait_seconds";
+const POD_BRIDGE_SYNTHESIS_DURATION_SECONDS: &str = "pod_bridge_synthesis_duration_seconds";
+const PROPERTY_TICKET_RESOLVE_DURATION_SECONDS: &str = "property_ticket_resolve_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -422,6 +428,25 @@ pub fn register_metrics() {
         0.0_f64,
         "result" => "unknown"
     );
+    counter!(
+        VOICE_SLOW_TURNS_TOTAL,
+        0,
+        "component" => "unknown",
+        "slowest_stage" => "unknown"
+    );
+    histogram!(
+        VOICE_TURN_UNACCOUNTED_DURATION_SECONDS,
+        0.0_f64,
+        "component" => "unknown"
+    );
+    histogram!(POD_BRIDGE_BACKEND_WAIT_SECONDS, 0.0_f64);
+    histogram!(POD_BRIDGE_SYNTHESIS_DURATION_SECONDS, 0.0_f64);
+    histogram!(
+        PROPERTY_TICKET_RESOLVE_DURATION_SECONDS,
+        0.0_f64,
+        "pack" => "unknown",
+        "tool" => "unknown"
+    );
 }
 
 /// Record a new voice session start.
@@ -583,6 +608,7 @@ pub fn record_backend_turn_duration(path: &str, duration: Duration) {
 }
 
 pub fn record_backend_turn_stage_duration(stage: &str, duration: Duration) {
+    record_active_stage(stage, duration);
     histogram!(
         BACKEND_TURN_STAGE_DURATION_SECONDS,
         duration.as_secs_f64(),
@@ -657,6 +683,7 @@ pub fn record_backend_dependency_request_duration(
     operation: &str,
     duration: Duration,
 ) {
+    record_active_stage(&format!("dependency:{dependency}.{operation}"), duration);
     histogram!(
         BACKEND_DEPENDENCY_REQUEST_DURATION_SECONDS,
         duration.as_secs_f64(),
@@ -741,6 +768,7 @@ pub fn record_backend_turn_cancellation(reason: &str) {
 }
 
 pub fn record_backend_llm_provider_duration(provider: &str, duration: Duration) {
+    record_active_stage(&format!("llm:{provider}"), duration);
     histogram!(
         BACKEND_LLM_PROVIDER_DURATION_SECONDS,
         duration.as_secs_f64(),
@@ -1312,4 +1340,46 @@ pub fn record_backend_help_request(result: &str) {
 /// wake word; the turn is dropped).
 pub fn record_backend_wake_word_turn(result: &str) {
     counter!(BACKEND_WAKE_WORD_TURNS_TOTAL, 1, "result" => result.to_string());
+}
+
+/// Record a turn that ran longer than the slow-turn threshold, by the stage that took longest.
+pub fn record_slow_turn(component: &str, slowest_stage: &str) {
+    counter!(
+        VOICE_SLOW_TURNS_TOTAL,
+        1,
+        "component" => component.to_string(),
+        "slowest_stage" => slowest_stage.to_string()
+    );
+}
+
+/// Record the part of a turn that no recorded stage accounts for.
+pub fn record_turn_unaccounted_duration(component: &str, duration: Duration) {
+    histogram!(
+        VOICE_TURN_UNACCOUNTED_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "component" => component.to_string()
+    );
+}
+
+/// Record how long the gateway waited for the backend's answer after the guest stopped speaking.
+pub fn record_pod_bridge_backend_wait(duration: Duration) {
+    histogram!(POD_BRIDGE_BACKEND_WAIT_SECONDS, duration.as_secs_f64());
+}
+
+/// Record how long the gateway took to turn the answer text into speech.
+pub fn record_pod_bridge_synthesis_duration(duration: Duration) {
+    histogram!(
+        POD_BRIDGE_SYNTHESIS_DURATION_SECONDS,
+        duration.as_secs_f64()
+    );
+}
+
+/// Record the time from a ticket being raised to it being marked done.
+pub fn record_property_ticket_resolve_duration(pack: &str, tool: &str, duration: Duration) {
+    histogram!(
+        PROPERTY_TICKET_RESOLVE_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "pack" => pack.to_string(),
+        "tool" => tool.to_string()
+    );
 }

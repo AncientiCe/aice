@@ -77,3 +77,4 @@ New tickets page the first alert tier, and tickets not acknowledged within their
 | `property_alerts_sent_total` | counter | `channel`, `result` |
 | `property_sla_breaches_total` | counter | `pack`, `tool` |
 | `property_ticket_ack_duration_seconds` | histogram | `pack`, `tool` |
+| `property_ticket_resolve_duration_seconds` | histogram | `pack`, `tool` (ticket raised to done) |

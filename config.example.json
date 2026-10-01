@@ -42,6 +42,7 @@
     "restart_backoff_secs": 3,
     "audio_session_idle_timeout_ms": 5000,
     "audio_session_max_duration_ms": 20000,
+    "slow_turn_threshold_ms": 3000,
     "tls": null,
     "allow_plaintext_lan": false
   },
