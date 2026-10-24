@@ -1,10 +1,21 @@
 {
   "pack": "hotels",
-  "bind": "127.0.0.1:8791",
+  "bind": "0.0.0.0:8791",
+  "tls": {
+    "mode": "auto",
+    "hostnames": [
+      "desk.hotel.local"
+    ]
+  },
+  "metrics_bind": "127.0.0.1:9791",
   "database_path": "property.sqlite",
+  "service_token_file": "service.token",
   "property_mcp_url": null,
   "delegated_tools": [],
   "extensions": {
     "101": "204"
+  },
+  "memory_retention": {
+    "mode": "keep"
   }
 }

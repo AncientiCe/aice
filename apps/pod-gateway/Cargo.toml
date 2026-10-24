@@ -2,7 +2,7 @@
 name = "pod-gateway"
 version = "0.1.0"
 edition = "2021"
-description = "Server for M5Stack pod audio and control"
+description = "Room bridge between M5Stack pods and the aice backend"
 
 [[bin]]
 name = "pod-gateway"
@@ -10,10 +10,19 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-tungstenite = "0.24"
 futures-util = "0.3"
 serde_json = "1.0"
 core-config = { path = "../../crates/core-config" }
 core-observability = { path = "../../crates/core-observability" }
+core-runtime-protocol = { path = "../../crates/core-runtime-protocol" }
+core-tls = { path = "../../crates/core-tls" }
+core-tts = { path = "../../crates/core-tts" }
 pod-protocol = { path = "../../crates/pod-protocol" }
 tracing = "0.1"
+
+[dev-dependencies]
+aice-backend = { path = "../aice-backend" }
+async-trait = "0.1"
+property-facilitator = { path = "../../crates/property-facilitator" }
+reqwest = { version = "0.12", features = ["json"] }

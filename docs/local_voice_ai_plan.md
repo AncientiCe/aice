@@ -24,5 +24,5 @@ Canonical workflow is cargo aliases:
 - [README.md](../README.md)
 - [Setup](setup/local-dev.md)
 - [Architecture](architecture/README.md)
-- [Experimental M5Stack deployment](deployment/m5stack-pod.md)
+- [Room pod deployment](deployment/pod.md)
 - [Pod networking](network/wifi-configuration.md)

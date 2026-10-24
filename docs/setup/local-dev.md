@@ -437,12 +437,13 @@ Persisted local data paths:
 ## 6. Hardware notes
 
 - Signal Pod is the intended product target.
-- M5Stack ATOM Echo support is experimental and useful for transport/firmware testing.
+- Room pods run on the Waveshare ESP32-S3-AUDIO-Board; see [pod deployment](../deployment/pod.md).
 - For home deployments, Mac mini is the recommended host computer.
 
 ## Troubleshooting
 
 - Missing STT/TTS output: verify `whisper-cli`, `piper`, and model paths.
 - Wake word not triggering: verify `wake_word.enabled` and `wake_word.phrases`.
+- Follow-ups need the wake word again: raise `wake_word.cooldown_secs`, the seconds a conversation stays awake after an answer finishes playing (default 8; see [architecture 31](../architecture/README.md#31-wake-word-conversation-window)).
 - Pod cannot connect: verify `pod_bind`, firewall, and same-LAN host IP.
 - LLM issues: verify Ollama process and model availability.

@@ -7,3 +7,11 @@ scrape_configs:
     static_configs:
       - targets:
           - host.docker.internal:9001
+  - job_name: pod-gateway
+    static_configs:
+      - targets:
+          - host.docker.internal:9766
+  - job_name: aice-hotels
+    static_configs:
+      - targets:
+          - host.docker.internal:9791
