@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-10-24
+
 ### Added
 
 - Guest journey timing and slow-turn tracing: `pod_bridge_backend_wait_seconds`, `pod_bridge_synthesis_duration_seconds`, `voice_turn_time_to_first_audio_seconds`, `voice_tts_first_audio_latency_seconds`, `property_ticket_resolve_duration_seconds{pack,tool}`; a turn whose wait after speech reaches `service.slow_turn_threshold_ms` (default 3000) is logged once as `slow_turn` with its full stage timeline and counted in `voice_slow_turns_total{component,slowest_stage}`, with `voice_turn_unaccounted_duration_seconds{component}` for time no stage covers. New "Aice Guest Journey" dashboard; Prometheus also scrapes `pod-gateway` and `aice-hotels`.
@@ -52,6 +54,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Security
 
 - Previously the desk, ticket API and `/mcp` were reachable without credentials, and a room's turn stream accepted any client-supplied room.
+
+### Release assets
+
+- `aice-v0.4.0-macos-arm64.tar.gz` and `.sha256`
+- `aice-v0.4.0-linux-x86_64.tar.gz` and `.sha256`
+- `aice-v0.4.0-linux-aarch64.tar.gz` and `.sha256`
 
 ## [v0.3.2] - 2026-09-22
 
