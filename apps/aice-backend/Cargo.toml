@@ -36,9 +36,9 @@ core-vad = { path = "../../crates/core-vad" }
 property-facilitator = { path = "../../crates/property-facilitator" }
 thiserror = "1.0"
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
-core-skills = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "63591e90189b6d91f4987309597994060233fdfe", default-features = false, features = ["core-common", "hotel"] }
-skill-chain = { git = "ssh://git@github.com/AncientiCe/aice-skills.git", rev = "63591e90189b6d91f4987309597994060233fdfe" }
-palace = { git = "ssh://git@github.com/AncientiCe/palace-rs.git", tag = "v0.18.0", package = "palace-rs", default-features = false }
+core-skills = { git = "https://github.com/AncientiCe/aice-skills.git", rev = "63591e90189b6d91f4987309597994060233fdfe", default-features = false, features = ["core-common", "hotel"] }
+skill-chain = { git = "https://github.com/AncientiCe/aice-skills.git", rev = "63591e90189b6d91f4987309597994060233fdfe" }
+palace = { git = "https://github.com/AncientiCe/palace-rs.git", tag = "v0.18.0", package = "palace-rs", default-features = false }
 
 [dev-dependencies]
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

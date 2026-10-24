@@ -51,7 +51,7 @@ Prerequisites (all platforms):
 - Rust toolchain (`cargo`).
 - [Ollama](https://ollama.com) running locally for the LLM.
 - `whisper-cli` + a Whisper model file for STT.
-- SSH access to `git@github.com:AncientiCe/aice-skills.git` (the skills crate is consumed as a pinned git dependency).
+- Network access to GitHub: `aice-skills` and `palace-rs` are public git dependencies fetched over HTTPS.
 
 Steps:
 

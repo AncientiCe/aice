@@ -6,6 +6,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Changed
+
+- `aice-skills` and `palace-rs` are fetched over HTTPS (`https://github.com/AncientiCe/...`) instead of SSH, so the workspace builds without a GitHub SSH key. CI no longer needs the `AICE_SKILLS_READ_TOKEN` secret.
+
+### Fixed
+
+- Release `.sha256` files named the archive as `dist/aice-...tar.gz`, so `shasum -a 256 -c` failed next to the downloaded archive. They now name the archive alone. (The `v0.4.0` checksum files were replaced on the release page.)
+
 ## [v0.4.0] - 2026-10-24
 
 ### Added

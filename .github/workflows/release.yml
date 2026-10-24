@@ -55,19 +55,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.release_tag }}
-      - name: Configure git auth for private dependencies
-        shell: bash
-        env:
-          AICE_SKILLS_READ_TOKEN: ${{ secrets.AICE_SKILLS_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${AICE_SKILLS_READ_TOKEN:-}" ]; then
-            echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
-            exit 1
-          fi
-          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
-
       - name: Verify checked out ref is tag
         shell: bash
         run: |
@@ -129,7 +116,7 @@ jobs:
           cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway target/release/room-loadtest dist/
           archive="aice-${tag}-macos-arm64.tar.gz"
           tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway room-loadtest
-          shasum -a 256 "dist/${archive}" > "dist/${archive}.sha256"
+          (cd dist && shasum -a 256 "${archive}" > "${archive}.sha256")
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
@@ -159,19 +146,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.release_tag }}
-      - name: Configure git auth for private dependencies
-        shell: bash
-        env:
-          AICE_SKILLS_READ_TOKEN: ${{ secrets.AICE_SKILLS_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${AICE_SKILLS_READ_TOKEN:-}" ]; then
-            echo "Missing secret AICE_SKILLS_READ_TOKEN (must read AncientiCe/aice-skills)."
-            exit 1
-          fi
-          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-          git config --global --add url."https://x-access-token:${AICE_SKILLS_READ_TOKEN}@github.com/".insteadOf "git@github.com:"
-
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
@@ -198,7 +172,7 @@ jobs:
           cp target/release/aice-backend target/release/aice-hotels target/release/aice-care target/release/aice-ward target/release/pod-gateway target/release/room-loadtest dist/
           archive="aice-${tag}-linux-${{ matrix.arch }}.tar.gz"
           tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway room-loadtest
-          sha256sum "dist/${archive}" > "dist/${archive}.sha256"
+          (cd dist && sha256sum "${archive}" > "${archive}.sha256")
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
