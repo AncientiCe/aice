@@ -6,6 +6,53 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Added
+
+- Guest journey timing and slow-turn tracing: `pod_bridge_backend_wait_seconds`, `pod_bridge_synthesis_duration_seconds`, `voice_turn_time_to_first_audio_seconds`, `voice_tts_first_audio_latency_seconds`, `property_ticket_resolve_duration_seconds{pack,tool}`; a turn whose wait after speech reaches `service.slow_turn_threshold_ms` (default 3000) is logged once as `slow_turn` with its full stage timeline and counted in `voice_slow_turns_total{component,slowest_stage}`, with `voice_turn_unaccounted_duration_seconds{component}` for time no stage covers. New "Aice Guest Journey" dashboard; Prometheus also scrapes `pod-gateway` and `aice-hotels`.
+- Pod firmware for the Waveshare ESP32-S3-AUDIO-Board (ES8311 speaker, ES7210 mics with a playback echo reference, 7-LED ring, three buttons); the ATOM Echo target is removed. Docs moved to `docs/deployment/pod.md`.
+- The pod sets its clock over NTP before any TLS connection and resolves `.local` host names over mDNS.
+- Talking over an answer on a full-duplex pod: the pod streams its mic and its playback loopback during answers; the bridge cancels the echo (delay search + NLMS) and stops the answer on speech that clearly beats the predicted echo (`pod_gateway.barge_in_start_level`, `barge_in_start_frames`, `barge_in_echo_ratio`). `pod_bridge_barge_in_total{result}`, `pod_bridge_barge_in_latency_seconds`.
+- Short-term conversation context: the backend keeps the last `memory.max_recent_turns` exchanges per session in memory for chat replies, cleared on a new stay or after 10 idle minutes; `playback_interrupted {spoken_ratio}` cuts an interrupted answer to what was heard.
+
+### Fixed
+
+- Duration metrics were exported as summaries, so every dashboard panel built on `histogram_quantile` over `_bucket` series was empty; every `*_seconds` metric is now exported as a histogram with fixed buckets (5 ms to 4 h).
+- A failed skill (a provider timed out, a place was not found) was silent on the pod; it now says it could not get the information. This now covers every skill (most returned their error past the apology).
+- A pause after "Computer, ..." split one request into fragments ("of Tahini"); speech that goes on before any answer is now sent again together with the first part as one request.
+- The bridge ignores answers for turns it has replaced, so a cancelled turn's empty answer no longer swallows the real one.
+- The horoscope classifier slot is limited to the 12 signs (it took "today" as the sign).
+- A full-duplex pod's last buffered words after an answer were heard as a new request; the bridge waits until the pod's speaker is quiet.
+- Room pods could never make hotel requests: the classifier only offered them to clients that declared `skill_hotel`. A backend with a property facilitator now always offers them.
+- The classifier's answer was capped at 24 tokens, so hotel requests with details were cut off, failed to parse, and fell back to chat. The cap is 64 (decoding still stops when the JSON is complete).
+- Chat replies could promise actions that never happened ("I'll get you an extra pillow right away"). Chat is now told it cannot act and must say the request could not be sent.
+- Ollama reloaded the model on every call (about 3 s each) because classifier and memory calls asked for a different context size than the warm-up and answers. Calls to a shared host now use one size, so the model loaded at startup stays loaded.
+- Whisper encoded a full 30 s window for every clip; it now encodes only the audio plus a margin, so a short request transcribes about four times faster on the CPU.
+
+- Staff desk login with `staff` and `supervisor` roles, CSRF protection, lockout after five failed passwords, and an append-only audit log; `user add|remove|list` on every pack.
+- A service token between backend and facilitator (`service.token`, `property.service_token_file`).
+- Room pod provisioning: pods enrol with a nonce, a supervisor assigns the room, the pod receives a device token; `device list|assign|revoke`. The backend verifies the token on every connection and turn and takes the room from it.
+- TLS from a property-local CA (`crates/core-tls`): facilitator `tls.mode: auto|files|off`, backend `service.tls`, bridge `pod_gateway.tls`; `tls fingerprint|issue`.
+- Stays with private, stay-scoped memory; per-stay memory consent; `memory_retention` `keep` (default for hotels and care), `archive`, or `wipe_on_close` (default for wards); a backend retention job; `stay open|close|list`.
+- Staff alert tiers, webhook and property-MCP channels, and per-tool SLA re-escalation that survives restarts.
+- Room bridge (`pod-gateway`): speech detection, turns on the backend with the pod's token, Piper speech back to the pod paced for its playback queue.
+- Device heartbeats and `device_offline` tickets; a help button (long press) that raises a ticket without speech; a privacy mute (double tap).
+- Signed pod firmware updates with staged rollout (`firmware keygen|publish|rollout|pod-header`) and lost-token recovery.
+- Admission control (`service.max_concurrent_turns`, `service.turn_queue_max_wait_ms`), a Whisper worker pool (`stt.workers`), and LLM host failover (`ollama_urls`).
+- `room-loadtest` and a CI capacity gate; CI builds the pod firmware; Linux x86_64 and aarch64 release archives.
+- Pilot runbook, DPIA template, and clinical safety starter.
+
+### Changed
+
+- Memory Palace moves from `mempalace-rust` `v0.1.0` to `palace-rs` `v0.14.2` (renamed repository `AncientiCe/palace-rs`, library `palace`). The default data directory is `~/.palace`; installs that only have `~/.mempalace` keep using it. Stay purges also clear the new wing registry, usage events, mined-file records, and feedback for the stay.
+- The facilitator refuses plain HTTP off loopback, and a property backend or bridge refuses plain HTTP/WebSocket on a network bind unless `service.allow_plaintext_lan` is set.
+- In a property deployment a turn without an open, consented stay remembers nothing, and the shared journal skill is hidden from rooms.
+- `pod-gateway` is no longer a logging stub; its old `run_gateway` library API is replaced by `spawn_bridge`.
+- Pods take their room from the desk, not from firmware (`DEVICE_ROOM` is gone).
+
+### Security
+
+- Previously the desk, ticket API and `/mcp` were reachable without credentials, and a room's turn stream accepted any client-supplied room.
+
 ## [v0.3.2] - 2026-09-22
 
 ### Fixed

@@ -1,5 +1,9 @@
+pub mod admission;
+pub mod conversation;
+pub mod device_auth;
 pub mod discovery_broadcast;
 pub mod llm_adapters;
+pub mod memory_scope;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -7,19 +11,20 @@ use chrono::{Datelike, NaiveDate, Utc};
 use core_config::{Config, WakeWordConfig};
 use core_llm::CradleLlmStream;
 use core_observability::{
-    record_air_quality_skill, record_backend_audio_chunk, record_backend_dependency_request,
-    record_backend_dependency_request_duration, record_backend_http_request,
-    record_backend_llm_provider_duration, record_backend_skill_execute,
-    record_backend_skill_execute_duration, record_backend_turn_cancellation,
-    record_backend_turn_duration, record_backend_turn_first_token_duration,
-    record_backend_turn_partial_transcript_duration, record_backend_turn_stage_duration,
-    record_backend_turn_total, record_briefing_skill, record_calculator_skill,
-    record_calendar_skill, record_currency_skill, record_dictionary_skill, record_email_skill,
-    record_journal_skill, record_meeting_notes_skill, record_model_preload,
-    record_model_preload_duration, record_palace_add_memory, record_palace_error,
-    record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
-    record_palace_search, record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
-    record_unit_conversion_skill,
+    record_air_quality_skill, record_backend_audio_chunk, record_backend_auth_rejection,
+    record_backend_dependency_request, record_backend_dependency_request_duration,
+    record_backend_help_request, record_backend_http_request, record_backend_llm_provider_duration,
+    record_backend_skill_execute, record_backend_skill_execute_duration,
+    record_backend_turn_cancellation, record_backend_turn_duration,
+    record_backend_turn_first_token_duration, record_backend_turn_partial_transcript_duration,
+    record_backend_turn_stage_duration, record_backend_turn_total, record_backend_wake_word_turn,
+    record_briefing_skill, record_calculator_skill, record_calendar_skill, record_currency_skill,
+    record_dictionary_skill, record_email_skill, record_journal_skill, record_meeting_notes_skill,
+    record_memory_recall_scoped, record_model_preload, record_model_preload_duration,
+    record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_kg_add,
+    record_palace_kg_query, record_palace_open, record_palace_search, record_palace_wake_up,
+    record_screen_ocr_skill, record_translate_skill, record_unit_conversion_skill,
+    slow_turn_threshold, TurnTrace,
 };
 use core_orchestrator::{
     intent_classifier_few_shots_for_skills,
@@ -54,6 +59,7 @@ use core_skills::{
     WeatherSkill, ENABLED_SKILL_IDS,
 };
 use core_stt::WhisperSttStream;
+use core_vad::WakeWordGate;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -61,7 +67,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use mempalace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
+use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
 use property_facilitator::PropertyClient;
 use serde_json::{json, Value};
 use skill_chain::EffectiveCapabilities;
@@ -157,9 +163,11 @@ struct ClassifierPromptArtifacts {
     json_schema: Option<serde_json::Value>,
 }
 
-/// Hardcoded classifier output token cap. Kept small for decode-speed on
-/// memory-bandwidth-limited devices (each token costs ~25ms on M4 Mini with 7B).
-const CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 24;
+/// Classifier output token cap. It only bounds the answer: decoding stops when
+/// the JSON is complete, so short intents cost the same as before. It must fit
+/// the longest taught answer (a hotel request with slots), or the cut-off JSON
+/// fails to parse and the turn falls back to chat.
+const CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 64;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FrontendSessionKey {
@@ -202,6 +210,10 @@ pub trait BackendEngine: Send + Sync {
         intent_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError>;
+
+    /// The session's latest answer was cut off after `spoken_ratio` of it
+    /// played. Engines without conversation context have nothing to update.
+    fn conversation_interrupted(&self, _session_id: &str, _spoken_ratio: f32) {}
 }
 
 #[async_trait]
@@ -215,30 +227,40 @@ pub trait AudioTranscriber: Send + Sync {
 }
 
 pub struct WhisperAudioTranscriber {
-    stt: Arc<std::sync::Mutex<WhisperSttStream>>,
+    pool: WorkerPool<WhisperSttStream>,
 }
 
 impl WhisperAudioTranscriber {
-    pub fn new(model_path: impl Into<String>, preload_on_startup: bool) -> Result<Self, DynError> {
+    /// Load `workers` Whisper contexts (each holds the model in memory) so
+    /// that many rooms can be transcribed at once.
+    pub fn new(
+        model_path: impl Into<String>,
+        preload_on_startup: bool,
+        workers: usize,
+    ) -> Result<Self, DynError> {
         let path: String = model_path.into();
-        let mut stt = WhisperSttStream::new(Path::new(&path))
-            .map_err(|error| format!("failed to load whisper model: {error}"))?;
-        if preload_on_startup {
-            let t0 = Instant::now();
-            match stt.warm_up() {
-                Ok(()) => {
-                    record_model_preload_duration("stt", t0.elapsed());
-                    record_model_preload("stt", "success");
-                }
-                Err(error) => {
-                    record_model_preload_duration("stt", t0.elapsed());
-                    record_model_preload("stt", "error");
-                    tracing::warn!(%error, "stt preload failed; continuing without startup warmup");
+        let mut contexts = Vec::new();
+        for _ in 0..workers.max(1) {
+            let mut stt = WhisperSttStream::new(Path::new(&path))
+                .map_err(|error| format!("failed to load whisper model: {error}"))?;
+            if preload_on_startup {
+                let t0 = Instant::now();
+                match stt.warm_up() {
+                    Ok(()) => {
+                        record_model_preload_duration("stt", t0.elapsed());
+                        record_model_preload("stt", "success");
+                    }
+                    Err(error) => {
+                        record_model_preload_duration("stt", t0.elapsed());
+                        record_model_preload("stt", "error");
+                        tracing::warn!(%error, "stt preload failed; continuing without startup warmup");
+                    }
                 }
             }
+            contexts.push(stt);
         }
         Ok(Self {
-            stt: Arc::new(std::sync::Mutex::new(stt)),
+            pool: WorkerPool::new(contexts),
         })
     }
 }
@@ -257,18 +279,13 @@ impl AudioTranscriber for WhisperAudioTranscriber {
             )
             .into());
         }
-        let stt = self.stt.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = stt
-                .lock()
-                .map_err(|error| format!("stt mutex poisoned: {error}"))?;
-            guard
-                .transcribe_blocking(&samples)
-                .map(|t| t.trim().to_string())
-                .map_err(|error| -> DynError { error.into() })
-        })
-        .await
-        .map_err(|error| -> DynError { format!("stt task join: {error}").into() })?
+        self.pool
+            .run(move |stt: &mut WhisperSttStream| {
+                stt.transcribe_blocking(&samples)
+                    .map(|text| text.trim().to_string())
+                    .map_err(|error| -> DynError { error.into() })
+            })
+            .await
     }
 }
 
@@ -299,6 +316,109 @@ impl ServerHandle {
     }
 }
 
+pub use admission::{
+    AdmissionSettings, AdmittedEngine, AdmittedTranscriber, WorkerPool, BUSY_REPLY,
+};
+pub use device_auth::{
+    spawn_device_heartbeats, ConnectedDevice, DeviceAuth, DeviceAuthError, HEARTBEAT_INTERVAL,
+};
+pub use memory_scope::{
+    purge_stay_memory, run_memory_retention_once, spawn_memory_retention, MemoryScope,
+};
+
+/// Facilitator client for this config, or `None` when no facilitator is configured.
+pub fn property_client_from_config(
+    property: &core_config::PropertyConfig,
+) -> Option<Result<PropertyClient, property_facilitator::FacilitatorError>> {
+    let url = property
+        .facilitator_url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())?;
+    let token_file = property
+        .service_token_file
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::Path::new);
+    let ca_file = property
+        .ca_file
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::Path::new);
+    Some(
+        property_facilitator::client_service_token(token_file).and_then(|token| match ca_file {
+            Some(ca) => PropertyClient::with_ca_file(url, token, ca),
+            None => PropertyClient::new(url, token),
+        }),
+    )
+}
+
+/// Server options for this config and bind. Fails when device tokens are
+/// required but no facilitator can verify them, or when a property backend
+/// would serve plain HTTP on the network.
+pub fn server_options_from_config(config: &Config, bind: &str) -> Result<ServerOptions, DynError> {
+    let tls = match &config.service.tls {
+        Some(files) => Some(core_tls::acceptor(
+            std::path::Path::new(&files.cert_file),
+            std::path::Path::new(&files.key_file),
+        )?),
+        None => None,
+    };
+    let loopback = property_facilitator::is_loopback_bind(bind);
+    if tls.is_none() && !loopback && config.property.is_configured() {
+        if config.service.allow_plaintext_lan {
+            warn!(%bind, "service.allow_plaintext_lan is set: room audio crosses the network unencrypted");
+        } else {
+            return Err(format!(
+                "refusing plain HTTP on {bind} for a property deployment; set service.tls or bind to 127.0.0.1"
+            )
+            .into());
+        }
+    }
+    if !config.property.device_token_required() {
+        if config.property.is_configured() {
+            warn!("property.require_device_token is false: any client on the network can open a turn stream");
+        }
+        return Ok(ServerOptions {
+            device_auth: None,
+            tls,
+        });
+    }
+    match property_client_from_config(&config.property) {
+        Some(Ok(client)) => Ok(ServerOptions {
+            device_auth: Some(Arc::new(DeviceAuth::new(client))),
+            tls,
+        }),
+        Some(Err(error)) => Err(format!(
+            "device tokens are required but the facilitator client failed: {error}"
+        )
+        .into()),
+        None => Err("property.require_device_token needs property.facilitator_url".into()),
+    }
+}
+
+/// Spoken after the help button opened a ticket.
+pub const HELP_RAISED_REPLY: &str = "I've called the staff. Someone is on the way.";
+/// Spoken when the help button could not reach the staff desk.
+pub const HELP_UNAVAILABLE_REPLY: &str =
+    "I couldn't reach the staff desk. Please use the phone or the call button.";
+
+/// A turn-stream connection whose pod token was verified.
+struct AuthenticatedDevice {
+    auth: Arc<DeviceAuth>,
+    token: String,
+    identity: property_facilitator::DeviceIdentity,
+}
+
+/// Optional server behaviour beyond the voice loop itself.
+#[derive(Clone, Default)]
+pub struct ServerOptions {
+    /// When set, `/turns/stream` needs a device token and the turn's device
+    /// and room come from that token.
+    pub device_auth: Option<Arc<DeviceAuth>>,
+    /// When set, every connection is TLS.
+    pub tls: Option<core_tls::TlsAcceptor>,
+}
+
 pub async fn spawn_server(
     bind: &str,
     engine: Arc<dyn BackendEngine>,
@@ -318,6 +438,23 @@ pub async fn spawn_server_with_audio(
     transcriber: Arc<dyn AudioTranscriber>,
     audio_config: AudioIngressConfig,
 ) -> Result<ServerHandle, DynError> {
+    spawn_server_with_options(
+        bind,
+        engine,
+        transcriber,
+        audio_config,
+        ServerOptions::default(),
+    )
+    .await
+}
+
+pub async fn spawn_server_with_options(
+    bind: &str,
+    engine: Arc<dyn BackendEngine>,
+    transcriber: Arc<dyn AudioTranscriber>,
+    audio_config: AudioIngressConfig,
+    options: ServerOptions,
+) -> Result<ServerHandle, DynError> {
     let listener = TcpListener::bind(bind).await?;
     let local = listener.local_addr()?;
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
@@ -333,17 +470,19 @@ pub async fn spawn_server_with_audio(
                     let Ok((stream, _)) = accepted else {
                         continue;
                     };
-                    let io = TokioIo::new(stream);
                     let engine = engine.clone();
                     let frontend_sessions = frontend_sessions.clone();
                     let transcriber = transcriber.clone();
                     let audio_config = audio_config.clone();
+                    let options = options.clone();
                     tokio::spawn(async move {
+                        let acceptor = options.tls.clone();
                         let service = service_fn(move |req| {
                             let engine = engine.clone();
                             let frontend_sessions = frontend_sessions.clone();
                             let transcriber = transcriber.clone();
                             let audio_config = audio_config.clone();
+                            let options = options.clone();
                             async move {
                                 handle_request(
                                     req,
@@ -351,15 +490,33 @@ pub async fn spawn_server_with_audio(
                                     frontend_sessions,
                                     transcriber,
                                     audio_config,
+                                    options,
                                 )
                                 .await
                             }
                         });
-                        if let Err(error) = http1::Builder::new()
-                            .serve_connection(io, service)
-                            .with_upgrades()
-                            .await
-                        {
+                        let served = match acceptor {
+                            Some(acceptor) => match acceptor.accept(stream).await {
+                                Ok(tls) => {
+                                    http1::Builder::new()
+                                        .serve_connection(TokioIo::new(tls), service)
+                                        .with_upgrades()
+                                        .await
+                                }
+                                Err(error) => {
+                                    record_backend_auth_rejection("tls_handshake");
+                                    debug!(%error, "backend tls handshake failed");
+                                    return;
+                                }
+                            },
+                            None => {
+                                http1::Builder::new()
+                                    .serve_connection(TokioIo::new(stream), service)
+                                    .with_upgrades()
+                                    .await
+                            }
+                        };
+                        if let Err(error) = served {
                             warn!(%error, "backend connection failed");
                         }
                     });
@@ -510,8 +667,14 @@ fn frontend_classifier_skills_from_context(context: Option<&Value>) -> Vec<Strin
     normalized
 }
 
-fn build_available_classifier_skills(context: Option<&Value>) -> Vec<String> {
-    let frontend_intents = frontend_classifier_skills_from_context(context);
+/// Skills the classifier may pick for one turn. `property_desk` is true when
+/// the backend has a facilitator: it then runs hotel requests itself, so they
+/// are offered even to clients (room pods) that declare no frontend intents.
+fn build_available_classifier_skills(context: Option<&Value>, property_desk: bool) -> Vec<String> {
+    let mut frontend_intents = frontend_classifier_skills_from_context(context);
+    if property_desk && !frontend_intents.iter().any(|skill| skill == "skill_hotel") {
+        frontend_intents.push("skill_hotel".to_string());
+    }
     let backend_skills: Vec<String> = ENABLED_SKILL_IDS
         .iter()
         .map(|skill| skill.to_string())
@@ -573,13 +736,45 @@ fn context_str(context: Option<&serde_json::Value>, key: &str) -> Option<String>
         .map(str::to_string)
 }
 
-fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> String {
+/// Wake-word decision for one turn; the label is the metric `result`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WakeOutcome {
+    Disabled,
+    Woken,
+    Awake,
+    Ignored,
+}
+
+impl WakeOutcome {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            WakeOutcome::Disabled => None,
+            WakeOutcome::Woken => Some("woken"),
+            WakeOutcome::Awake => Some("awake"),
+            WakeOutcome::Ignored => Some("ignored"),
+        }
+    }
+}
+
+/// An idle conversation starts only with a wake phrase; an awake one (a turn
+/// or its playback in flight, or inside the awake window) needs none. A
+/// leading wake phrase is dropped from the transcript either way.
+fn apply_backend_wake_word(
+    config: &WakeWordConfig,
+    awake: bool,
+    transcript: String,
+) -> (String, WakeOutcome) {
     let trimmed = transcript.trim();
     if !config.enabled {
-        return trimmed.to_string();
+        return (trimmed.to_string(), WakeOutcome::Disabled);
     }
+    let unmatched = if awake {
+        WakeOutcome::Awake
+    } else {
+        WakeOutcome::Ignored
+    };
     if trimmed.is_empty() {
-        return String::new();
+        return (String::new(), unmatched);
     }
     let lowered = trimmed.to_lowercase();
     for phrase in &config.phrases {
@@ -589,18 +784,83 @@ fn apply_backend_wake_word(config: &WakeWordConfig, transcript: String) -> Strin
         }
         if let Some(remainder) = lowered.strip_prefix(&normalized_phrase) {
             let remainder = &trimmed[trimmed.len() - remainder.len()..];
-            return remainder
+            let remainder = remainder
                 .trim_matches(|c: char| c == ',' || c == ':' || c.is_whitespace())
                 .to_string();
+            let matched = if awake {
+                WakeOutcome::Awake
+            } else {
+                WakeOutcome::Woken
+            };
+            return (remainder, matched);
         }
     }
-    String::new()
+    if awake {
+        (trimmed.to_string(), WakeOutcome::Awake)
+    } else {
+        (String::new(), WakeOutcome::Ignored)
+    }
+}
+
+/// Whether a connection's conversation is awake. The wake word wakes it; it
+/// stays awake while a turn or its playback is in flight and for the awake
+/// window (`wake_word.cooldown_secs`) after the last answer, then goes idle.
+#[derive(Debug)]
+struct ConversationWake {
+    gate: WakeWordGate,
+    playing: bool,
+    interrupted: bool,
+}
+
+impl ConversationWake {
+    fn new(config: WakeWordConfig) -> Self {
+        Self {
+            gate: WakeWordGate::new(config),
+            playing: false,
+            interrupted: false,
+        }
+    }
+
+    /// Decides a new turn: awake if the previous turn was still open or was
+    /// just cancelled, if an answer is playing, or inside the awake window.
+    fn start_turn(&mut self, previous_open: bool, now: Instant) -> bool {
+        let awake =
+            previous_open || self.interrupted || self.playing || self.gate.should_listen(now);
+        self.interrupted = false;
+        awake
+    }
+
+    /// An answer finished; the awake window runs from now.
+    fn answered(&mut self, now: Instant) {
+        self.gate.activate(now);
+    }
+
+    /// The guest cut in on an answer; the next turn continues the conversation.
+    fn cancelled(&mut self, now: Instant) {
+        self.interrupted = true;
+        self.gate.activate(now);
+    }
+
+    fn playback_started(&mut self) {
+        self.playing = true;
+    }
+
+    /// Playback ended or was stopped; the awake window runs from now.
+    fn playback_finished(&mut self, now: Instant) {
+        self.playing = false;
+        self.gate.activate(now);
+    }
 }
 
 #[derive(Debug)]
 struct WsTurnState {
     session_id: String,
     device_id: Option<String>,
+    /// Room of the authenticated device; `None` when device auth is off.
+    room: Option<String>,
+    /// `Some(Some(wing))`: the room's stay; `Some(None)`: authenticated room
+    /// without a stay (no memory); `None`: device auth is off (shared memory).
+    memory: Option<Option<String>>,
     turn_id: String,
     supported_frontend_intents: Vec<String>,
     samples: Vec<i16>,
@@ -615,18 +875,28 @@ struct WsTurnState {
     completed_generation: Option<u64>,
     active_task: Option<tokio::task::JoinHandle<()>>,
     awaiting_skill_result: bool,
+    /// The conversation was awake when this turn started (no wake word needed).
+    awake: bool,
+    /// Every stage of this turn, reported with its timeline when the turn is slow.
+    trace: TurnTrace,
 }
 
 impl WsTurnState {
     fn new(
         session_id: String,
         device_id: Option<String>,
+        room: Option<String>,
+        memory: Option<Option<String>>,
         turn_id: String,
         supported_frontend_intents: Vec<String>,
+        awake: bool,
     ) -> Self {
+        let trace = TurnTrace::new("backend", turn_id.clone());
         Self {
             session_id,
             device_id,
+            room,
+            memory,
             turn_id,
             supported_frontend_intents,
             samples: Vec::new(),
@@ -641,6 +911,8 @@ impl WsTurnState {
             completed_generation: None,
             active_task: None,
             awaiting_skill_result: false,
+            awake,
+            trace,
         }
     }
 }
@@ -743,13 +1015,32 @@ fn spawn_speculative_turn(
         since_turn_start_ms = state.started_at.elapsed().as_millis(),
         "calling_llm_for_classification"
     );
-    let context = if state.supported_frontend_intents.is_empty() {
-        None
-    } else {
-        Some(serde_json::json!({
-            "frontend_supported_intents": state.supported_frontend_intents,
-        }))
-    };
+    let mut context = serde_json::Map::new();
+    if !state.supported_frontend_intents.is_empty() {
+        context.insert(
+            "frontend_supported_intents".to_string(),
+            serde_json::json!(state.supported_frontend_intents),
+        );
+    }
+    if let Some(room) = &state.room {
+        context.insert("room".to_string(), serde_json::json!(room));
+    }
+    match &state.memory {
+        Some(Some(wing)) => {
+            context.insert(
+                memory_scope::CONTEXT_MEMORY_WING.to_string(),
+                serde_json::json!(wing),
+            );
+        }
+        Some(None) => {
+            context.insert(
+                memory_scope::CONTEXT_MEMORY_DISABLED.to_string(),
+                serde_json::json!(true),
+            );
+        }
+        None => {}
+    }
+    let context = (!context.is_empty()).then_some(serde_json::Value::Object(context));
     let request = TurnRequest {
         session_id: state.session_id.clone(),
         device_id: state.device_id.clone(),
@@ -759,9 +1050,10 @@ fn spawn_speculative_turn(
         context,
     };
     let started = Instant::now();
+    let trace = state.trace.clone();
     let task = tokio::spawn(async move {
-        let result = engine
-            .process_turn(request)
+        let result = trace
+            .scope(engine.process_turn(request))
             .await
             .map_err(|error| error.to_string());
         record_backend_llm_provider_duration("cradle", started.elapsed());
@@ -843,6 +1135,7 @@ async fn process_binary_audio_frame(
         .unwrap_or_default();
     let stt_elapsed = stt_started.elapsed();
     record_backend_turn_stage_duration("stt_incremental", stt_elapsed);
+    state.trace.record("stt_incremental", stt_elapsed);
     info!(
         turn_id = %state.turn_id,
         stt_elapsed_ms = stt_elapsed.as_millis(),
@@ -856,8 +1149,11 @@ async fn process_binary_audio_frame(
         }
         state.transcript_accum.push_str(&transcript);
     }
-    let transcript =
-        apply_backend_wake_word(&audio_config.wake_word, state.transcript_accum.clone());
+    let (transcript, _) = apply_backend_wake_word(
+        &audio_config.wake_word,
+        state.awake,
+        state.transcript_accum.clone(),
+    );
     if transcript.is_empty() {
         return Ok(());
     }
@@ -888,9 +1184,14 @@ async fn handle_turn_stream_socket(
     transcriber: Arc<dyn AudioTranscriber>,
     frontend_sessions: FrontendSessions,
     audio_config: Arc<AudioIngressConfig>,
+    mut device: Option<AuthenticatedDevice>,
 ) -> Result<(), DynError> {
+    let _connected = device
+        .as_ref()
+        .map(|authenticated| authenticated.auth.track(&authenticated.identity.device_id));
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<TurnStreamInternalEvent>();
     let mut turn: Option<WsTurnState> = None;
+    let mut wake = ConversationWake::new(audio_config.wake_word.clone());
     let mut ws_session_id: Option<String> = None;
     let mut ws_device_id: Option<String> = None;
 
@@ -950,11 +1251,47 @@ async fn handle_turn_stream_socket(
                                     supported_frontend_intents,
                                     ..
                                 } => {
+                                    let previous_open = turn.is_some();
                                     if let Some(mut previous) = turn.take() {
                                         if let Some(task) = previous.active_task.take() {
                                             task.abort();
                                         }
                                     }
+                                    let awake = wake.start_turn(previous_open, Instant::now());
+                                    // Re-check the pod every turn: revocation and the
+                                    // room's stay (guest) can change mid-connection.
+                                    if let Some(authenticated) = device.as_mut() {
+                                        match authenticated
+                                            .auth
+                                            .authenticate(Some(&authenticated.token))
+                                            .await
+                                        {
+                                            Ok(identity) => authenticated.identity = identity,
+                                            Err(DeviceAuthError::Unavailable(reason)) => {
+                                                warn!(%reason, "device re-check unavailable; memory off for this turn");
+                                                authenticated.identity.memory_wing = None;
+                                            }
+                                            Err(error) => {
+                                                emit_turn_stream_event(
+                                                    &mut ws,
+                                                    &TurnStreamServerEvent::Error {
+                                                        turn_id: Some(turn_id.clone()),
+                                                        message: error.to_string(),
+                                                    },
+                                                )
+                                                .await?;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let identity = device.as_ref().map(|authenticated| &authenticated.identity);
+                                    // An authenticated pod cannot claim another device or room.
+                                    let device_id = match identity {
+                                        Some(identity) => Some(identity.device_id.clone()),
+                                        None => device_id,
+                                    };
+                                    let room = identity.map(|identity| identity.room.clone());
+                                    let memory = identity.map(|identity| identity.memory_wing.clone());
                                     let dev = device_id.clone().unwrap_or_else(|| "unknown".to_string());
                                     register_ws_session(
                                         &frontend_sessions,
@@ -972,7 +1309,7 @@ async fn handle_turn_stream_socket(
                                         supported_frontend_intents = intents.len(),
                                         "turn_start"
                                     );
-                                    turn = Some(WsTurnState::new(session_id, device_id, turn_id, intents));
+                                    turn = Some(WsTurnState::new(session_id, device_id, room, memory, turn_id, intents, awake));
                                 }
                                 TurnStreamClientMessage::TurnDone => {
                                     let raw_since_turn_start_ms = turn
@@ -1004,36 +1341,37 @@ async fn handle_turn_stream_socket(
                                         "turn_done_received"
                                     );
                                     state.done_requested = true;
+                                    state.trace.record("speech", state.started_at.elapsed());
+                                    state.trace.mark_speech_end();
                                     if !state.samples.is_empty() {
+                                        let final_stt_started = Instant::now();
                                         let final_transcript_chunk = transcriber
                                             .transcribe(std::mem::take(&mut state.samples), 16_000, 1)
                                             .await
                                             .map(|value| value.trim().to_string())
                                             .unwrap_or_default();
+                                        state.trace.record("stt_final", final_stt_started.elapsed());
                                         if !final_transcript_chunk.is_empty() {
                                             if !state.transcript_accum.is_empty() {
                                                 state.transcript_accum.push(' ');
                                             }
                                             state.transcript_accum.push_str(&final_transcript_chunk);
                                         }
-                                        let final_transcript = apply_backend_wake_word(
-                                            &audio_config.wake_word,
-                                            state.transcript_accum.clone(),
-                                        );
-                                        if !final_transcript.is_empty() {
-                                            state.active_transcript = Some(final_transcript);
-                                        }
+                                    }
+                                    let (gated_transcript, wake_outcome) = apply_backend_wake_word(
+                                        &audio_config.wake_word,
+                                        state.awake,
+                                        state.transcript_accum.clone(),
+                                    );
+                                    if let Some(result) = wake_outcome.label() {
+                                        record_backend_wake_word_turn(result);
+                                    }
+                                    if !gated_transcript.is_empty() {
+                                        state.active_transcript = Some(gated_transcript);
                                     }
                                     if state.active_task.is_none() && !state.awaiting_skill_result {
-                                        let transcript = state
-                                            .active_transcript
-                                            .clone()
-                                            .unwrap_or_else(|| {
-                                                apply_backend_wake_word(
-                                                    &audio_config.wake_word,
-                                                    state.transcript_accum.clone(),
-                                                )
-                                            });
+                                        let transcript =
+                                            state.active_transcript.clone().unwrap_or_default();
                                         if !transcript.is_empty() {
                                             state.completed_generation = None;
                                             spawn_speculative_turn(
@@ -1048,6 +1386,7 @@ async fn handle_turn_stream_socket(
                                                 since_turn_start_ms = state.started_at.elapsed().as_millis(),
                                                 "turn_done"
                                             );
+                                            state.trace.finish(slow_turn_threshold());
                                             emit_turn_stream_event(
                                                 &mut ws,
                                                 &TurnStreamServerEvent::Done {
@@ -1059,8 +1398,50 @@ async fn handle_turn_stream_socket(
                                         }
                                     }
                                 }
+                                TurnStreamClientMessage::HelpRequest => {
+                                    let raised = match &device {
+                                        Some(authenticated) => {
+                                            let result = authenticated
+                                                .auth
+                                                .raise_help(&authenticated.identity.device_id)
+                                                .await;
+                                            record_backend_help_request(if result.is_ok() { "raised" } else { "unavailable" });
+                                            match result {
+                                                Ok(ticket_id) => TurnStreamServerEvent::HelpRaised {
+                                                    ticket_id: Some(ticket_id),
+                                                    spoken: HELP_RAISED_REPLY.to_string(),
+                                                },
+                                                Err(error) => {
+                                                    warn!(%error, "help button could not reach the facilitator");
+                                                    TurnStreamServerEvent::HelpRaised {
+                                                        ticket_id: None,
+                                                        spoken: HELP_UNAVAILABLE_REPLY.to_string(),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            record_backend_help_request("no_property");
+                                            TurnStreamServerEvent::HelpRaised {
+                                                ticket_id: None,
+                                                spoken: HELP_UNAVAILABLE_REPLY.to_string(),
+                                            }
+                                        }
+                                    };
+                                    emit_turn_stream_event(&mut ws, &raised).await?;
+                                }
+                                TurnStreamClientMessage::PlaybackStarted => wake.playback_started(),
+                                TurnStreamClientMessage::PlaybackFinished => {
+                                    wake.playback_finished(Instant::now());
+                                }
+                                TurnStreamClientMessage::PlaybackInterrupted { spoken_ratio } => {
+                                    if let Some(session) = ws_session_id.as_deref() {
+                                        engine.conversation_interrupted(session, spoken_ratio);
+                                    }
+                                }
                                 TurnStreamClientMessage::TurnCancel => {
                                     if let Some(mut state) = turn.take() {
+                                        wake.cancelled(Instant::now());
                                         if let Some(task) = state.active_task.take() {
                                             task.abort();
                                         }
@@ -1102,9 +1483,15 @@ async fn handle_turn_stream_socket(
                                         info!(turn_id = %turn_id, "frontend_skill_interpret_request");
                                     }
                                     let skill_started = Instant::now();
-                                    let finalize_result = engine
-                                        .finalize_frontend_skill(&turn_id, &intent_id, result)
-                                        .await;
+                                    let turn_trace = turn
+                                        .as_ref()
+                                        .filter(|state| state.turn_id == turn_id)
+                                        .map(|state| state.trace.clone());
+                                    let finalize = engine.finalize_frontend_skill(&turn_id, &intent_id, result);
+                                    let finalize_result = match &turn_trace {
+                                        Some(trace) => trace.scope(finalize).await,
+                                        None => finalize.await,
+                                    };
                                     let finalize_elapsed = skill_started.elapsed();
                                     record_backend_turn_duration("frontend_skill_finalize", finalize_elapsed);
                                     match finalize_result {
@@ -1168,11 +1555,15 @@ async fn handle_turn_stream_socket(
                                     } else {
                                         info!(turn_id = %turn_id, "turn_done");
                                     }
+                                    if let Some(trace) = &turn_trace {
+                                        trace.finish(slow_turn_threshold());
+                                    }
                                     emit_turn_stream_event(
                                         &mut ws,
                                         &TurnStreamServerEvent::Done { turn_id },
                                     )
                                     .await?;
+                                    wake.answered(Instant::now());
                                     turn = None;
                                 }
                             }
@@ -1267,6 +1658,7 @@ async fn handle_turn_stream_socket(
                                     since_turn_start_ms = state.started_at.elapsed().as_millis(),
                                     "turn_done"
                                 );
+                                state.trace.finish(slow_turn_threshold());
                                 emit_turn_stream_event(
                                     &mut ws,
                                     &TurnStreamServerEvent::Done {
@@ -1274,6 +1666,7 @@ async fn handle_turn_stream_socket(
                                     },
                                 )
                                 .await?;
+                                wake.answered(Instant::now());
                                 turn = None;
                             }
                         }
@@ -1298,6 +1691,7 @@ async fn handle_request(
     frontend_sessions: FrontendSessions,
     transcriber: Arc<dyn AudioTranscriber>,
     audio_config: Arc<AudioIngressConfig>,
+    options: ServerOptions,
 ) -> Result<Response<RespBody>, Infallible> {
     let request_started_at = Instant::now();
     let method = req.method().clone();
@@ -1352,6 +1746,37 @@ async fn handle_request(
                 ),
             ));
         };
+        let bearer = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::to_string);
+        let device = match &options.device_auth {
+            Some(device_auth) => match device_auth.authenticate(bearer.as_deref()).await {
+                Ok(identity) => Some(AuthenticatedDevice {
+                    auth: Arc::clone(device_auth),
+                    token: bearer.unwrap_or_default(),
+                    identity,
+                }),
+                Err(error) => {
+                    let status = match error {
+                        DeviceAuthError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+                        DeviceAuthError::Missing | DeviceAuthError::Rejected => {
+                            StatusCode::UNAUTHORIZED
+                        }
+                    };
+                    warn!(%error, "turn stream refused");
+                    return Ok(with_backend_http_metrics(
+                        &method,
+                        "/turns/stream",
+                        request_started_at,
+                        json_response(status, json!({"error": error.to_string()})),
+                    ));
+                }
+            },
+            None => None,
+        };
         let accept_key = derive_accept_key(ws_key.as_bytes());
         let on_upgrade = hyper::upgrade::on(req);
         let ws_engine = engine.clone();
@@ -1379,6 +1804,7 @@ async fn handle_request(
                 ws_transcriber,
                 ws_sessions,
                 ws_audio_config,
+                device,
             )
             .await
             {
@@ -1425,6 +1851,8 @@ pub struct AiceBackendEngine {
     news_summary_streaming_enabled: bool,
     palace: PalaceHandle,
     turn_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// Recent exchanges per session, for chat replies that follow on.
+    conversation: conversation::ConversationLog,
     resolved_location: Option<ResolvedLocation>,
     skip_secondary_llm_for_skill_answers: bool,
     classifier_prompt_cache: ClassifierPromptCache,
@@ -1433,6 +1861,8 @@ pub struct AiceBackendEngine {
     property_client: Option<PropertyClient>,
     discovered_property_tools: Vec<String>,
     palace_memory_settings: PalaceMemorySettings,
+    /// Memory scope of turns waiting for a frontend skill result.
+    turn_scopes: std::sync::Mutex<HashMap<String, MemoryScope>>,
 }
 
 /// LLM-backed intent classifier reused by backend and compatibility wrappers.
@@ -1489,8 +1919,16 @@ fn aice_palace_handle(mut palace: Palace) -> PalaceHandle {
 
 impl AiceBackendEngine {
     pub async fn from_config(config: &Config) -> Result<Self, DynError> {
-        let llm = CradleLlmStream::new(
-            config.ollama_url.clone(),
+        let mut llm_hosts = vec![config.ollama_url.clone()];
+        llm_hosts.extend(
+            config
+                .ollama_urls
+                .iter()
+                .filter(|url| !url.trim().is_empty())
+                .cloned(),
+        );
+        let llm = CradleLlmStream::new_with_hosts(
+            llm_hosts,
             config.model.clone(),
             config.llm.short_replies,
             config.llm.max_output_tokens,
@@ -1623,15 +2061,13 @@ impl AiceBackendEngine {
             &llm_arc,
         )));
 
-        let property_client = match config.property.facilitator_url.as_deref() {
-            Some(url) if !url.trim().is_empty() => match PropertyClient::new(url) {
-                Ok(client) => Some(client),
-                Err(error) => {
-                    tracing::warn!(%error, "property facilitator client was not created");
-                    None
-                }
-            },
-            _ => None,
+        let property_client = match property_client_from_config(&config.property) {
+            Some(Ok(client)) => Some(client),
+            Some(Err(error)) => {
+                tracing::warn!(%error, "property facilitator client was not created");
+                None
+            }
+            None => None,
         };
         let discovered_property_tools = if let Some(client) = &property_client {
             match client.list_tools().await {
@@ -1672,14 +2108,22 @@ impl AiceBackendEngine {
             news_summary_streaming_enabled: config.news.enable_summary_streaming,
             palace,
             turn_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            conversation: conversation::ConversationLog::new(
+                config.memory.max_recent_turns,
+                conversation::CONVERSATION_IDLE,
+            ),
             resolved_location,
             skip_secondary_llm_for_skill_answers: config.llm.skip_secondary_llm_for_skill_answers,
             classifier_prompt_cache: Arc::new(RwLock::new(HashMap::new())),
-            classifier_num_ctx: config.llm.classifier_num_ctx,
+            classifier_num_ctx: classifier_num_ctx_for_host(
+                config.llm.classifier_num_ctx,
+                config.llm.classifier_ollama_url.is_some(),
+            ),
             classifier_llm,
             property_client,
             discovered_property_tools,
             palace_memory_settings: PalaceMemorySettings::from_config(config),
+            turn_scopes: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1729,7 +2173,8 @@ impl AiceBackendEngine {
             format_json: true,
             format_json_schema: None,
             max_output_tokens: Some(max_output_tokens),
-            num_ctx: self.classifier_num_ctx,
+            // Main host: keep the preloaded context size (a change reloads the model).
+            num_ctx: None,
         };
         self.collect_llm(
             operation,
@@ -1741,8 +2186,40 @@ impl AiceBackendEngine {
         .await
     }
 
-    async fn build_memory_context(&self, transcript: &str) -> Option<String> {
-        if self.palace_memory_settings.recall_max_chars == 0 {
+    /// The palace this engine reads and writes (the retention job purges it).
+    pub fn palace_handle(&self) -> Arc<std::sync::Mutex<Palace>> {
+        self.palace.clone()
+    }
+
+    /// A property never uses the shared palace: turns without a stay remember nothing.
+    fn effective_scope(&self, scope: MemoryScope) -> MemoryScope {
+        match scope {
+            MemoryScope::Shared if self.property_client.is_some() => MemoryScope::Disabled,
+            other => other,
+        }
+    }
+
+    fn remember_turn_scope(&self, turn_id: &str, scope: &MemoryScope) {
+        if let Ok(mut scopes) = self.turn_scopes.lock() {
+            if scopes.len() >= 1024 {
+                scopes.clear();
+            }
+            scopes.insert(turn_id.to_string(), scope.clone());
+        }
+    }
+
+    fn take_turn_scope(&self, turn_id: &str) -> MemoryScope {
+        let remembered = self
+            .turn_scopes
+            .lock()
+            .ok()
+            .and_then(|mut scopes| scopes.remove(turn_id));
+        self.effective_scope(remembered.unwrap_or(MemoryScope::Shared))
+    }
+
+    async fn build_memory_context(&self, transcript: &str, scope: &MemoryScope) -> Option<String> {
+        record_memory_recall_scoped(scope.label());
+        if self.palace_memory_settings.recall_max_chars == 0 || *scope == MemoryScope::Disabled {
             return None;
         }
 
@@ -1770,11 +2247,18 @@ impl AiceBackendEngine {
         let palace = self.palace.clone();
         let settings = self.palace_memory_settings.clone();
         let transcript = transcript.to_string();
+        let scope = scope.clone();
         let context = tokio::task::spawn_blocking(move || {
             let mut palace = palace
                 .lock()
                 .map_err(|error| -> DynError { format!("palace lock: {error}").into() })?;
-            build_palace_memory_context(&mut palace, &transcript, &settings, &focus_entities)
+            build_palace_memory_context(
+                &mut palace,
+                &transcript,
+                &settings,
+                &focus_entities,
+                &scope,
+            )
         })
         .await
         .map_err(|error| -> DynError { format!("palace memory context task: {error}").into() })
@@ -1887,11 +2371,20 @@ impl AiceBackendEngine {
         .await
     }
 
-    fn schedule_palace_ingest_and_kg(&self, user_text: String, assistant_text: String) {
+    fn schedule_palace_ingest_and_kg(
+        &self,
+        user_text: String,
+        assistant_text: String,
+        scope: &MemoryScope,
+    ) {
+        if *scope == MemoryScope::Disabled {
+            return;
+        }
         schedule_palace_ingest(
             self.palace.clone(),
             user_text.clone(),
             assistant_text.clone(),
+            scope.clone(),
         );
         if self.palace_memory_settings.kg_enabled {
             schedule_palace_kg_extract(
@@ -1899,7 +2392,7 @@ impl AiceBackendEngine {
                 self.palace.clone(),
                 user_text,
                 assistant_text,
-                self.classifier_num_ctx,
+                scope.clone(),
             );
         }
     }
@@ -1909,6 +2402,7 @@ impl AiceBackendEngine {
         user_text: &str,
         outcome: BackendEngineDecision,
         memory_context: Option<&str>,
+        scope: &MemoryScope,
     ) -> Result<BackendEngineDecision, DynError> {
         let finalized = match outcome {
             BackendEngineDecision::BackendSkill(context) => {
@@ -1919,11 +2413,11 @@ impl AiceBackendEngine {
                     self.compose_skill_answer(user_text, &context, memory_context)
                         .await?
                 };
-                self.schedule_palace_ingest_and_kg(user_text.to_string(), answer.clone());
+                self.schedule_palace_ingest_and_kg(user_text.to_string(), answer.clone(), scope);
                 BackendEngineDecision::BackendSkill(answer)
             }
             BackendEngineDecision::Chat(text) => {
-                self.schedule_palace_ingest_and_kg(user_text.to_string(), text.clone());
+                self.schedule_palace_ingest_and_kg(user_text.to_string(), text.clone(), scope);
                 BackendEngineDecision::Chat(text)
             }
             BackendEngineDecision::FrontendSkillIntent(intent) => {
@@ -2027,16 +2521,28 @@ fn build_palace_memory_context(
     transcript: &str,
     settings: &PalaceMemorySettings,
     focus_entities: &[String],
+    scope: &MemoryScope,
 ) -> Result<String, DynError> {
+    let wing = match scope {
+        MemoryScope::Stay(wing) => Some(wing.as_str()),
+        MemoryScope::Shared => None,
+        MemoryScope::Disabled => return Ok(String::new()),
+    };
     let wake_started = Instant::now();
-    let wake_context = palace.wake_up(None);
+    let wake_context = palace.wake_up(wing);
     record_palace_wake_up("success", wake_started.elapsed());
 
     let recall_results = if settings.recall_results == 0 {
         Vec::new()
     } else {
         let search_started = Instant::now();
-        match palace.search(transcript, settings.recall_results) {
+        let searched = match wing {
+            Some(wing) => {
+                palace.search_filtered(transcript, Some(wing), None, settings.recall_results)
+            }
+            None => palace.search(transcript, settings.recall_results),
+        };
+        match searched {
             Ok(results) => {
                 record_palace_search("success", search_started.elapsed());
                 record_backend_turn_stage_duration("palace_recall", search_started.elapsed());
@@ -2058,11 +2564,22 @@ fn build_palace_memory_context(
     let mut kg_facts = Vec::new();
     if settings.kg_enabled {
         for entity in focus_entities.iter().take(KG_FOCUS_MAX_ENTITIES) {
+            let Some(scoped) = scope.entity(entity) else {
+                continue;
+            };
             let kg_started = Instant::now();
-            match palace.kg_query(entity) {
+            match palace.kg_query(&scoped) {
                 Ok(triples) => {
                     record_palace_kg_query("success", kg_started.elapsed());
                     if !triples.is_empty() {
+                        let triples = triples
+                            .into_iter()
+                            .map(|mut triple| {
+                                triple.subject = scope.display(&triple.subject).to_string();
+                                triple.object = scope.display(&triple.object).to_string();
+                                triple
+                            })
+                            .collect();
                         kg_facts.push((entity.clone(), triples));
                     }
                 }
@@ -2136,27 +2653,50 @@ fn truncate_to_char_limit(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn persist_kg_triples(palace: &Palace, triples: &[ExtractedKgTriple]) -> Result<usize, DynError> {
+fn persist_kg_triples(
+    palace: &Palace,
+    triples: &[ExtractedKgTriple],
+    scope: &MemoryScope,
+) -> Result<usize, DynError> {
     let mut added = 0usize;
     for triple in triples {
+        let (Some(subject), Some(object)) =
+            (scope.entity(&triple.subject), scope.entity(&triple.object))
+        else {
+            continue;
+        };
         palace
-            .kg_add_triple(
-                &triple.subject,
-                &triple.predicate,
-                &triple.object,
-                triple.confidence,
-            )
+            .kg_add_triple(&subject, &triple.predicate, &object, triple.confidence)
             .map_err(|error| -> DynError { error.into() })?;
         added += 1;
     }
     Ok(added)
 }
 
-fn schedule_palace_ingest(palace: PalaceHandle, user_text: String, assistant_text: String) {
+fn schedule_palace_ingest(
+    palace: PalaceHandle,
+    user_text: String,
+    assistant_text: String,
+    scope: MemoryScope,
+) {
     tokio::task::spawn_blocking(move || {
         let ingest_started = Instant::now();
-        match palace.lock() {
-            Ok(palace) => match palace.ingest_turn(&user_text, &assistant_text) {
+        let ingested = palace.lock().map(|palace| match &scope {
+            // A stay keeps its conversation in its own wing only.
+            MemoryScope::Stay(wing) => palace
+                .add_memory(
+                    wing,
+                    "conversation",
+                    &format!("User: {user_text}\nAssistant: {assistant_text}"),
+                    "voice_turn",
+                    3.0,
+                )
+                .map(|_| ()),
+            MemoryScope::Shared => palace.ingest_turn(&user_text, &assistant_text),
+            MemoryScope::Disabled => Ok(()),
+        });
+        match ingested {
+            Ok(result) => match result {
                 Ok(()) => {
                     record_palace_ingest("success", ingest_started.elapsed());
                 }
@@ -2174,12 +2714,69 @@ fn schedule_palace_ingest(palace: PalaceHandle, user_text: String, assistant_tex
     });
 }
 
+/// Chat replies run no skill. Without this the model happily promises staff,
+/// devices, and bookings ("I'll get you an extra pillow right away") when the
+/// request never reached anyone.
+const CHAT_CANNOT_ACT_RULE: &str = "You cannot take actions. You cannot contact staff, \
+create requests or orders, book anything, control devices, set reminders or timers, or \
+change settings. Never say that you did, are doing, or will do any of these. If you are \
+asked to, say that the request could not be sent and ask the person to try again.";
+
+/// System prompt for a chat reply: the assistant's base prompt, the room or
+/// shared memory for this turn, and the rule that chat cannot act.
+fn chat_system_prompt(base: &str, memory_context: Option<&str>) -> String {
+    let mut sections = vec![base.trim()];
+    if let Some(memory) = memory_context.map(str::trim).filter(|m| !m.is_empty()) {
+        sections.push(memory);
+    }
+    sections.push(CHAT_CANNOT_ACT_RULE);
+    sections
+        .into_iter()
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// What a turn says when its skill fails (a provider timed out, a place was
+/// not found). Spoken as is, not composed by the model, so it cannot invent an
+/// answer the skill never gave.
+const SKILL_FAILED_REPLY: &str =
+    "Sorry, I couldn't get that information right now. Please try again in a moment.";
+
+/// A failed skill still answers out loud: a room pod has no screen for an
+/// error, and a silent turn looks broken. A failure of the chat model itself
+/// stays an error.
+fn speak_skill_failure(
+    outcome: Result<BackendEngineDecision, DynError>,
+    skill_turn: bool,
+) -> Result<BackendEngineDecision, DynError> {
+    match outcome {
+        Err(error) if skill_turn => {
+            warn!(%error, "skill failed; telling the user");
+            Ok(BackendEngineDecision::Chat(SKILL_FAILED_REPLY.to_string()))
+        }
+        other => other,
+    }
+}
+
+/// Context size for classifier requests. Ollama reloads a model whenever
+/// `num_ctx` changes, so a classifier sharing the main host uses the default
+/// size like every other call (and the startup warm-up); only a dedicated
+/// classifier host gets `llm.classifier_num_ctx`.
+fn classifier_num_ctx_for_host(configured: Option<u32>, dedicated_host: bool) -> Option<u32> {
+    if dedicated_host {
+        configured
+    } else {
+        None
+    }
+}
+
 fn schedule_palace_kg_extract(
     llm: Arc<CradleLlmStream>,
     palace: PalaceHandle,
     user_text: String,
     assistant_text: String,
-    num_ctx: Option<u32>,
+    scope: MemoryScope,
 ) {
     tokio::spawn(async move {
         let combined = format!("User: {user_text}\nAssistant: {assistant_text}");
@@ -2188,7 +2785,8 @@ fn schedule_palace_kg_extract(
             format_json: true,
             format_json_schema: None,
             max_output_tokens: Some(256),
-            num_ctx,
+            // Main host: keep the preloaded context size (a change reloads the model).
+            num_ctx: None,
         };
         let mut stream = match llm
             .chat_stream(
@@ -2220,7 +2818,7 @@ fn schedule_palace_kg_extract(
             let palace = palace
                 .lock()
                 .map_err(|error| -> DynError { format!("palace lock: {error}").into() })?;
-            persist_kg_triples(&palace, &triples)
+            persist_kg_triples(&palace, &triples, &scope)
         })
         .await
         .map_err(|error| -> DynError { format!("palace kg persist task: {error}").into() })
@@ -2549,6 +3147,10 @@ fn compose_direct_skill_answer(context: &str) -> Option<String> {
 
 #[async_trait]
 impl BackendEngine for AiceBackendEngine {
+    fn conversation_interrupted(&self, session_id: &str, spoken_ratio: f32) {
+        self.conversation.interrupted(session_id, spoken_ratio);
+    }
+
     async fn process_turn(&self, request: TurnRequest) -> Result<BackendEngineDecision, DynError> {
         if request.transcript.trim().is_empty() {
             return Ok(BackendEngineDecision::Chat(
@@ -2561,7 +3163,15 @@ impl BackendEngine for AiceBackendEngine {
             .clone()
             .unwrap_or_else(|| next_backend_turn_id(&self.turn_counter));
         let request_text = request.transcript.clone();
-        let available_skills = build_available_classifier_skills(request.context.as_ref());
+        let scope = self.effective_scope(MemoryScope::from_context(request.context.as_ref()));
+        let mut available_skills = build_available_classifier_skills(
+            request.context.as_ref(),
+            self.property_client.is_some(),
+        );
+        if scope != MemoryScope::Shared {
+            // The journal keeps entries in one shared store; rooms must not use it.
+            available_skills.retain(|skill| skill != "skill_journal");
+        }
         let available_skill_refs: Vec<&str> = available_skills.iter().map(String::as_str).collect();
 
         let classify_started = Instant::now();
@@ -2577,7 +3187,8 @@ impl BackendEngine for AiceBackendEngine {
         };
         let classify_elapsed = classify_started.elapsed();
         record_backend_turn_stage_duration("classify_intent", classify_elapsed);
-        let memory_context = self.build_memory_context(&request.transcript).await;
+        let memory_context = self.build_memory_context(&request.transcript, &scope).await;
+        self.remember_turn_scope(&request_turn_id, &scope);
 
         let build_frontend_intent = |intent: &str, slots: serde_json::Value| {
             BackendEngineDecision::FrontendSkillIntent(FrontendSkillIntent {
@@ -2587,35 +3198,57 @@ impl BackendEngine for AiceBackendEngine {
                 user_text: request_text.clone(),
             })
         };
-        let outcome: Result<BackendEngineDecision, DynError> = match decision {
+        let skill_turn = !matches!(decision, IntentDecision::Chat);
+        // Every branch runs inside this block, so a skill's `return Err(..)` or `?`
+        // becomes the outcome (spoken as an apology) instead of leaving the turn.
+        let outcome: Result<BackendEngineDecision, DynError> = async { match decision {
             IntentDecision::SkillWeather { location } => {
                 let skill_started = Instant::now();
-                let result = self
+                // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
+                match self
                     .weather_skill
                     .execute(location.as_deref(), self.resolved_location.as_ref())
                     .await
-                    .map_err(|error| format!("weather skill failed: {error}"))?;
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                let answer = compose_weather_answer(&result);
-                Ok(BackendEngineDecision::BackendSkill(answer))
+                {
+                    Ok(result) => {
+                        record_backend_turn_stage_duration(
+                            "skill_execute",
+                            skill_started.elapsed(),
+                        );
+                        Ok(BackendEngineDecision::BackendSkill(compose_weather_answer(
+                            &result,
+                        )))
+                    }
+                    Err(error) => Err(format!("weather skill failed: {error}").into()),
+                }
             }
             IntentDecision::SkillTime { location } => {
                 let skill_started = Instant::now();
-                let result = self
+                // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
+                match self
                     .time_skill
                     .execute(location.as_deref(), self.resolved_location.as_ref())
                     .await
-                    .map_err(|error| format!("time skill failed: {error}"))?;
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                let answer = compose_time_answer(&result);
-                Ok(BackendEngineDecision::BackendSkill(answer))
+                {
+                    Ok(result) => {
+                        record_backend_turn_stage_duration(
+                            "skill_execute",
+                            skill_started.elapsed(),
+                        );
+                        Ok(BackendEngineDecision::BackendSkill(compose_time_answer(
+                            &result,
+                        )))
+                    }
+                    Err(error) => Err(format!("time skill failed: {error}").into()),
+                }
             }
             IntentDecision::SkillDistance {
                 origin,
                 destination,
             } => {
                 let skill_started = Instant::now();
-                let result = self
+                // Errors stay in the outcome, so a failure is spoken (speak_skill_failure).
+                match self
                     .distance_skill
                     .execute(
                         origin.as_deref(),
@@ -2623,10 +3256,18 @@ impl BackendEngine for AiceBackendEngine {
                         self.resolved_location.as_ref(),
                     )
                     .await
-                    .map_err(|error| format!("distance skill failed: {error}"))?;
-                record_backend_turn_stage_duration("skill_execute", skill_started.elapsed());
-                let answer = compose_distance_answer(&result);
-                Ok(BackendEngineDecision::BackendSkill(answer))
+                {
+                    Ok(result) => {
+                        record_backend_turn_stage_duration(
+                            "skill_execute",
+                            skill_started.elapsed(),
+                        );
+                        Ok(BackendEngineDecision::BackendSkill(
+                            compose_distance_answer(&result),
+                        ))
+                    }
+                    Err(error) => Err(format!("distance skill failed: {error}").into()),
+                }
             }
             IntentDecision::SkillSportsLive { query, date } => {
                 let skill_started = Instant::now();
@@ -3344,30 +3985,52 @@ impl BackendEngine for AiceBackendEngine {
             }
             IntentDecision::Chat => {
                 let chat_started = Instant::now();
+                let system_prompt =
+                    chat_system_prompt(&self.llm.base_system_prompt(), memory_context.as_deref());
+                let history = conversation::chat_history(&self.conversation.recent(
+                    &request.session_id,
+                    &scope,
+                    Instant::now(),
+                ));
                 let text = self
                     .collect_llm(
                         "chat",
                         &request.transcript,
-                        &[],
-                        memory_context.as_deref(),
+                        &history,
+                        Some(system_prompt.as_str()),
                         None,
                     )
                     .await?;
                 record_backend_turn_stage_duration("chat_generate", chat_started.elapsed());
                 Ok(BackendEngineDecision::Chat(text))
             }
-        };
-        let outcome = outcome?;
-        self.finalize_voice_outcome(&request_text, outcome, memory_context.as_deref())
-            .await
+        } }
+        .await;
+        let outcome = speak_skill_failure(outcome, skill_turn)?;
+        let finalized = self
+            .finalize_voice_outcome(&request_text, outcome, memory_context.as_deref(), &scope)
+            .await?;
+        if let BackendEngineDecision::Chat(answer) | BackendEngineDecision::BackendSkill(answer) =
+            &finalized
+        {
+            self.conversation.record(
+                &request.session_id,
+                &scope,
+                &request_text,
+                answer,
+                Instant::now(),
+            );
+        }
+        Ok(finalized)
     }
 
     async fn finalize_frontend_skill(
         &self,
-        _turn_id: &str,
+        turn_id: &str,
         intent_id: &str,
         request: FrontendSkillResultRequest,
     ) -> Result<String, DynError> {
+        let scope = self.take_turn_scope(turn_id);
         if request.status.eq_ignore_ascii_case("error") {
             if intent_id == "skill_screen_ocr" {
                 record_screen_ocr_skill("result_error");
@@ -3377,11 +4040,11 @@ impl BackendEngine for AiceBackendEngine {
 
         if intent_id == "skill_screen_ocr" {
             let answer = self.finalize_screen_ocr(&request).await?;
-            self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+            self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone(), &scope);
             return Ok(answer);
         }
 
-        let memory_context = self.build_memory_context(&request.user_text).await;
+        let memory_context = self.build_memory_context(&request.user_text, &scope).await;
         // Skill-agnostic: any non-empty structured context from the frontend is composed like backend skills.
         let context_opt = request
             .structured_result_context
@@ -3392,7 +4055,11 @@ impl BackendEngine for AiceBackendEngine {
             if self.skip_secondary_llm_for_skill_answers {
                 let answer = compose_direct_skill_answer(context)
                     .unwrap_or_else(|| "The action completed successfully.".to_string());
-                self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+                self.schedule_palace_ingest_and_kg(
+                    request.user_text.clone(),
+                    answer.clone(),
+                    &scope,
+                );
                 return Ok(answer);
             }
             let compose_started = Instant::now();
@@ -3403,12 +4070,12 @@ impl BackendEngine for AiceBackendEngine {
                 "frontend_skill_answer_compose",
                 compose_started.elapsed(),
             );
-            self.schedule_palace_ingest_and_kg(request.user_text.clone(), composed.clone());
+            self.schedule_palace_ingest_and_kg(request.user_text.clone(), composed.clone(), &scope);
             return Ok(composed);
         }
 
         let answer = compose_frontend_skill_success_echo(&request);
-        self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone());
+        self.schedule_palace_ingest_and_kg(request.user_text.clone(), answer.clone(), &scope);
         Ok(answer)
     }
 }
@@ -3577,11 +4244,13 @@ async fn try_ip_geolocation() -> Option<ResolvedLocation> {
 mod tests {
     use super::{
         aice_palace_handle, build_available_classifier_skills, build_classifier_prompt_artifacts,
-        build_intent_classification_prompt, classifier_cache_key, compose_distance_answer,
-        compose_frontend_skill_error_outcome, compose_frontend_skill_success_echo,
-        compose_palace_memory_context, compose_time_answer, compose_weather_answer,
-        journal_room_from_sentiment, parse_extracted_kg_triples, parse_focus_entities,
-        parse_validated_intent, persist_kg_triples, FRONTEND_CLASSIFIER_SKILLS,
+        build_intent_classification_prompt, chat_system_prompt, classifier_cache_key,
+        classifier_num_ctx_for_host, compose_distance_answer, compose_frontend_skill_error_outcome,
+        compose_frontend_skill_success_echo, compose_palace_memory_context, compose_time_answer,
+        compose_weather_answer, journal_room_from_sentiment, parse_extracted_kg_triples,
+        parse_focus_entities, parse_validated_intent, persist_kg_triples, speak_skill_failure,
+        BackendEngineDecision, MemoryScope, CLASSIFIER_MAX_OUTPUT_TOKENS,
+        FRONTEND_CLASSIFIER_SKILLS, SKILL_FAILED_REPLY,
     };
     use core_orchestrator::intent_classifier_few_shots;
     use core_runtime_protocol::FrontendSkillResultRequest;
@@ -3590,9 +4259,24 @@ mod tests {
         NewsHeadline, NewsHeadlinesResult, SportsEvent, SportsLiveResult, TimeResult,
         WeatherResult,
     };
-    use mempalace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
+    use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
     use serde_json::json;
     use std::time::SystemTime;
+
+    #[test]
+    fn classifier_on_the_shared_host_uses_the_preloaded_context_size() {
+        // Ollama reloads a model whenever num_ctx changes, so a classifier that
+        // shares the main host must ask for the same (default) size as every
+        // other call and the startup warm-up.
+        assert_eq!(classifier_num_ctx_for_host(Some(1024), false), None);
+        assert_eq!(classifier_num_ctx_for_host(None, false), None);
+    }
+
+    #[test]
+    fn a_dedicated_classifier_host_keeps_its_configured_context_size() {
+        assert_eq!(classifier_num_ctx_for_host(Some(1024), true), Some(1024));
+        assert_eq!(classifier_num_ctx_for_host(None, true), None);
+    }
 
     fn sample_search_result(text: &str, similarity: f64) -> SearchResult {
         SearchResult {
@@ -3602,6 +4286,7 @@ mod tests {
             room: "voice_turns".to_string(),
             source_file: "test".to_string(),
             created_at: "2026-05-03T00:00:00Z".to_string(),
+            filed_at: "2026-05-03T00:00:00Z".to_string(),
             similarity,
         }
     }
@@ -3680,7 +4365,7 @@ mod tests {
             Err(error) => panic!("expected in-memory palace, got {error}"),
         };
 
-        let added = match persist_kg_triples(&palace, &triples) {
+        let added = match persist_kg_triples(&palace, &triples, &MemoryScope::Shared) {
             Ok(value) => value,
             Err(error) => panic!("expected persisted triples, got {error}"),
         };
@@ -3693,6 +4378,35 @@ mod tests {
         assert_eq!(queried.len(), 1);
         assert_eq!(queried[0].predicate, "prefers");
         assert_eq!(queried[0].object, "quiet mornings");
+    }
+
+    #[test]
+    fn stay_scoped_kg_facts_are_invisible_outside_the_stay() {
+        let triples = parse_extracted_kg_triples(
+            r#"[{"subject":"Bob","predicate":"allergic to","object":"peanuts","confidence":0.9}]"#,
+        );
+        let palace = match Palace::open_in_memory() {
+            Ok(value) => value,
+            Err(error) => panic!("expected in-memory palace, got {error}"),
+        };
+        let stay = MemoryScope::Stay("stay-s1".to_string());
+        assert!(matches!(
+            persist_kg_triples(&palace, &triples, &MemoryScope::Disabled),
+            Ok(0)
+        ));
+        assert!(matches!(
+            persist_kg_triples(&palace, &triples, &stay),
+            Ok(1)
+        ));
+        assert!(palace
+            .kg_query("Bob")
+            .map(|t| t.is_empty())
+            .unwrap_or(false));
+        let scoped = palace
+            .kg_query(&stay.entity("Bob").unwrap_or_default())
+            .unwrap_or_default();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(stay.display(&scoped[0].object), "peanuts");
     }
 
     #[test]
@@ -3837,7 +4551,7 @@ mod tests {
                 "unknown_intent"
             ]
         });
-        let skills = build_available_classifier_skills(Some(&context));
+        let skills = build_available_classifier_skills(Some(&context), false);
         assert_eq!(
             skills,
             vec![
@@ -3857,7 +4571,7 @@ mod tests {
 
     #[test]
     fn available_classifier_skills_include_enabled_core_common_defaults() {
-        let skills = build_available_classifier_skills(None);
+        let skills = build_available_classifier_skills(None, false);
         assert_eq!(
             skills,
             vec![
@@ -3875,11 +4589,79 @@ mod tests {
 
     #[test]
     fn available_classifier_skills_do_not_include_macos_only_defaults() {
-        let skills = build_available_classifier_skills(None);
+        let skills = build_available_classifier_skills(None, false);
         assert!(!skills.contains(&"skill_message".to_string()));
         assert!(!skills.contains(&"skill_timer".to_string()));
         assert!(!skills.contains(&"skill_smart_home".to_string()));
         assert!(!skills.contains(&"skill_memory".to_string()));
+    }
+
+    #[test]
+    fn a_failed_skill_still_answers_out_loud() {
+        let failed: Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> =
+            Err("news-headlines skill failed: provider timeout".into());
+        match speak_skill_failure(failed, true) {
+            Ok(BackendEngineDecision::Chat(text)) => assert_eq!(text, SKILL_FAILED_REPLY),
+            other => panic!("expected a spoken apology, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failing_model_is_still_an_error() {
+        let failed: Result<BackendEngineDecision, Box<dyn std::error::Error + Send + Sync>> =
+            Err("LLM request failed".into());
+        assert!(speak_skill_failure(failed, false).is_err());
+    }
+
+    #[test]
+    fn chat_replies_are_told_they_cannot_take_actions() {
+        // A chat reply runs no skill, so it must never promise staff, devices
+        // or bookings ("I'll get you a pillow right away").
+        for memory in [None, Some("Guest prefers feather pillows.")] {
+            let prompt = chat_system_prompt("You are the room assistant.", memory);
+            assert!(prompt.contains("You are the room assistant."), "{prompt}");
+            assert!(prompt.contains("You cannot take actions"), "{prompt}");
+            assert!(prompt.contains("Never say that you did"), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn chat_replies_keep_the_room_memory() {
+        let prompt = chat_system_prompt("Base.", Some("Guest prefers feather pillows."));
+        assert!(
+            prompt.contains("Guest prefers feather pillows."),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn the_classifier_output_cap_fits_every_answer_it_is_taught() {
+        // A cut-off answer is not valid JSON and the turn falls back to chat.
+        // JSON runs at roughly three characters per token; 2.5 leaves margin.
+        for (_, answer) in intent_classifier_few_shots() {
+            let estimated_tokens = (answer.len() as f64 / 2.5).ceil() as u32;
+            assert!(
+                estimated_tokens <= CLASSIFIER_MAX_OUTPUT_TOKENS,
+                "{answer} needs about {estimated_tokens} tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn a_property_backend_offers_hotel_requests_to_clients_that_declare_nothing() {
+        // Room pods declare no frontend intents; the backend runs hotel
+        // requests itself through the facilitator.
+        let skills = build_available_classifier_skills(None, true);
+        assert!(
+            skills.contains(&"skill_hotel".to_string()),
+            "expected skill_hotel for a property backend; got {skills:?}"
+        );
+    }
+
+    #[test]
+    fn a_home_backend_does_not_offer_hotel_requests_unless_a_client_declares_them() {
+        let skills = build_available_classifier_skills(None, false);
+        assert!(!skills.contains(&"skill_hotel".to_string()));
     }
 
     #[test]
@@ -3895,7 +4677,7 @@ mod tests {
         let context = json!({
             "frontend_supported_intents": ["skill_hotel"]
         });
-        let skills = build_available_classifier_skills(Some(&context));
+        let skills = build_available_classifier_skills(Some(&context), false);
         assert!(
             skills.contains(&"skill_hotel".to_string()),
             "expected skill_hotel to be enabled when frontend declares it; got {:?}",

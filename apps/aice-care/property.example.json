@@ -1,10 +1,21 @@
 {
   "pack": "care",
-  "bind": "127.0.0.1:8792",
+  "bind": "0.0.0.0:8792",
+  "tls": {
+    "mode": "auto",
+    "hostnames": [
+      "desk.care.local"
+    ]
+  },
+  "metrics_bind": "127.0.0.1:9792",
   "database_path": "property.sqlite",
+  "service_token_file": "service.token",
   "property_mcp_url": null,
   "delegated_tools": [],
   "extensions": {
     "12": "12"
+  },
+  "memory_retention": {
+    "mode": "keep"
   }
 }

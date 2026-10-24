@@ -1,6 +1,6 @@
 # Local observability runbook
 
-This runbook covers the local Prometheus + Grafana stack for `aice-backend` only.
+This runbook covers the local Prometheus + Grafana stack for `aice-backend`, `pod-gateway` and the staff desk (`aice-hotels`).
 
 ## Purpose
 
@@ -64,7 +64,11 @@ AICE_BACKEND_METRICS_BIND=127.0.0.1:9001 cargo aice-backend
 
 Prometheus is preconfigured to scrape:
 
-- `host.docker.internal:9001` (`aice-backend`)
+- `host.docker.internal:9001` (`aice-backend`, job `aice-backend`)
+- `host.docker.internal:9766` (`pod-gateway`, `pod_gateway.metrics_bind`, job `pod-gateway`)
+- `host.docker.internal:9791` (staff desk, `metrics_bind` in `property.json`, job `aice-hotels`)
+
+The exporters keep values in memory only; once a process exits its numbers are gone unless Prometheus was scraping it. Start the stack before a run you want to look at afterwards.
 
 ## Dashboard pack
 
@@ -74,6 +78,7 @@ Provisioned from `ops/observability/grafana/provisioning/dashboards/json/`:
 - `backend-timings.json` (`Aice Backend Latency`)
 - `skills-and-outcomes.json` (`Aice Backend Skills`)
 - `timing-deep-dive.json` (`Aice Backend Dependency Latency`)
+- `guest-journey.json` (`Aice Guest Journey`: end of speech to answer audio, backend wait vs synthesis, stage p95, unaccounted time, slow turns by slowest stage, ticket acknowledge and resolve times, SLA breaches, pod disconnects)
 
 Primary backend metrics covered by these dashboards:
 
@@ -82,6 +87,16 @@ Primary backend metrics covered by these dashboards:
 - Skills: `backend_skill_execute_total`, `backend_skill_execute_duration_seconds`
 - External dependencies: `backend_dependency_requests_total`, `backend_dependency_request_duration_seconds`
 - UDP LAN discovery: `backend_udp_discovery_listen_total`, `backend_udp_discovery_listen_duration_seconds`, `backend_udp_discovery_requests_total`, `backend_udp_discovery_responses_total`
+
+## Finding out why a turn was slow
+
+A turn whose wait after speech reaches `service.slow_turn_threshold_ms` (default 3000) is counted in `voice_slow_turns_total{component,slowest_stage}` and logged once as `slow_turn`:
+
+```bash
+grep slow_turn backend.log gateway.log
+```
+
+The line carries `turn_id`, `total_ms`, `slowest_stage`, `unaccounted_ms` and a `timeline` of `{stage, offset_ms, duration_ms}`. Use the `turn_id` to find the same turn's `turn_start`, `turn_done` and `llm_classified_response` lines. If `unaccounted_ms` is large, the time went to a step that has no stage yet. The gateway line (`component` `gateway`) splits the wait into `backend_wait` and `synthesis`; the backend line splits `backend_wait` further.
 
 ## Data persistence
 

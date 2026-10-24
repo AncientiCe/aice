@@ -36,6 +36,26 @@ fn should_skip_short_transcription(sample_count: usize) -> bool {
     sample_count < 800
 }
 
+/// Encoder frames in Whisper's full 30 s window (50 per second).
+#[cfg(feature = "whisper")]
+const WHISPER_FULL_AUDIO_CTX: i32 = 1_500;
+
+/// Smallest window we encode; much shorter windows make Whisper repeat itself.
+#[cfg(feature = "whisper")]
+const WHISPER_MIN_AUDIO_CTX: i32 = 384;
+
+/// Encoder window for `sample_count` samples at 16 kHz: the audio plus a
+/// quarter and a small margin, instead of always the full 30 s. The encoder
+/// cost scales with the window, so a 3 s request encodes about a quarter of it.
+#[cfg(feature = "whisper")]
+fn audio_ctx_for_samples(sample_count: usize) -> i32 {
+    let frames = sample_count.div_ceil(320); // 16 kHz / 50 frames per second
+    let padded = frames + frames / 4 + 64;
+    i32::try_from(padded)
+        .unwrap_or(WHISPER_FULL_AUDIO_CTX)
+        .clamp(WHISPER_MIN_AUDIO_CTX, WHISPER_FULL_AUDIO_CTX)
+}
+
 #[cfg(feature = "whisper")]
 fn native_decode_threads() -> i32 {
     let cpus = std::thread::available_parallelism()
@@ -105,6 +125,7 @@ impl WhisperSttStream {
         let mut params =
             whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(native_decode_threads());
+        params.set_audio_ctx(audio_ctx_for_samples(self.buffer.len()));
         params.set_language(Some("en"));
         params.set_detect_language(false);
         params.set_translate(false);
@@ -296,5 +317,46 @@ mod tests {
     fn short_audio_is_skipped_for_transcription() {
         assert!(should_skip_short_transcription(160));
         assert!(!should_skip_short_transcription(1600));
+    }
+
+    #[cfg(feature = "whisper")]
+    mod audio_ctx {
+        use super::super::{audio_ctx_for_samples, WHISPER_FULL_AUDIO_CTX};
+
+        const SECOND: usize = 16_000;
+
+        #[test]
+        fn a_short_request_encodes_far_less_than_the_full_window() {
+            let ctx = audio_ctx_for_samples(3 * SECOND);
+            assert!(ctx < WHISPER_FULL_AUDIO_CTX / 3, "3 s used audio_ctx {ctx}");
+        }
+
+        #[test]
+        fn the_window_always_covers_the_audio() {
+            // Whisper encodes 50 audio frames per second of speech.
+            for seconds in [1, 3, 8, 15, 25] {
+                let ctx = audio_ctx_for_samples(seconds * SECOND);
+                assert!(
+                    ctx >= (seconds * 50) as i32,
+                    "{seconds} s got audio_ctx {ctx}"
+                );
+            }
+        }
+
+        #[test]
+        fn longer_audio_never_gets_a_smaller_window() {
+            let mut previous = 0;
+            for seconds in 1..=40 {
+                let ctx = audio_ctx_for_samples(seconds * SECOND);
+                assert!(ctx >= previous, "{seconds} s shrank to {ctx}");
+                previous = ctx;
+            }
+        }
+
+        #[test]
+        fn thirty_seconds_or_more_uses_the_full_window() {
+            assert_eq!(audio_ctx_for_samples(30 * SECOND), WHISPER_FULL_AUDIO_CTX);
+            assert_eq!(audio_ctx_for_samples(45 * SECOND), WHISPER_FULL_AUDIO_CTX);
+        }
     }
 }

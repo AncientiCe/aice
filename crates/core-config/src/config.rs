@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Wake word detection settings (configurable phrase, sensitivity, cooldown).
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WakeWordConfig {
     /// Whether wake word detection is enabled.
     #[serde(default)]
@@ -14,7 +14,8 @@ pub struct WakeWordConfig {
     /// Sensitivity 0.0–1.0 (higher = more sensitive).
     #[serde(default = "default_sensitivity")]
     pub sensitivity: f32,
-    /// Cooldown in seconds after activation before listening again.
+    /// Seconds a conversation stays awake after the last answer (or its
+    /// playback) ends; after that, the next turn needs a wake phrase again.
     #[serde(default = "default_cooldown_secs")]
     pub cooldown_secs: u64,
 }
@@ -24,7 +25,18 @@ fn default_sensitivity() -> f32 {
 }
 
 fn default_cooldown_secs() -> u64 {
-    2
+    8
+}
+
+impl Default for WakeWordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            phrases: Vec::new(),
+            sensitivity: default_sensitivity(),
+            cooldown_secs: default_cooldown_secs(),
+        }
+    }
 }
 
 /// Search provider settings (fallback web search after user confirms).
@@ -267,6 +279,9 @@ pub struct SttConfig {
     /// Warm Whisper model/state at startup to reduce first-turn latency.
     #[serde(default = "default_stt_preload_model_on_startup")]
     pub preload_model_on_startup: bool,
+    /// Whisper contexts loaded side by side (each holds the model in memory).
+    #[serde(default = "default_stt_workers")]
+    pub workers: usize,
 }
 
 impl Default for SttConfig {
@@ -274,8 +289,13 @@ impl Default for SttConfig {
         Self {
             whisper_model_path: default_whisper_model_path(),
             preload_model_on_startup: default_stt_preload_model_on_startup(),
+            workers: default_stt_workers(),
         }
     }
+}
+
+fn default_stt_workers() -> usize {
+    1
 }
 
 fn default_whisper_model_path() -> String {
@@ -343,6 +363,41 @@ pub struct ServiceConfig {
     /// Backend audio turn maximum duration in milliseconds.
     #[serde(default = "default_audio_session_max_duration_ms")]
     pub audio_session_max_duration_ms: u64,
+    /// Serve the backend over TLS with this certificate and key.
+    #[serde(default)]
+    pub tls: Option<ServiceTlsConfig>,
+    /// Allow plain HTTP on a network bind in a property deployment.
+    #[serde(default)]
+    pub allow_plaintext_lan: bool,
+    /// Turns (classification, skills, answers) running at once; more wait.
+    #[serde(default = "default_max_concurrent_turns")]
+    pub max_concurrent_turns: usize,
+    /// Longest a turn or STT job waits before a busy reply, in milliseconds.
+    #[serde(default = "default_turn_queue_max_wait_ms")]
+    pub turn_queue_max_wait_ms: u64,
+    /// A turn at least this long is logged with its full stage timeline, in milliseconds.
+    #[serde(default = "default_slow_turn_threshold_ms")]
+    pub slow_turn_threshold_ms: u64,
+}
+
+fn default_slow_turn_threshold_ms() -> u64 {
+    3_000
+}
+
+fn default_max_concurrent_turns() -> usize {
+    4
+}
+
+fn default_turn_queue_max_wait_ms() -> u64 {
+    20_000
+}
+
+/// PEM files for the backend's TLS listener (for example issued with
+/// `aice-hotels property.json tls issue backend.pem backend.key <host>`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ServiceTlsConfig {
+    pub cert_file: String,
+    pub key_file: String,
 }
 
 impl Default for ServiceConfig {
@@ -354,6 +409,11 @@ impl Default for ServiceConfig {
             restart_backoff_secs: default_restart_backoff_secs(),
             audio_session_idle_timeout_ms: default_audio_session_idle_timeout_ms(),
             audio_session_max_duration_ms: default_audio_session_max_duration_ms(),
+            tls: None,
+            allow_plaintext_lan: false,
+            max_concurrent_turns: default_max_concurrent_turns(),
+            turn_queue_max_wait_ms: default_turn_queue_max_wait_ms(),
+            slow_turn_threshold_ms: default_slow_turn_threshold_ms(),
         }
     }
 }
@@ -556,14 +616,38 @@ fn default_memory_sqlite_path() -> String {
     "memory.sqlite".to_string()
 }
 
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// palace-rs keeps its data in `~/.palace`. Installs from before the rename
+/// that only have `~/.mempalace` keep using it so their memory is not lost.
+fn palace_data_dir(home: &std::path::Path) -> std::path::PathBuf {
+    let current = home.join(".palace");
+    let legacy = home.join(".mempalace");
+    if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
 fn default_palace_db_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{home}/.mempalace/palace/palace.db")
+    palace_data_dir(&home_dir())
+        .join("palace")
+        .join("palace.db")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn default_palace_identity_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{home}/.mempalace/identity.txt")
+    palace_data_dir(&home_dir())
+        .join("identity.txt")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn default_palace_recall_results() -> usize {
@@ -623,8 +707,14 @@ pub struct Config {
     #[serde(default)]
     pub llm: LlmConfig,
     /// Pod gateway bind address.
+    /// More Ollama hosts beside `ollama_url`; calls rotate and fail over.
+    #[serde(default)]
+    pub ollama_urls: Vec<String>,
     #[serde(default = "default_pod_bind")]
     pub pod_bind: String,
+    /// Room bridge between pods and the backend (`cargo aice-gateway`).
+    #[serde(default)]
+    pub pod_gateway: PodGatewayConfig,
     /// Audio runtime options.
     #[serde(default)]
     pub audio: AudioRuntimeConfig,
@@ -675,6 +765,86 @@ fn default_pod_bind() -> String {
     "0.0.0.0:8765".to_string()
 }
 
+/// Room bridge settings.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PodGatewayConfig {
+    /// Backend turn stream, `ws://` or `wss://`.
+    #[serde(default = "default_pod_gateway_backend_url")]
+    pub backend_url: String,
+    /// Property CA that signed a `wss://` backend's certificate.
+    #[serde(default)]
+    pub backend_ca_file: Option<String>,
+    /// Serve pods over TLS with this certificate.
+    #[serde(default)]
+    pub tls: Option<ServiceTlsConfig>,
+    /// Mean absolute sample level that counts as speech.
+    #[serde(default = "default_pod_gateway_vad_start_level")]
+    pub vad_start_level: i16,
+    /// Quiet time that ends a turn.
+    #[serde(default = "default_pod_gateway_vad_end_silence_ms")]
+    pub vad_end_silence_ms: u64,
+    /// Mean absolute level of echo-cancelled speech that interrupts an answer
+    /// on a full-duplex pod. Above `vad_start_level` so leftover echo of the
+    /// pod's own voice never interrupts it.
+    #[serde(default = "default_pod_gateway_barge_in_start_level")]
+    pub barge_in_start_level: i16,
+    /// Consecutive 40 ms frames at that level that interrupt.
+    #[serde(default = "default_pod_gateway_barge_in_start_frames")]
+    pub barge_in_start_frames: usize,
+    /// How many times the echo predicted for a frame the guest's speech must
+    /// reach. A small pod speaker distorts, so some of its voice always
+    /// survives cancelling; this keeps that leftover from interrupting.
+    #[serde(default = "default_pod_gateway_barge_in_echo_ratio")]
+    pub barge_in_echo_ratio: f32,
+    /// Prometheus exporter bind for the bridge.
+    #[serde(default = "default_pod_gateway_metrics_bind")]
+    pub metrics_bind: String,
+}
+
+impl Default for PodGatewayConfig {
+    fn default() -> Self {
+        Self {
+            backend_url: default_pod_gateway_backend_url(),
+            backend_ca_file: None,
+            tls: None,
+            vad_start_level: default_pod_gateway_vad_start_level(),
+            vad_end_silence_ms: default_pod_gateway_vad_end_silence_ms(),
+            barge_in_start_level: default_pod_gateway_barge_in_start_level(),
+            barge_in_start_frames: default_pod_gateway_barge_in_start_frames(),
+            barge_in_echo_ratio: default_pod_gateway_barge_in_echo_ratio(),
+            metrics_bind: default_pod_gateway_metrics_bind(),
+        }
+    }
+}
+
+fn default_pod_gateway_backend_url() -> String {
+    "ws://127.0.0.1:8781/turns/stream".to_string()
+}
+
+fn default_pod_gateway_vad_start_level() -> i16 {
+    400
+}
+
+fn default_pod_gateway_vad_end_silence_ms() -> u64 {
+    700
+}
+
+fn default_pod_gateway_barge_in_start_level() -> i16 {
+    600
+}
+
+fn default_pod_gateway_barge_in_start_frames() -> usize {
+    3
+}
+
+fn default_pod_gateway_barge_in_echo_ratio() -> f32 {
+    1.5
+}
+
+fn default_pod_gateway_metrics_bind() -> String {
+    "127.0.0.1:9766".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -683,7 +853,9 @@ impl Default for Config {
             ollama_url: default_ollama_url(),
             model: default_model(),
             llm: LlmConfig::default(),
+            ollama_urls: Vec::new(),
             pod_bind: default_pod_bind(),
+            pod_gateway: PodGatewayConfig::default(),
             audio: AudioRuntimeConfig::default(),
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
@@ -706,6 +878,32 @@ pub struct PropertyConfig {
     /// MCP endpoint, for example `http://127.0.0.1:8791/mcp`.
     #[serde(default)]
     pub facilitator_url: Option<String>,
+    /// File holding the facilitator service token (the pack writes `service.token`
+    /// beside its `property.json`). `AICE_PROPERTY_SERVICE_TOKEN` overrides it.
+    #[serde(default)]
+    pub service_token_file: Option<String>,
+    /// CA that signed an HTTPS facilitator's certificate (`tls/ca.pem` beside
+    /// `property.json` in auto mode).
+    #[serde(default)]
+    pub ca_file: Option<String>,
+    /// Require a facilitator-issued device token on `/turns/stream`.
+    /// Defaults to on whenever `facilitator_url` is set.
+    #[serde(default)]
+    pub require_device_token: Option<bool>,
+}
+
+impl PropertyConfig {
+    /// True when a facilitator URL is configured.
+    pub fn is_configured(&self) -> bool {
+        self.facilitator_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+    }
+
+    /// Whether `/turns/stream` must carry a device token.
+    pub fn device_token_required(&self) -> bool {
+        self.require_device_token.unwrap_or(self.is_configured())
+    }
 }
 
 impl Config {
@@ -757,7 +955,7 @@ mod tests {
             }
         }
     }
-    use super::{Config, MacOsMusicConfig};
+    use super::{Config, MacOsMusicConfig, PodGatewayConfig};
     use std::io::Write;
     use std::path::Path;
 
@@ -792,20 +990,15 @@ mod tests {
         assert_eq!(config.service.metrics_bind, "127.0.0.1:9001");
         assert_eq!(config.service.audio_session_idle_timeout_ms, 5_000);
         assert_eq!(config.service.audio_session_max_duration_ms, 20_000);
+        assert_eq!(config.service.slow_turn_threshold_ms, 3_000);
         assert_eq!(config.assistant_profile.unit_system, "metric");
         assert_eq!(config.assistant_profile.time_format, "24h");
         assert!(config.memory.enabled);
         assert_eq!(config.memory.path, "memory.json");
         assert_eq!(config.memory.max_recent_turns, 10);
         assert_eq!(config.memory.sqlite_path, "memory.sqlite");
-        assert!(config
-            .memory
-            .palace_db_path
-            .ends_with(".mempalace/palace/palace.db"));
-        assert!(config
-            .memory
-            .palace_identity_path
-            .ends_with(".mempalace/identity.txt"));
+        assert!(std::path::Path::new(&config.memory.palace_db_path).ends_with("palace/palace.db"));
+        assert!(std::path::Path::new(&config.memory.palace_identity_path).ends_with("identity.txt"));
         assert_eq!(config.memory.palace_recall_results, 5);
         assert_eq!(config.memory.palace_recall_min_similarity, 0.3);
         assert_eq!(config.memory.palace_recall_max_chars, 1_500);
@@ -833,7 +1026,8 @@ mod tests {
                     "metrics_enabled":false,
                     "metrics_bind":"127.0.0.1:9100",
                     "audio_session_idle_timeout_ms":2500,
-                    "audio_session_max_duration_ms":12000
+                    "audio_session_max_duration_ms":12000,
+                    "slow_turn_threshold_ms":1500
                 }
             }"#,
         )
@@ -871,6 +1065,7 @@ mod tests {
         assert_eq!(config.service.metrics_bind, "127.0.0.1:9100");
         assert_eq!(config.service.audio_session_idle_timeout_ms, 2500);
         assert_eq!(config.service.audio_session_max_duration_ms, 12000);
+        assert_eq!(config.service.slow_turn_threshold_ms, 1500);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -941,6 +1136,43 @@ mod tests {
         let config = Config::load(&path).must();
         assert!(!config.llm.preload_model_on_startup);
         assert_eq!(config.llm.model_keep_alive.as_deref(), Some("2h"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn barge_in_needs_more_than_the_turn_start_level_by_default() {
+        let gateway = PodGatewayConfig::default();
+        assert!(gateway.barge_in_start_level > gateway.vad_start_level);
+        assert!(gateway.barge_in_start_frames >= 1);
+        assert!(
+            gateway.barge_in_echo_ratio > 1.0,
+            "speech must beat the echo left over"
+        );
+    }
+
+    #[test]
+    fn load_parses_barge_in_overrides() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("aice_config_barge_in.json");
+        let mut f = std::fs::File::create(&path).must();
+        f.write_all(
+            br#"{
+                "pod_gateway": {
+                    "barge_in_start_level": 2500,
+                    "barge_in_start_frames": 4,
+                    "barge_in_echo_ratio": 2.0
+                }
+            }"#,
+        )
+        .must();
+        f.sync_all().must();
+        drop(f);
+
+        let config = Config::load(&path).must();
+        assert_eq!(config.pod_gateway.barge_in_start_level, 2500);
+        assert_eq!(config.pod_gateway.barge_in_start_frames, 4);
+        assert!((config.pod_gateway.barge_in_echo_ratio - 2.0).abs() < f32::EPSILON);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1087,5 +1319,88 @@ mod tests {
         assert!(config.news.enable_summary_streaming);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_parses_property_facilitator_connection() {
+        let path = std::env::temp_dir().join("aice_config_property_connection.json");
+        std::fs::write(
+            &path,
+            br#"{
+                "property": {
+                    "facilitator_url": "https://desk.local:8791/mcp",
+                    "service_token_file": "/etc/aice/service.token",
+                    "ca_file": "/etc/aice/tls/ca.pem"
+                },
+                "service": {
+                    "tls": { "cert_file": "backend.pem", "key_file": "backend.key" }
+                }
+            }"#,
+        )
+        .must();
+        let config = Config::load(&path).must();
+        assert_eq!(
+            config.property.facilitator_url.as_deref(),
+            Some("https://desk.local:8791/mcp")
+        );
+        assert_eq!(
+            config.property.service_token_file.as_deref(),
+            Some("/etc/aice/service.token")
+        );
+        assert!(config.property.device_token_required());
+        assert_eq!(
+            config.property.ca_file.as_deref(),
+            Some("/etc/aice/tls/ca.pem")
+        );
+        let tls = config.service.tls.clone().must();
+        assert_eq!(tls.cert_file, "backend.pem");
+        assert_eq!(tls.key_file, "backend.key");
+        assert!(!config.service.allow_plaintext_lan);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn device_tokens_default_on_only_for_property_deployments() {
+        let home = super::PropertyConfig::default();
+        assert!(!home.is_configured());
+        assert!(!home.device_token_required());
+        let opted_out = super::PropertyConfig {
+            facilitator_url: Some("http://127.0.0.1:8791/mcp".to_string()),
+            require_device_token: Some(false),
+            ..super::PropertyConfig::default()
+        };
+        assert!(!opted_out.device_token_required());
+        let forced = super::PropertyConfig {
+            require_device_token: Some(true),
+            ..super::PropertyConfig::default()
+        };
+        assert!(forced.device_token_required());
+    }
+
+    #[test]
+    fn palace_data_dir_prefers_palace_but_keeps_an_existing_mempalace() {
+        let home = std::env::temp_dir().join(format!("aice-palace-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).must();
+        assert_eq!(super::palace_data_dir(&home), home.join(".palace"));
+        std::fs::create_dir_all(home.join(".mempalace")).must();
+        assert_eq!(
+            super::palace_data_dir(&home),
+            home.join(".mempalace"),
+            "an install that only has the old directory keeps its memory"
+        );
+        std::fs::create_dir_all(home.join(".palace")).must();
+        assert_eq!(super::palace_data_dir(&home), home.join(".palace"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn wake_word_stays_awake_eight_seconds_by_default() {
+        use super::WakeWordConfig;
+        assert_eq!(WakeWordConfig::default().cooldown_secs, 8);
+        let parsed: WakeWordConfig =
+            serde_json::from_str(r#"{"enabled": true, "phrases": ["computer"]}"#).must();
+        assert_eq!(parsed.cooldown_secs, 8);
+        assert_eq!(parsed.sensitivity, WakeWordConfig::default().sensitivity);
     }
 }

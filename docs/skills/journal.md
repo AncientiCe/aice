@@ -12,7 +12,7 @@ sequenceDiagram
     participant Backend as AiceBackendEngine
     participant Skill as LocalJournalSkill
     participant DB as SqliteJournalStore
-    participant Palace as mempalace::Palace
+    participant Palace as palace::Palace
     User->>Backend: SkillJournal { action, text?, query?, ... }
     Backend->>Skill: execute(JournalAction::Add | Recall | Stats)
     Skill->>DB: SQL insert/select

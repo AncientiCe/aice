@@ -154,22 +154,17 @@ fn normalize_wav_to_pcm16k_mono(wav_bytes: &[u8]) -> Result<Vec<u8>, TtsError> {
 }
 
 /// TTS adapter that buffers text and on flush synthesizes + plays audio.
-pub struct PiperTtsSink {
-    buffer: String,
+/// Piper text-to-speech without local playback: text in, PCM out.
+/// The pod bridge uses this to speak through room pods.
+#[derive(Clone, Debug)]
+pub struct PiperSynth {
     model_path: PathBuf,
     config_path: Option<PathBuf>,
     piper_bin: String,
-    playback_tx: mpsc::Sender<PlaybackCommand>,
 }
 
-enum PlaybackCommand {
-    Play(Vec<u8>),
-    Stop,
-}
-
-impl PiperTtsSink {
-    /// Create a new Piper TTS sink using model path.
-    /// Environment variable `PIPER_BIN` can override CLI binary path.
+impl PiperSynth {
+    /// Environment variable `PIPER_BIN` can override the CLI binary path.
     pub fn new(model_path: &Path) -> Result<Self, TtsError> {
         if !model_path.exists() {
             return Err(TtsError::Synthesis(format!(
@@ -177,21 +172,11 @@ impl PiperTtsSink {
                 model_path.display()
             )));
         }
-        let config_candidate = format!("{}.json", model_path.display());
-        let config_path = {
-            let candidate = PathBuf::from(&config_candidate);
-            if candidate.exists() {
-                Some(candidate)
-            } else {
-                None
-            }
-        };
+        let config_candidate = PathBuf::from(format!("{}.json", model_path.display()));
         Ok(Self {
-            buffer: String::new(),
             model_path: model_path.to_path_buf(),
-            config_path,
+            config_path: config_candidate.exists().then_some(config_candidate),
             piper_bin: std::env::var("PIPER_BIN").unwrap_or_else(|_| "piper".to_string()),
-            playback_tx: Self::spawn_playback_worker(),
         })
     }
 
@@ -231,12 +216,7 @@ impl PiperTtsSink {
         Ok(())
     }
 
-    /// Synthesize text to normalized 16kHz mono PCM16 bytes. No playback.
-    /// Used when sending TTS to a pod over the network.
-    pub fn synthesize_to_pcm(&self, text: &str) -> Result<Vec<u8>, TtsError> {
-        if text.trim().is_empty() {
-            return Ok(Vec::new());
-        }
+    fn synthesize_wav_bytes(&self, text: &str) -> Result<Vec<u8>, TtsError> {
         let dir = Builder::new()
             .prefix("aice-piper-")
             .tempdir()
@@ -248,7 +228,38 @@ impl PiperTtsSink {
         let mut bytes = Vec::new();
         f.read_to_end(&mut bytes)
             .map_err(|e| TtsError::Synthesis(format!("read wav: {e}")))?;
-        normalize_wav_to_pcm16k_mono(&bytes)
+        Ok(bytes)
+    }
+
+    /// Synthesize text to normalized 16 kHz mono PCM16 little-endian bytes.
+    pub fn synthesize_to_pcm(&self, text: &str) -> Result<Vec<u8>, TtsError> {
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        normalize_wav_to_pcm16k_mono(&self.synthesize_wav_bytes(text)?)
+    }
+}
+
+pub struct PiperTtsSink {
+    buffer: String,
+    synth: PiperSynth,
+    playback_tx: mpsc::Sender<PlaybackCommand>,
+}
+
+enum PlaybackCommand {
+    Play(Vec<u8>),
+    Stop,
+}
+
+impl PiperTtsSink {
+    /// Create a new Piper TTS sink that plays through the local output device.
+    /// Environment variable `PIPER_BIN` can override CLI binary path.
+    pub fn new(model_path: &Path) -> Result<Self, TtsError> {
+        Ok(Self {
+            buffer: String::new(),
+            synth: PiperSynth::new(model_path)?,
+            playback_tx: Self::spawn_playback_worker(),
+        })
     }
 
     fn spawn_playback_worker() -> mpsc::Sender<PlaybackCommand> {
@@ -317,20 +328,9 @@ impl TtsSink for PiperTtsSink {
             return Ok(());
         }
 
-        let dir = Builder::new()
-            .prefix("aice-piper-")
-            .tempdir()
-            .map_err(|e| TtsError::Synthesis(format!("tempdir error: {e}")))?;
-        let wav_path = dir.path().join("tts.wav");
-
-        self.synthesize_to_wav(&text, &wav_path).inspect_err(|_| {
+        let wav_bytes = self.synth.synthesize_wav_bytes(&text).inspect_err(|_| {
             record_error("tts_synthesize");
         })?;
-        let mut f = std::fs::File::open(&wav_path)
-            .map_err(|e| TtsError::Synthesis(format!("open wav: {e}")))?;
-        let mut wav_bytes = Vec::new();
-        f.read_to_end(&mut wav_bytes)
-            .map_err(|e| TtsError::Synthesis(format!("read wav: {e}")))?;
         self.play_wav_nonblocking(wav_bytes).inspect_err(|_| {
             record_error("tts_playback");
         })?;

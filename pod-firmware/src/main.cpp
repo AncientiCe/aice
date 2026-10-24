@@ -1,59 +1,52 @@
 /**
- * ATOM Echo pod firmware — full production implementation.
- *
- * Hardware (M5Stack ATOM Echo, ESP32-PICO-D4):
- *   PDM mic  : SPM1423 — CLK G33 / DATA G23 (PDM digital mic, not I²S input)
- *   I²S spk  : NS4168  — DOUT G22 / BCLK G19 / LRCK G33
- *   LED      : SK6812 RGBW — G27
- *   Button   : G39 (active LOW) — tap to stop playback / wake
- *
- * Official PinMap: G33 = AMP LRCK and MIC CLK (shared). Single I2S0, mode-switch;
- * mic off during playback. Say "Computer stop" when listening; button to stop mid-play.
+ * Room pod firmware — Waveshare ESP32-S3-AUDIO-Board (hardware in src/board.cpp).
  *
  * Protocol: see crates/pod-protocol/src/lib.rs
  *   Pod → Gateway  : Hello, Audio, Identify, TapActivate, Ping
  *   Gateway → Pod  : HelloAck, Audio, StopAudio, Led, Pong, Error
  *
+ * Trust: the pod enrols with the property facilitator over HTTPS (property CA
+ * from property_trust.h), gets a device token once a supervisor assigns its
+ * room, and connects to the room bridge over WSS with that token. Updates are
+ * installed only when their ECDSA signature verifies. Hold the button while
+ * booting for 5 s to forget the pod's identity.
+ *
  * Audio path:
- *   PDM mic → I2S0 RX PDM (16 kHz, 16-bit, mono) → WebSocket Audio frames
- *   TTS playback: Gateway Audio (base64 PCM) → queue → I2S0 TX → speaker
+ *   ES7210 mic → 16 kHz mono PCM16 → WebSocket Audio frames
+ *   TTS playback: Gateway Audio (base64 PCM) → queue → ES8311 → speaker
+ * Full duplex: the mic keeps streaming while an answer plays, each frame with
+ * the speaker signal of the same samples; the bridge cancels the echo and lets
+ * the guest's speech interrupt the answer (docs/hardware/signal-pod.md).
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
-#include <Adafruit_NeoPixel.h>
-#include <driver/i2s.h>
 #include <cstring>
 
+#if __has_include("pod_config.h")
 #include "pod_config.h"
-
-// ── Pin definitions (Atom-Echo PinMap SPK & MIC) ──────────────────────────────
-//   G22      G19      G33        G23
-//   AMP DATA AMP BCLK AMP LRCK   —
-//   —        —       MIC CLK    MIC DATA
-// G33 is shared (AMP LRCK + MIC CLK) → single I2S0, mode-switch; mic off during playback.
-#define PIN_LED      27
-#define PIN_BTN      39
-#define PIN_MIC_CLK  33   // SPM1423 MIC CLK (G33, shared with AMP LRCK)
-#define PIN_MIC_DATA 23   // SPM1423 MIC DATA (G23)
-#define PIN_SPK_DATA 22   // NS4168 AMP DATA (G22)
-#define PIN_SPK_BCLK 19   // NS4168 AMP BCLK (G19)
-#define PIN_SPK_LRCK 33   // NS4168 AMP LRCK (G33)
-#define PIN_SPK_EN   21   // NS4168 amplifier enable
-
-// ── I2S port assignments ──────────────────────────────────────────────────────
-#define I2S_PORT_MIC  I2S_NUM_0
-#define I2S_PORT_SPK  I2S_NUM_0   // same port; mode-switch (G33 shared)
+#else
+#include "pod_config.example.h"
+#endif
+#if __has_include("property_trust.h")
+#include "property_trust.h"
+#else
+#include "property_trust.example.h"
+#endif
+#include "board.h"
+#include "pod_defaults.h"
+#include "provisioning.h"
 
 // ── Audio sizing ──────────────────────────────────────────────────────────────
 static constexpr int SAMPLES_PER_FRAME = PDM_SAMPLE_RATE * AUDIO_FRAME_MS / 1000;
 static constexpr int BYTES_PER_FRAME   = SAMPLES_PER_FRAME * sizeof(int16_t);
-
-// DMA buffer: 2 buffers × SAMPLES_PER_FRAME samples each.
-static constexpr int DMA_BUF_COUNT = 4;
-static constexpr int DMA_BUF_LEN   = SAMPLES_PER_FRAME;
+// Frames sent per loop at most; the capture buffer holds six.
+static constexpr int MAX_FRAMES_PER_LOOP = 4;
+// Any clock before 2023-11 means NTP has not answered yet.
+static constexpr time_t MIN_VALID_EPOCH = 1700000000;
 static constexpr size_t POD_PLAYBACK_QUEUE_SLOTS = 6;
 static constexpr size_t POD_PLAYBACK_MAX_CHUNK_BYTES = 2048;
 // TTS gain control tuned for intelligibility without fuzz/clipping.
@@ -61,15 +54,11 @@ static constexpr int POD_TTS_TARGET_PEAK = 22000; // leave headroom to reduce ha
 static constexpr int POD_TTS_GAIN_Q10_MIN = 768;  // 0.75x
 static constexpr int POD_TTS_GAIN_Q10_MAX = 1792; // 1.75x
 
-// ── LED ───────────────────────────────────────────────────────────────────────
-// SK6812 RGBW on G27 — use NeoPixel with NEO_GRBW+NEO_KHZ800
-#define NUM_LEDS 1
-Adafruit_NeoPixel strip(NUM_LEDS, PIN_LED, NEO_GRBW + NEO_KHZ800);
-
 // ── State ─────────────────────────────────────────────────────────────────────
 enum class PodState {
     Booting,
     WifiConnecting,
+    Provisioning,
     WsConnecting,
     Listening,
     Thinking,
@@ -89,8 +78,10 @@ static constexpr uint32_t TTS_END_GRACE_MS = 180;
 
 static WebSocketsClient g_ws;
 static uint32_t g_ws_disconnects = 0;
-enum class AudioDriverMode { None, Mic, Speaker };
-static AudioDriverMode g_audio_mode = AudioDriverMode::None;
+static String   g_device_id;
+static bool     g_muted = false;
+static String   g_token;
+static uint32_t g_last_update_check_ms = 0;
 static int32_t g_tts_gain_q10 = 1024; // smoothed gain state (1.0x)
 
 struct PlaybackChunk {
@@ -110,6 +101,7 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length);
 static void send_hello();
 static void send_ping();
 static void send_tap_activate();
+static void send_help_button();
 static void start_mic();
 static void stop_mic();
 static void start_speaker();
@@ -128,17 +120,20 @@ void setup() {
     delay(200);
     Serial.println("[aice-pod] booting...");
 
-    // LED
-    strip.begin();
-    strip.setBrightness(80);
-    strip.show();
+    if (!board_init()) {
+        // Without working audio the pod cannot serve the room; blink red and retry.
+        set_state(PodState::Error);
+        uint32_t failed_at = millis();
+        while (millis() - failed_at < 5000) {
+            led_update();
+            delay(50);
+        }
+        ESP.restart();
+    }
     set_state(PodState::Booting);
 
-    // Button
-    pinMode(PIN_BTN, INPUT_PULLUP);
-    // Enable the onboard NS4168 amp; without this, speaker stays silent.
-    pinMode(PIN_SPK_EN, OUTPUT);
-    digitalWrite(PIN_SPK_EN, HIGH);
+    // Button held at boot: factory reset.
+    pod_factory_reset_if_held(board_button_down);
 
     // Wi-Fi
     set_state(PodState::WifiConnecting);
@@ -157,10 +152,60 @@ void setup() {
         led_update(); // blink while connecting
     }
     Serial.printf("[aice-pod] Wi-Fi OK, IP: %s\n", WiFi.localIP().toString().c_str());
+    g_device_id = pod_device_id();
+    // mDNS lets the pod resolve a host name ending in .local (the facilitator and
+    // bridge on a property without its own DNS).
+    if (!MDNS.begin(g_device_id.c_str())) {
+        Serial.println("[aice-pod] mDNS did not start; .local names will not resolve");
+    }
+    Serial.printf("[aice-pod] device id %s, firmware %s\n", g_device_id.c_str(), FIRMWARE_VERSION);
 
-    // WebSocket
+    // Certificates are checked against the clock; set it before any TLS.
+    configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2);
+    uint32_t ntp_started = millis();
+    while (time(nullptr) < MIN_VALID_EPOCH && millis() - ntp_started < NTP_TIMEOUT_MS) {
+        led_update();
+        delay(100);
+    }
+    if (time(nullptr) < MIN_VALID_EPOCH) {
+        Serial.println("[aice-pod] clock not set (time servers unreachable); TLS will fail");
+    }
+    IPAddress gateway_ip;
+    if (WiFi.hostByName(GATEWAY_HOST, gateway_ip)) {
+        Serial.printf("[aice-pod] %s is %s\n", GATEWAY_HOST, gateway_ip.toString().c_str());
+    } else {
+        Serial.printf("[aice-pod] cannot resolve %s\n", GATEWAY_HOST);
+    }
+
+    // Enrol until a supervisor assigns this pod a room.
+    g_token = pod_load_token();
+    if (g_token.length() == 0) {
+        set_state(PodState::Provisioning);
+        while (true) {
+            EnrollResult result = pod_enroll(false);
+            if (result == EnrollResult::Enrolled) {
+                g_token = pod_load_token();
+                break;
+            }
+            set_state(result == EnrollResult::Pending || result == EnrollResult::Failed
+                          ? PodState::Provisioning
+                          : PodState::Error);
+            uint32_t wait_started = millis();
+            while (millis() - wait_started < ENROLL_POLL_MS) {
+                led_update();
+                delay(50);
+            }
+        }
+    }
+
+    pod_check_for_update(g_token);
+    g_last_update_check_ms = millis();
+
+    // WebSocket to the room bridge, TLS with the property CA, device token as bearer.
     set_state(PodState::WsConnecting);
-    g_ws.begin(GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH);
+    g_ws.beginSslWithCA(GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH, PROPERTY_CA_PEM);
+    String auth_header = "Authorization: Bearer " + g_token;
+    g_ws.setExtraHeaders(auth_header.c_str());
     g_ws.onEvent(ws_event_handler);
     g_ws.setReconnectInterval(RECONNECT_BACKOFF_MS);
 
@@ -172,14 +217,34 @@ void loop() {
     g_ws.loop();
     led_update();
 
-    // Button: tap-to-activate
-    static bool btn_last = HIGH;
-    bool btn_now = digitalRead(PIN_BTN);
-    if (btn_last == HIGH && btn_now == LOW) {
-        Serial.println("[aice-pod] button pressed — tap activate");
-        if (g_ws_connected) {
-            send_tap_activate();
+    // Button: tap stops playback, double tap toggles the privacy mute, and a
+    // long press calls for help without speech (also while muted).
+    static bool btn_last = false;
+    static uint32_t btn_down_ms = 0;
+    static uint32_t tap_released_ms = 0;
+    static bool tap_pending = false;
+    bool btn_now = board_button_down();
+    if (!btn_last && btn_now) {
+        btn_down_ms = millis();
+    } else if (btn_last && !btn_now && g_ws_connected) {
+        if (millis() - btn_down_ms >= HELP_PRESS_MS) {
+            Serial.println("[aice-pod] long press — calling for help");
+            tap_pending = false;
+            send_help_button();
+        } else if (tap_pending && millis() - tap_released_ms <= DOUBLE_TAP_MS) {
+            tap_pending = false;
+            g_muted = !g_muted;
+            Serial.printf("[aice-pod] privacy mute %s\n", g_muted ? "on" : "off");
+            led_update();
+        } else {
+            tap_pending = true;
+            tap_released_ms = millis();
         }
+    }
+    if (tap_pending && millis() - tap_released_ms > DOUBLE_TAP_MS) {
+        tap_pending = false;
+        Serial.println("[aice-pod] button tap — stop");
+        send_tap_activate();
     }
     btn_last = btn_now;
 
@@ -189,14 +254,21 @@ void loop() {
         g_last_ping_ms = millis();
     }
 
-    // Mic capture only when mic is active (G33 shared → off during playback).
-    if (g_ws_connected && g_mic_running &&
-        (g_state == PodState::Listening || g_state == PodState::Thinking)) {
+    // Mic capture whenever connected (also while an answer plays, so the guest
+    // can talk over it) unless the room has muted the pod.
+    if (g_ws_connected && g_mic_running && !g_muted) {
         capture_and_send_audio();
     }
 
     // Drain one queued TTS chunk per loop; keeps WS reader non-blocking.
     playback_drain_once();
+
+    // Look for signed updates while idle.
+    if (g_state == PodState::Listening && g_playback_count == 0 &&
+        millis() - g_last_update_check_ms >= OTA_CHECK_INTERVAL_MS) {
+        g_last_update_check_ms = millis();
+        pod_check_for_update(g_token);
+    }
 }
 
 // ── LED ───────────────────────────────────────────────────────────────────────
@@ -208,10 +280,19 @@ static void set_state(PodState s) {
 static void led_update() {
     static uint32_t last_blink = 0;
     static bool     blink_on   = false;
+    uint8_t r = 0, g = 0, b = 0;
 
     switch (g_state) {
         case PodState::Booting:
-            strip.setPixelColor(0, strip.Color(20, 20, 20, 20));   // dim white
+            r = g = b = 20;                                   // dim white
+            break;
+        case PodState::Provisioning:
+            // Slow amber blink: waiting for a supervisor to assign a room.
+            if (millis() - last_blink > 700) {
+                blink_on = !blink_on;
+                last_blink = millis();
+            }
+            if (blink_on) { r = 60; g = 30; }
             break;
         case PodState::WifiConnecting:
         case PodState::WsConnecting:
@@ -219,26 +300,33 @@ static void led_update() {
                 blink_on = !blink_on;
                 last_blink = millis();
             }
-            strip.setPixelColor(0, blink_on ? strip.Color(0, 0, 60, 0) : strip.Color(0, 0, 0, 0));
+            if (blink_on) b = 60;
             break;
         case PodState::Listening:
-            strip.setPixelColor(0, strip.Color(0, 60, 0, 0));      // green
+            // Magenta while muted so the room can see nothing is being heard.
+            if (g_muted) { r = 60; b = 60; } else { g = 60; }
             break;
         case PodState::Thinking:
-            strip.setPixelColor(0, strip.Color(60, 40, 0, 0));     // amber
+            r = 60; g = 40;                                   // amber
             break;
         case PodState::Speaking:
-            strip.setPixelColor(0, strip.Color(0, 0, 80, 0));      // blue
+            b = 80;                                           // blue
             break;
         case PodState::Error:
             if (millis() - last_blink > 150) {
                 blink_on = !blink_on;
                 last_blink = millis();
             }
-            strip.setPixelColor(0, blink_on ? strip.Color(80, 0, 0, 0) : strip.Color(0, 0, 0, 0));
+            if (blink_on) r = 80;
             break;
     }
-    strip.show();
+    // Only refresh the ring when the colour changes; this runs every loop.
+    static uint32_t last_rgb = 0xFFFFFFFF;
+    uint32_t rgb = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    if (rgb != last_rgb) {
+        last_rgb = rgb;
+        board_led_set(r, g, b);
+    }
 }
 
 // ── WebSocket events ──────────────────────────────────────────────────────────
@@ -296,7 +384,6 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length) {
                 static uint8_t pcm_buf[16384];
                 size_t decoded = base64_decode(b64, pcm_buf, sizeof(pcm_buf));
                 if (decoded > 0) {
-                    // Switch I2S0 from mic to speaker mode (official Echo pattern).
                     start_speaker();
                     if (!enqueue_playback(pcm_buf, decoded)) {
                         Serial.println("[aice-pod] playback queue full; dropping chunk");
@@ -308,6 +395,7 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length) {
 
             } else if (strcmp(msg_type, "stop_audio") == 0) {
                 clear_playback_queue();
+                stop_speaker();
                 if (g_ws_connected && g_identified && !g_mic_running) {
                     start_mic();
                 }
@@ -318,8 +406,15 @@ static void ws_event_handler(WStype_t type, uint8_t *payload, size_t length) {
                 // Keepalive acknowledged; nothing to do.
 
             } else if (strcmp(msg_type, "error") == 0) {
+                const char *code = doc["code"] | "";
                 Serial.printf("[aice-pod] gateway error %s: %s\n",
-                    (const char *)doc["code"], (const char *)doc["message"]);
+                    code, (const char *)(doc["message"] | ""));
+                if (strcmp(code, "unauthorized") == 0) {
+                    // Token revoked or lost: forget it and enrol again after a restart.
+                    pod_clear_token();
+                    delay(500);
+                    ESP.restart();
+                }
             }
             break;
         }
@@ -339,18 +434,26 @@ static void send_hello() {
     JsonDocument doc;
     doc["type"]             = "hello";
     doc["protocol_version"] = PROTOCOL_VERSION;
-    doc["device_id"]        = DEVICE_ID;
-    doc["room"]             = DEVICE_ROOM;
+    doc["device_id"]        = g_device_id;
+    doc["full_duplex"]      = true;
     String out;
     serializeJson(doc, out);
     g_ws.sendTXT(out);
-    Serial.printf("[aice-pod] sent hello device_id=%s\n", DEVICE_ID);
+    Serial.printf("[aice-pod] sent hello device_id=%s\n", g_device_id.c_str());
 }
 
 static void send_ping() {
     JsonDocument doc;
     doc["type"] = "ping";
     doc["seq"]  = g_ping_seq++;
+    String out;
+    serializeJson(doc, out);
+    g_ws.sendTXT(out);
+}
+
+static void send_help_button() {
+    JsonDocument doc;
+    doc["type"] = "help_button";
     String out;
     serializeJson(doc, out);
     g_ws.sendTXT(out);
@@ -364,153 +467,57 @@ static void send_tap_activate() {
     g_ws.sendTXT(out);
 }
 
-// ── PDM microphone (I2S0; G33 CLK, G23 DATA — shared G33 with speaker) ────────
+// ── Microphone and speaker ────────────────────────────────────────────────────
 static void start_mic() {
-    if (g_mic_running && g_audio_mode == AudioDriverMode::Mic) return;
-    if (g_audio_mode == AudioDriverMode::Speaker) {
-        stop_speaker();
-    }
-
-    i2s_config_t mic_cfg = {
-        .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
-        .sample_rate          = PDM_SAMPLE_RATE,
-        .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format       = I2S_CHANNEL_FMT_ONLY_RIGHT,
-        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-        .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count        = DMA_BUF_COUNT,
-        .dma_buf_len          = DMA_BUF_LEN,
-        .use_apll             = false,
-        .tx_desc_auto_clear   = false,
-        .fixed_mclk           = 0,
-    };
-
-    i2s_pin_config_t mic_pins = {
-        .mck_io_num   = I2S_PIN_NO_CHANGE,
-        .bck_io_num   = I2S_PIN_NO_CHANGE,
-        .ws_io_num    = PIN_MIC_CLK,
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num  = PIN_MIC_DATA,
-    };
-
-    esp_err_t err = i2s_driver_install(I2S_PORT_MIC, &mic_cfg, 0, nullptr);
-    if (err != ESP_OK) {
-        Serial.printf("[aice-pod] mic i2s_driver_install error: %d\n", err);
+    if (g_mic_running) return;
+    if (!board_mic_start()) {
         set_state(PodState::Error);
         return;
     }
-    err = i2s_set_pin(I2S_PORT_MIC, &mic_pins);
-    if (err != ESP_OK) {
-        Serial.printf("[aice-pod] mic i2s_set_pin error: %d\n", err);
-        set_state(PodState::Error);
-        return;
-    }
-    i2s_zero_dma_buffer(I2S_PORT_MIC);
     g_mic_running = true;
-    g_audio_mode = AudioDriverMode::Mic;
-    Serial.println("[aice-pod] PDM mic started");
+    Serial.println("[aice-pod] mic started");
 }
 
 static void stop_mic() {
-    if (!g_mic_running && g_audio_mode != AudioDriverMode::Mic) return;
-    i2s_driver_uninstall(I2S_PORT_MIC);
+    if (!g_mic_running) return;
+    board_mic_stop();
     g_mic_running = false;
-    g_audio_mode = AudioDriverMode::None;
-    Serial.println("[aice-pod] PDM mic stopped");
+    Serial.println("[aice-pod] mic stopped");
 }
 
-// ── I2S speaker (I2S0 mode-switch; G33 LRCK shared with mic CLK) ──────────────
 static void start_speaker() {
-    if (g_audio_mode == AudioDriverMode::Speaker) return;
-    if (g_audio_mode == AudioDriverMode::Mic || g_mic_running) {
-        stop_mic();
-    }
-    i2s_config_t spk_cfg = {
-        .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-        .sample_rate          = PDM_SAMPLE_RATE,
-        .bits_per_sample      = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format       = I2S_CHANNEL_FMT_ALL_RIGHT,
-        .communication_format = I2S_COMM_FORMAT_I2S,
-        .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count        = DMA_BUF_COUNT,
-        .dma_buf_len          = DMA_BUF_LEN,
-        .use_apll             = false,
-        .tx_desc_auto_clear   = true,
-        .fixed_mclk           = 0,
-    };
-
-    i2s_pin_config_t spk_pins = {
-        .mck_io_num   = I2S_PIN_NO_CHANGE,
-        .bck_io_num   = PIN_SPK_BCLK,
-        .ws_io_num    = PIN_SPK_LRCK,
-        .data_out_num = PIN_SPK_DATA,
-        .data_in_num  = I2S_PIN_NO_CHANGE,
-    };
-
-    esp_err_t err = i2s_driver_install(I2S_PORT_SPK, &spk_cfg, 0, nullptr);
-    if (err != ESP_OK) {
-        Serial.printf("[aice-pod] spk i2s_driver_install error: %d\n", err);
-        return;
-    }
-    err = i2s_set_pin(I2S_PORT_SPK, &spk_pins);
-    if (err != ESP_OK) {
-        Serial.printf("[aice-pod] spk i2s_set_pin error: %d\n", err);
-        return;
-    }
-    err = i2s_set_clk(
-        I2S_PORT_SPK,
-        PDM_SAMPLE_RATE,
-        I2S_BITS_PER_SAMPLE_16BIT,
-        I2S_CHANNEL_MONO
-    );
-    if (err != ESP_OK) {
-        Serial.printf("[aice-pod] spk i2s_set_clk error: %d\n", err);
-        return;
-    }
-    g_audio_mode = AudioDriverMode::Speaker;
-    Serial.println("[aice-pod] I2S speaker started");
+    board_speaker_start();
 }
 
 static void stop_speaker() {
-    if (g_audio_mode != AudioDriverMode::Speaker) return;
-    i2s_driver_uninstall(I2S_PORT_SPK);
-    g_audio_mode = AudioDriverMode::None;
-    Serial.println("[aice-pod] I2S speaker stopped");
+    board_speaker_stop();
 }
 
 // ── Audio capture → WebSocket ─────────────────────────────────────────────────
 static void capture_and_send_audio() {
     static int16_t pcm_buf[SAMPLES_PER_FRAME];
-    size_t bytes_read = 0;
-
-    // Non-blocking read: only send if a full frame is ready.
-    esp_err_t err = i2s_read(I2S_PORT_MIC,
-                             pcm_buf,
-                             BYTES_PER_FRAME,
-                             &bytes_read,
-                             0 /* ticks_to_wait = 0 → non-blocking */);
-
-    if (err != ESP_OK || bytes_read < (size_t)BYTES_PER_FRAME) {
-        return; // not enough data yet
+    static int16_t ref_buf[SAMPLES_PER_FRAME];
+    // Send every frame that is ready: a speaker write can hold the loop for a
+    // whole 64 ms chunk, longer than one 40 ms frame.
+    for (int sent = 0; sent < MAX_FRAMES_PER_LOOP; sent++) {
+        if (!board_mic_read(pcm_buf, ref_buf, SAMPLES_PER_FRAME)) {
+            return;
+        }
+        JsonDocument doc;
+        doc["type"]      = "audio";
+        doc["payload"]   = base64_encode(reinterpret_cast<const uint8_t *>(pcm_buf), BYTES_PER_FRAME);
+        doc["reference"] = base64_encode(reinterpret_cast<const uint8_t *>(ref_buf), BYTES_PER_FRAME);
+        String out;
+        serializeJson(doc, out);
+        g_ws.sendTXT(out);
     }
-
-    // Encode as base64 for JSON transport.
-    String b64 = base64_encode(reinterpret_cast<const uint8_t *>(pcm_buf), bytes_read);
-
-    // Build and send JSON frame.
-    JsonDocument doc;
-    doc["type"]    = "audio";
-    doc["payload"] = b64;
-    String out;
-    serializeJson(doc, out);
-    g_ws.sendTXT(out);
 }
 
 // ── TTS playback ──────────────────────────────────────────────────────────────
 static void play_audio_frame(const uint8_t *pcm_bytes, size_t len) {
     if (!pcm_bytes || len < sizeof(int16_t)) return;
 
-    // Network TTS arrives as mono PCM16; keep mono and drive the configured slot.
+    // Network TTS arrives as mono PCM16.
     const int16_t *mono = reinterpret_cast<const int16_t *>(pcm_bytes);
     size_t samples = len / sizeof(int16_t);
     int16_t mono_buf[256];
@@ -547,15 +554,7 @@ static void play_audio_frame(const uint8_t *pcm_bytes, size_t len) {
             }
             mono_buf[i] = (int16_t)s;
         }
-        size_t written = 0;
-        // Short timeout keeps loop responsive while draining queue.
-        i2s_write(
-            I2S_PORT_SPK,
-            mono_buf,
-            chunk * sizeof(int16_t),
-            &written,
-            pdMS_TO_TICKS(200)
-        );
+        board_speaker_write(mono_buf, chunk);
         mono += chunk;
         samples -= chunk;
     }
@@ -577,6 +576,7 @@ static void playback_drain_once() {
     if (g_playback_count == 0) {
         if (g_state == PodState::Speaking && g_ws_connected) {
             if ((millis() - g_last_tts_enqueue_ms) >= TTS_END_GRACE_MS) {
+                stop_speaker();
                 if (g_identified && !g_mic_running) {
                     start_mic();
                 }

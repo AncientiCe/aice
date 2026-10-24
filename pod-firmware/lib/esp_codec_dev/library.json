@@ -1,0 +1,17 @@
+{
+  "name": "esp_codec_dev",
+  "version": "1.5.11",
+  "description": "ES8311 and ES7210 register drivers from Espressif esp_codec_dev (Apache-2.0), used by the Waveshare ESP32-S3-AUDIO-Board pod. Only the codec control path is vendored; I2S and I2C are driven by the pod firmware.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/espressif/esp-adf/tree/master/components/esp_codec_dev"
+  },
+  "build": {
+    "flags": [
+      "-DCONFIG_CODEC_ES8311_SUPPORT",
+      "-DCONFIG_CODEC_ES7210_SUPPORT"
+    ],
+    "srcFilter": ["+<*.c>"]
+  }
+}

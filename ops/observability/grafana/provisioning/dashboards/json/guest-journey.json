@@ -1,0 +1,161 @@
+{
+  "id": null,
+  "uid": "aice-guest-journey",
+  "title": "Aice Guest Journey",
+  "tags": ["aice", "journey", "latency", "hotels"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Guest wait: end of speech to answer audio (p50 / p95)",
+      "description": "Measured in pod-gateway from the end of the guest's speech until the answer is handed to the pod speaker.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(voice_turn_time_to_first_audio_seconds_bucket{job=\"pod-gateway\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(voice_turn_time_to_first_audio_seconds_bucket{job=\"pod-gateway\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway: backend wait vs speech synthesis (p95)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pod_bridge_backend_wait_seconds_bucket{job=\"pod-gateway\"}[5m])))",
+          "legendFormat": "backend wait"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pod_bridge_synthesis_duration_seconds_bucket{job=\"pod-gateway\"}[5m])))",
+          "legendFormat": "synthesis"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Backend stage duration p95 by stage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(backend_turn_stage_duration_seconds_bucket{job=\"aice-backend\"}[5m])))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time no stage accounts for, p95 (a gap here means an unmeasured step)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, component) (rate(voice_turn_unaccounted_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{component}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Slow turns per hour by slowest stage (details are in the slow_turn log line)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (component, slowest_stage) (increase(voice_slow_turns_total[1h]))",
+          "legendFormat": "{{component}} / {{slowest_stage}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Turns per minute by outcome",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(pod_bridge_turns_total{job=\"pod-gateway\"}[5m])) * 60",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ticket time to acknowledge, p95 by request",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, tool) (rate(property_ticket_ack_duration_seconds_bucket{job=\"aice-hotels\"}[1h])))",
+          "legendFormat": "{{tool}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ticket time to resolve, p95 by request",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, tool) (rate(property_ticket_resolve_duration_seconds_bucket{job=\"aice-hotels\"}[1h])))",
+          "legendFormat": "{{tool}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "SLA breaches per hour by request",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tool) (increase(property_sla_breaches_total{job=\"aice-hotels\"}[1h]))",
+          "legendFormat": "{{tool}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pod disconnects per hour",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (device_id) (increase(pod_disconnects_total{job=\"pod-gateway\"}[1h]))",
+          "legendFormat": "{{device_id}}"
+        }
+      ]
+    }
+  ]
+}

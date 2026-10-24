@@ -61,4 +61,4 @@ Use that IP as the gateway host in the pod configuration (e.g. `192.168.1.10`).
 - **Connection refused** — Port not open: check firewall and that `pod_bind` matches (host and port).
 - **Wrong gateway IP** — If the host has multiple IPs, use the one on the same subnet as the pod (usually the LAN interface). Avoid `127.0.0.1` for the pod; that is local to the host only.
 
-For building and flashing the pod, see [M5Stack pod deployment](../deployment/m5stack-pod.md).
+For building and flashing the pod, see [pod deployment](../deployment/pod.md).
