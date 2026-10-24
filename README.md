@@ -166,27 +166,27 @@ Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a c
 - **`apps/pod-gateway`** (`cargo aice-gateway`): the room bridge between pods and `aice-backend` ([architecture 4](docs/architecture/README.md#4-room-bridge-pods--backend)).
 - **`pod-firmware`**: room pod firmware for the Waveshare ESP32-S3-AUDIO-Board ([pod deployment](docs/deployment/pod.md)). The board records while it speaks, but spoken barge-in is not implemented yet, so guests stop an answer with the button. Requirements for barge-in: [Signal Pod](docs/hardware/signal-pod.md).
 
-### Release v0.3.2
+### Release v0.4.0
 
-Current binary release. macOS arm64. The archive contains `aice-backend`, `aice-hotels`, `aice-care`, and `aice-ward`.
+Current binary release. macOS arm64, Linux x86_64 and Linux aarch64. Each archive contains `aice-backend`, `aice-hotels`, `aice-care`, `aice-ward`, `pod-gateway`, and `room-loadtest`.
 
-1. Download `aice-v0.3.2-macos-arm64.tar.gz` and `aice-v0.3.2-macos-arm64.tar.gz.sha256` from the GitHub release page.
+1. Download `aice-v0.4.0-<platform>.tar.gz` and its `.sha256` from the GitHub release page (`macos-arm64`, `linux-x86_64` or `linux-aarch64`).
 2. Verify checksum:
 
    ```bash
-   shasum -a 256 -c aice-v0.3.2-macos-arm64.tar.gz.sha256
+   shasum -a 256 -c aice-v0.4.0-macos-arm64.tar.gz.sha256
    ```
 
 3. Extract and run one pack:
 
    ```bash
-   tar -xzf aice-v0.3.2-macos-arm64.tar.gz
+   tar -xzf aice-v0.4.0-macos-arm64.tar.gz
    ./aice-hotels property.example.json
    ```
 
-`aice-backend` still serves the voice runtime. Set `property.facilitator_url` to `http://127.0.0.1:8791/mcp` so hotel intents call the facilitator. Care listens on 8792 and ward on 8793.
+`aice-backend` still serves the voice runtime. Set `property.facilitator_url` to the facilitator's `/mcp` URL so hotel intents call it; off loopback this must be HTTPS ([pilot runbook](docs/runbooks/property-pilot.md)). Care listens on 8792 and ward on 8793.
 
-Release runbook: [docs/runbooks/release-v0.3.0.md](docs/runbooks/release-v0.3.0.md).
+Release runbook: [docs/runbooks/release-v0.4.0.md](docs/runbooks/release-v0.4.0.md).
 
 ### Release v0.1.0 (legacy)
 
