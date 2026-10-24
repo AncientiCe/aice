@@ -45,6 +45,31 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.release_tag }}
+
+      # Release notes are this tag's CHANGELOG.md section, copied verbatim. Nothing is generated.
+      - name: Extract this tag's CHANGELOG section
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.release_tag }}"
+          tr -d '\r' < CHANGELOG.md \
+            | awk -v t="$tag" 'index($0, "## [" t "]") == 1 {f=1; next} /^## \[/ {f=0} f' \
+            > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no '## [$tag]' section; add it before tagging."
+            exit 1
+          fi
+
+      - name: Keep release notes for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
   build-and-publish:
     name: Build and publish macOS arm64 assets
     needs: validate-tag
@@ -118,12 +143,17 @@ jobs:
           tar -C dist -czf "dist/${archive}" aice-backend aice-hotels aice-care aice-ward pod-gateway room-loadtest
           (cd dist && shasum -a 256 "${archive}" > "${archive}.sha256")
 
+      - name: Fetch release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           prerelease: ${{ needs.validate-tag.outputs.prerelease }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/*.tar.gz
             dist/*.sha256

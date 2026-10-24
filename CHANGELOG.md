@@ -9,6 +9,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Changed
 
 - `aice-skills` and `palace-rs` are fetched over HTTPS (`https://github.com/AncientiCe/...`) instead of SSH, so the workspace builds without a GitHub SSH key. CI no longer needs the `AICE_SKILLS_READ_TOKEN` secret.
+- GitHub release notes are the tag's `CHANGELOG.md` section, copied verbatim, instead of generated notes. The Release workflow fails before building if the tagged `CHANGELOG.md` has no section for the tag.
 
 ### Fixed
 

@@ -34,6 +34,8 @@ git push origin v0.4.0
 
 Then run the GitHub Actions **Release** workflow manually with `release_tag=v0.4.0`.
 
+The release notes are the tag's `## [v0.4.0]` section of `CHANGELOG.md`, copied verbatim. The workflow fails before building if the tagged `CHANGELOG.md` has no such section, so move the Unreleased entries under the version heading in the commit you tag.
+
 Confirm the release page has all six assets and that each tarball contains the six binaries.
 
 ## Breaking changes to call out
