@@ -149,7 +149,7 @@ async fn staff_desk_acknowledges_a_ticket() {
     let desk = login(&running.url, "maria", PASSWORD).await;
     let html = desk.page("/desk").await;
     assert!(html.contains("204"));
-    assert!(html.contains("request_extra_towels"));
+    assert!(html.contains("Request extra towels"));
     assert!(html.contains("aice-hotels desk"));
     let (status, updated) = desk
         .api_post(&format!("/api/tickets/{ticket_id}/acknowledge"))

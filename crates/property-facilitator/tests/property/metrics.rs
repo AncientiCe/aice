@@ -84,5 +84,13 @@ async fn a_ticket_that_is_done_records_how_long_it_took_to_resolve() {
         payload.contains("property_ticket_ack_duration_seconds_count{pack=\"hotels\",tool=\"request_extra_towels\"}"),
         "{payload}"
     );
+    assert!(
+        payload.contains("property_desk_renders_total{pack=\"hotels\",result=\"ok\"}"),
+        "the desk page counts its renders: {payload}"
+    );
+    assert!(
+        payload.contains("property_desk_render_duration_seconds_count{pack=\"hotels\"}"),
+        "the desk page times its renders: {payload}"
+    );
     let _ = std::fs::remove_file(db);
 }

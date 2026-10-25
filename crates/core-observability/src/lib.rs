@@ -51,6 +51,7 @@ pub use metrics::{
     record_pod_connection, record_pod_disconnect, record_pod_egress_queue_drop,
     record_pod_egress_send_error, record_pod_tts_chunk, record_policy_denied,
     record_property_alert_sent, record_property_audit_event, record_property_auth_attempt,
+    record_property_desk_render, record_property_desk_render_duration,
     record_property_mcp_duration, record_property_mcp_error, record_property_request,
     record_property_sla_breach, record_property_ticket_ack_duration,
     record_property_ticket_resolve_duration, record_reminder_skill, record_screen_ocr_skill,

@@ -11,12 +11,12 @@ Aice puts a small voice pod in every room and a staff desk at reception. Guests 
 | | |
 |---|---|
 | **In the room** | A [Waveshare ESP32-S3-AUDIO-Board](docs/deployment/pod.md) pod: two mics, a speaker, a ring of seven lights and three buttons. Guests can talk over an answer to stop it or correct it. |
-| **At the desk** | A web [staff desk](docs/staff-desk.md) with requests, stays (check-in/out and memory consent), room devices and an audit log. Unhandled requests escalate on their own. |
+| **At the desk** | A web [staff desk](docs/staff-desk.md) with requests (what the guest asked for and when), stays (check-in/out and memory consent), room devices and an audit log. It works on a phone too. Unhandled requests escalate on their own. |
 | **On the property** | One host runs the voice backend (Whisper → Ollama), the room bridge (speech detection, echo cancellation, Piper voice) and the desk. |
 
 ![Staff desk: requests, stays and room devices](docs/assets/screenshots/staff-desk-light.png)
 
-<sub>The real `aice-hotels` desk, run locally with sample requests. It also has a [dark theme](docs/assets/screenshots/staff-desk-dark.png) and a [full-page view with the audit log](docs/assets/screenshots/staff-desk-full.png).</sub>
+<sub>The real `aice-hotels` desk, run locally with sample requests. It also has a [dark theme](docs/assets/screenshots/staff-desk-dark.png), a [phone layout](docs/assets/screenshots/staff-desk-mobile.png) and a [full-page view with the audit log](docs/assets/screenshots/staff-desk-full.png).</sub>
 
 ## How it works
 

@@ -202,5 +202,5 @@ async fn care_binary_escalates_a_fall_without_a_property_mcp() {
     add_supervisor(&bin, &pack.config);
     let desk = desk_html(&pack.base).await;
     assert!(desk.contains("aice-care desk"));
-    assert!(desk.contains("report_fall"));
+    assert!(desk.contains("Report fall"));
 }

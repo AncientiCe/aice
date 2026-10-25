@@ -203,5 +203,5 @@ async fn hotels_binary_opens_a_desk_ticket() {
     let desk = desk_html(&pack.base).await;
     assert!(desk.contains("aice-hotels desk"));
     assert!(desk.contains("204"));
-    assert!(desk.contains("request_extra_towels"));
+    assert!(desk.contains("Request extra towels"));
 }

@@ -184,6 +184,8 @@ const VOICE_TURN_UNACCOUNTED_DURATION_SECONDS: &str = "voice_turn_unaccounted_du
 const POD_BRIDGE_BACKEND_WAIT_SECONDS: &str = "pod_bridge_backend_wait_seconds";
 const POD_BRIDGE_SYNTHESIS_DURATION_SECONDS: &str = "pod_bridge_synthesis_duration_seconds";
 const PROPERTY_TICKET_RESOLVE_DURATION_SECONDS: &str = "property_ticket_resolve_duration_seconds";
+const PROPERTY_DESK_RENDERS_TOTAL: &str = "property_desk_renders_total";
+const PROPERTY_DESK_RENDER_DURATION_SECONDS: &str = "property_desk_render_duration_seconds";
 
 /// Register metric descriptors / ensure they exist. Call once at startup.
 pub fn register_metrics() {
@@ -447,6 +449,13 @@ pub fn register_metrics() {
         "pack" => "unknown",
         "tool" => "unknown"
     );
+    counter!(
+        PROPERTY_DESK_RENDERS_TOTAL,
+        0,
+        "pack" => "unknown",
+        "result" => "unknown"
+    );
+    histogram!(PROPERTY_DESK_RENDER_DURATION_SECONDS, 0.0_f64, "pack" => "unknown");
 }
 
 /// Record a new voice session start.
@@ -1371,6 +1380,25 @@ pub fn record_pod_bridge_synthesis_duration(duration: Duration) {
     histogram!(
         POD_BRIDGE_SYNTHESIS_DURATION_SECONDS,
         duration.as_secs_f64()
+    );
+}
+
+/// Staff desk page renders by result (`ok`, `error`).
+pub fn record_property_desk_render(pack: &str, result: &str) {
+    counter!(
+        PROPERTY_DESK_RENDERS_TOTAL,
+        1,
+        "pack" => pack.to_string(),
+        "result" => result.to_string()
+    );
+}
+
+/// Time to build the staff desk page (database reads plus HTML).
+pub fn record_property_desk_render_duration(pack: &str, duration: Duration) {
+    histogram!(
+        PROPERTY_DESK_RENDER_DURATION_SECONDS,
+        duration.as_secs_f64(),
+        "pack" => pack.to_string()
     );
 }
 

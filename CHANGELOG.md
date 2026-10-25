@@ -8,6 +8,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Staff desk: requests show a readable label and the guest's details from the voice request ("Book taxi · destination: the airport · time: 06:00"), plus when they arrived. The audit log and device "last seen" show local times instead of epoch milliseconds. On a phone each row stacks into a card with its buttons visible. New metrics: `property_desk_renders_total{pack,result}` and `property_desk_render_duration_seconds{pack}`.
 - `aice-skills` and `palace-rs` are fetched over HTTPS (`https://github.com/AncientiCe/...`) instead of SSH, so the workspace builds without a GitHub SSH key. CI no longer needs the `AICE_SKILLS_READ_TOKEN` secret.
 - GitHub release notes are the tag's `CHANGELOG.md` section, copied verbatim, instead of generated notes. The Release workflow fails before building if the tagged `CHANGELOG.md` has no section for the tag.
 

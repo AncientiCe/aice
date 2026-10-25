@@ -14,6 +14,13 @@ The screenshots below are the real `aice-hotels` desk, run locally with sample r
 </details>
 
 <details>
+<summary>On a phone: each request becomes a card with its buttons underneath</summary>
+
+<img src="assets/screenshots/staff-desk-mobile.png" alt="Staff desk on a phone" width="320">
+
+</details>
+
+<details>
 <summary>Full page, including room devices and the audit log (supervisor view)</summary>
 
 ![Staff desk, full page](assets/screenshots/staff-desk-full.png)
@@ -47,7 +54,12 @@ Passwords are prompted twice, or read from `AICE_PROPERTY_PASSWORD` for scripted
 
 ## Requests
 
-Each spoken room request, help-button press or offline pod becomes one row: the room, the request and its status.
+Each spoken room request, help-button press or offline pod becomes one row:
+
+- **Room**, taken from the pod's device token or a mapped phone extension.
+- **Request**: what was asked ("Book taxi"), with the guest's details underneath ("destination: the airport · time: 06:00").
+- **Received**: the time in the property host's local zone, and how long ago.
+- **Status**, then the buttons.
 
 | Status | Meaning | Badge |
 |--------|---------|-------|
@@ -115,7 +127,6 @@ Configure alerts in `property.json`. Without channels, escalations still show on
 - **Delegated tools:** list tool names in `delegated_tools` and set `property_mcp_url`. The desk then calls the property's MCP once for those requests, for example to post to the PMS. The ticket still appears on the desk. If the property MCP is down, the ticket is escalated instead of lost.
 - **Extra tools:** tools the property MCP lists are offered to the voice classifier as well ([aice-hotels](skills/aice-hotels.md)).
 
-## Known gaps
+## Monitoring the desk
 
-- The desk shows the request type (`request_extra_towels`). The guest's details ("two bath towels") and readable times are not shown yet.
-- On a phone-width screen, the action buttons sit past the right edge of the requests table and need horizontal scrolling. Use a tablet or desktop at the desk for now.
+Each desk page render is counted in `property_desk_renders_total{pack,result}` and timed in `property_desk_render_duration_seconds{pack}`. The page reloads every 10 s per open browser, so a slow render shows up there first.

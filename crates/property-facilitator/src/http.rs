@@ -1,10 +1,12 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::Bytes;
 use core_observability::{
-    record_fleet_firmware_download, record_property_auth_attempt, record_property_mcp_error,
+    record_fleet_firmware_download, record_property_auth_attempt, record_property_desk_render,
+    record_property_desk_render_duration, record_property_mcp_error,
 };
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
@@ -335,10 +337,22 @@ async fn dispatch(state: &Arc<Facilitator>, incoming: DeskRequest) -> Response<B
     };
 
     match (&method, path.as_str()) {
-        (&Method::GET, "/desk") => match desk::desk_html(state, &session) {
-            Ok(html) => html_response(StatusCode::OK, html),
-            Err(error) => internal_error(&error),
-        },
+        (&Method::GET, "/desk") => {
+            let pack = state.pack().as_str();
+            let started = Instant::now();
+            let rendered = desk::desk_html(state, &session);
+            record_property_desk_render_duration(pack, started.elapsed());
+            match rendered {
+                Ok(html) => {
+                    record_property_desk_render(pack, "ok");
+                    html_response(StatusCode::OK, html)
+                }
+                Err(error) => {
+                    record_property_desk_render(pack, "error");
+                    internal_error(&error)
+                }
+            }
+        }
         (&Method::GET, "/api/tickets") => tickets_json(state),
         (&Method::GET, "/api/audit") => {
             if session.role != Role::Supervisor {

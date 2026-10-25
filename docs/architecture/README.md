@@ -625,7 +625,8 @@ flowchart LR
 - **Refusals:** the facilitator will not serve plain HTTP off loopback. A property backend (`property.facilitator_url` set) will not serve plain HTTP on a network bind unless `service.allow_plaintext_lan` is true.
 - **Audit:** every ticket creation and status change, login, logout, lockout, user change, pod enrolment/assignment/revocation, and stay transition is appended to `audit_events`; SQLite triggers reject updates and deletes.
 - **Failure paths:** bad or missing credentials → 401; wrong role → 403; bad CSRF → 403; locked account → 429; body over 256 KiB → 413; TLS handshake failure → connection dropped and `property_mcp_errors_total{kind="tls_handshake"}` / `backend_auth_rejections_total{reason="tls_handshake"}`.
-- **Metrics:** `property_auth_attempts_total{method,result}`, `property_audit_events_total{action}`, `backend_auth_rejections_total{reason}`.
+- **Desk page:** requests show a readable label, the guest's details from the tool arguments (room and extension excluded, HTML-escaped), and the time received in the host's local zone with its age; the audit log and device "last seen" use the same local times. On a phone-width screen each table row stacks into a card with its buttons on their own line.
+- **Metrics:** `property_auth_attempts_total{method,result}`, `property_audit_events_total{action}`, `backend_auth_rejections_total{reason}`, `property_desk_renders_total{pack,result}`, `property_desk_render_duration_seconds{pack}`.
 
 ---
 
