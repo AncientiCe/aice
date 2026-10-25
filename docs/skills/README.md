@@ -2,6 +2,8 @@
 
 One document per skill. Each document contains a Mermaid journey diagram, input/output specification, failure paths, and metric names.
 
+**On a room pod** guests use the property pack ([aice-hotels](aice-hotels.md), [aice-care](aice-care.md) or [aice-ward](aice-ward.md)) for room requests, plus the question skills listed in [what guests can say](../deployment/pod-voice-guide.md): time, weather, distance, news, sports, public holidays, fuel prices and horoscope. Pods have no local skills. Frontend-owned skills in the table below belong to the desktop frontend runtime and are not offered to pods.
+
 All skill crates live in the **[`aice-skills`](https://github.com/AncientiCe/aice-skills)** repository (`github.com/AncientiCe/aice-skills`), consumed by `aice` via a Cargo git dependency. This repository uses backend-owned skill implementations directly and imports `ENABLED_SKILL_IDS` for classifier prompt construction. Frontend-owned skills are executed by the external macOS frontend service in **[`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos)**, which declares supported skill IDs at activation time via `FrontendActivateRequest.supported_frontend_intents`.
 
 | Skill | Crate | Status | Document |

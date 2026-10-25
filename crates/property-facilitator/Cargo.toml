@@ -7,6 +7,7 @@ description = "On-prem property MCP facilitator for hotels, care homes, and ward
 [dependencies]
 argon2 = "0.5"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 core-observability = { path = "../core-observability" }
 core-policy = { path = "../core-policy" }
 core-tls = { path = "../core-tls" }

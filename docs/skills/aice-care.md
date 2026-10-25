@@ -57,3 +57,5 @@ Same names as [aice-hotels](aice-hotels.md), with `pack="care"`.
 | `property_alerts_sent_total` | counter | `channel`, `result` |
 | `property_sla_breaches_total` | counter | `pack`, `tool` |
 | `property_ticket_ack_duration_seconds` | histogram | `pack`, `tool` |
+| `property_desk_renders_total` | counter | `pack`, `result` (`ok`, `error`) |
+| `property_desk_render_duration_seconds` | histogram | `pack` (staff desk page build) |

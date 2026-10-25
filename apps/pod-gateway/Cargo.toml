@@ -2,7 +2,7 @@
 name = "pod-gateway"
 version = "0.1.0"
 edition = "2021"
-description = "Room bridge between M5Stack pods and the aice backend"
+description = "Room bridge between room pods and the aice backend"
 
 [[bin]]
 name = "pod-gateway"

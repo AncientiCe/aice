@@ -1,64 +1,59 @@
-# Wi‑Fi and network configuration
+# Pod network configuration
 
-How pod devices connect to your local Wi-Fi and to the pod gateway.
-Signal Pod is the target device path; M5Stack configuration here is experimental.
+How a room pod joins the property network and reaches the room bridge and the staff desk. Building, flashing and enrolling the pod is covered in the [room pod guide](../deployment/pod.md).
+
+## What the pod connects to
+
+| Connection | From → to | Default | Notes |
+|------------|-----------|---------|-------|
+| Enrolment, firmware updates | Pod → desk (`aice-hotels`) | `https://<desk host>:8791` | URL compiled into `property_trust.h` by `firmware pod-header` |
+| Room audio | Pod → bridge (`pod-gateway`) | `wss://<GATEWAY_HOST>:8765/` | `pod_bind` on the bridge; `GATEWAY_HOST`, `GATEWAY_PORT`, `GATEWAY_PATH` in `pod_config.h` |
+| Clock | Pod → NTP | `pool.ntp.org`, `time.google.com` | `NTP_SERVER_1`, `NTP_SERVER_2`. The time is needed before any TLS connection |
+| Name lookup | Pod → property DNS or mDNS | — | `.local` names resolve over mDNS |
 
 ## Requirements
 
-- **Same LAN:** The M5Stack pod and the machine running **pod-gateway** must be on the same local network (same Wi‑Fi or same wired LAN). The pod connects to the gateway over TCP (WebSocket) using the gateway host’s IP and port.
-- **Gateway reachable:** The host running `pod-gateway` must bind on an address the pod can reach. Default is `0.0.0.0:8765` (all interfaces, port 8765). Firewall rules must allow inbound TCP on that port from the LAN.
+- **One network for pods and the host.** Put the pods, the desk PCs and the host on one VLAN, with no inbound access from the guest Wi-Fi or the internet ([pilot runbook](../runbooks/property-pilot.md)).
+- **Host names, not IP addresses.** The pod's TLS library checks certificates against the host name only. Use a DNS name, or the host's mDNS name (`<computer name>.local`), in `GATEWAY_HOST`, in the desk URL and in the certificates (`tls issue bridge.pem bridge.key voice.hotel.local`).
+- **TLS on the bridge.** With a desk configured, `pod-gateway` refuses plain WebSocket on a network bind. Set `pod_gateway.tls` to the bridge certificate.
+- **Firewall.** Allow inbound TCP from the pod network to the bridge port (`8765`) and the desk port (`8791`).
+- **NTP.** If the pod network has no internet access, point `NTP_SERVER_1` and `NTP_SERVER_2` at the property's NTP server.
 
-## Gateway side (`config.json`)
-
-On the machine that runs the gateway, `config.json` includes:
+## Bridge side (`config.json`)
 
 ```json
-"pod_bind": "0.0.0.0:8765"
+"pod_bind": "0.0.0.0:8765",
+"pod_gateway": {
+  "tls": { "cert_file": "tls/bridge.pem", "key_file": "tls/bridge.key" },
+  "backend_url": "wss://voice.hotel.local:8781/turns/stream",
+  "backend_ca_file": "tls/ca.pem"
+}
 ```
 
-- **`0.0.0.0`** — Listen on all interfaces so the pod can connect using the host’s LAN IP.
-- **Port** — Use a single port (e.g. `8765`). The pod will connect to `GATEWAY_HOST:8765`.
+## Pod side (`pod-firmware/include/pod_config.h`)
 
-If the gateway runs on `192.168.1.10`, the pod should be configured to connect to `192.168.1.10:8765` (or whatever port you set).
+Copy `pod_config.example.h` (`pod_config.h` is git-ignored) and set:
 
-## Pod side (firmware)
+```c
+#define WIFI_SSID     "property-iot"
+#define WIFI_PASSWORD "…"
+#define GATEWAY_HOST  "voice.hotel.local"   // a name in the bridge certificate
+#define GATEWAY_PORT  8765
+```
 
-The pod firmware must be configured with:
-
-1. **Wi‑Fi:** Your LAN’s **SSID** and **password** so the device joins the same network as the gateway.
-2. **Gateway address:** The **host** (IP or hostname) and **port** of the machine running `pod-gateway` (e.g. `192.168.1.10` and `8765`).
-
-How you set these depends on the firmware:
-
-- **Compile-time:** #defines or build flags (SSID, password, gateway host, port).
-- **Runtime:** Config file on SD card, or a provisioning flow (e.g. captive portal, BLE, or serial commands).
-
-Avoid committing real Wi‑Fi passwords to the repo; use env vars, local config, or a secure provisioning flow.
-
-## Finding the gateway host
-
-On the machine running the gateway:
-
-- Run `ip route get 1` and use the source IP shown for your LAN interface.
-- If `ip` is unavailable, use `hostname -I` and pick the first non-loopback IPv4 address.
-
-Use that IP as the gateway host in the pod configuration (e.g. `192.168.1.10`).
+Leave `DEVICE_ID` empty so the pod uses `pod-<wifi mac>`. Do not set a room in firmware: a supervisor assigns it on the desk.
 
 ## Validation checklist
 
-- [ ] Gateway runs and binds: `cargo aice-gateway`.
-- [ ] Gateway health endpoint responds: `curl -fsS http://127.0.0.1:8780/healthz` (adjust host/port if changed).
-- [ ] `config.json` has `pod_bind` set (e.g. `0.0.0.0:8765`).
-- [ ] Pod firmware has correct Wi‑Fi SSID/password and gateway host/port.
-- [ ] Pod and gateway host are on the same LAN.
-- [ ] Firewall allows inbound TCP on the gateway port from the LAN.
-- [ ] After flashing/reset, pod joins Wi‑Fi and opens a WebSocket to the gateway; gateway receives `hello/identify`.
-- [ ] Pod keepalive works (`ping` from pod, `pong` from gateway).
+- [ ] The bridge starts without a "refusing plain WebSocket" error and listens on `pod_bind`.
+- [ ] From a laptop on the pod network, `GATEWAY_HOST` resolves and `openssl s_client -connect <GATEWAY_HOST>:8765` shows the bridge certificate signed by the property CA.
+- [ ] The pod's serial log shows Wi-Fi joined, the clock set, then enrolment (slow amber blink).
+- [ ] The pod appears as `pending` under **Room devices** on the desk. After **Assign room**, it turns green within 10 s.
+- [ ] `pod_connections_total` rises on the bridge metrics (`:9766`).
 
 ## Troubleshooting
 
-- **Pod never connects** — Verify SSID/password; ping the gateway host from another device on the same Wi‑Fi; ensure the gateway is running and listening on `0.0.0.0:8765` (or your chosen port).
-- **Connection refused** — Port not open: check firewall and that `pod_bind` matches (host and port).
-- **Wrong gateway IP** — If the host has multiple IPs, use the one on the same subnet as the pod (usually the LAN interface). Avoid `127.0.0.1` for the pod; that is local to the host only.
-
-For building and flashing the pod, see [pod deployment](../deployment/pod.md).
+- **Stays on blue blink (connecting):** the bridge is unreachable or TLS failed. Check the firewall, `pod_bind`, that the host name resolves on the pod network, that NTP is reachable (certificates are checked against the date), and that `GATEWAY_HOST` matches a name in the certificate. The serial log says which.
+- **Fast red blink:** the audio hardware did not start, the pod was revoked, or it enrolled with another nonce ([room pod guide](../deployment/pod.md)).
+- **Stays on slow amber blink:** enrolled but no room yet. Assign it on the desk.
+- **Pod disappears every few minutes:** weak Wi-Fi. Each drop opens a `device_offline` ticket after 2 minutes, so fix coverage before go-live.

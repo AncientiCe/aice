@@ -201,5 +201,5 @@ async fn ward_binary_allows_wayfinding_and_denies_medication() {
     add_supervisor(&bin, &pack.config);
     let desk = desk_html(&pack.base).await;
     assert!(desk.contains("aice-ward desk"));
-    assert!(desk.contains("prescribe_medication"));
+    assert!(desk.contains("Prescribe medication"));
 }

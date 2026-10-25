@@ -4,6 +4,7 @@ mod alerts;
 mod common;
 mod consent;
 mod desk_auth;
+mod desk_page;
 mod devices;
 mod firmware;
 mod fleet;

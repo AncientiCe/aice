@@ -1,58 +1,74 @@
-<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Aice: a private voice concierge in every room. A pod in each room sends requests to the staff desk.">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="900" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0B132B"/>
-      <stop offset="1" stop-color="#1C2541"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06141c"/>
+      <stop offset="1" stop-color="#0b2433"/>
     </linearGradient>
-    <linearGradient id="panel" x1="220" y1="140" x2="1380" y2="780" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#243B55" stop-opacity="0.9"/>
-      <stop offset="1" stop-color="#141E30" stop-opacity="0.9"/>
+    <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00E5FF"/>
+      <stop offset="1" stop-color="#3B6BFF"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="260" y2="0" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#00C9A7"/>
-      <stop offset="1" stop-color="#00E5FF"/>
-    </linearGradient>
-    <style>
-      .title { font-family: "Avenir Next", "Segoe UI", sans-serif; font-weight: 700; fill: #F8FAFC; }
-      .subtitle { font-family: "Avenir Next", "Segoe UI", sans-serif; font-weight: 500; fill: #C7D2FE; }
-      .label { font-family: "JetBrains Mono", "Menlo", monospace; font-size: 24px; fill: #E2E8F0; }
-      .small { font-family: "JetBrains Mono", "Menlo", monospace; font-size: 20px; fill: #A5B4FC; }
-    </style>
+    <radialGradient id="pg" cx="50%" cy="40%" r="70%">
+      <stop offset="0" stop-color="#16394a"/>
+      <stop offset="1" stop-color="#06202A"/>
+    </radialGradient>
   </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
 
-  <rect width="1600" height="900" fill="url(#bg)"/>
-  <circle cx="1430" cy="120" r="220" fill="#00E5FF" fill-opacity="0.08"/>
-  <circle cx="150" cy="780" r="250" fill="#00C9A7" fill-opacity="0.08"/>
-
-  <rect x="220" y="140" width="1160" height="620" rx="30" fill="url(#panel)" stroke="#334155" stroke-width="2"/>
-
-  <text x="300" y="280" class="title" font-size="88">Aice</text>
-  <text x="300" y="350" class="subtitle" font-size="46">Local-First Voice Assistant</text>
-  <text x="300" y="402" class="small">private runtime • measurable latency • pluggable skills</text>
-
-  <rect x="300" y="445" width="270" height="56" rx="28" fill="url(#accent)"/>
-  <text x="347" y="480" class="label" font-size="24" fill="#06202A">open source</text>
-
-  <g transform="translate(300 555)">
-    <rect x="0" y="0" width="122" height="62" rx="12" fill="#1E293B" stroke="#475569"/>
-    <text x="22" y="39" class="label">speech</text>
-
-    <path d="M134 31H182" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
-    <rect x="182" y="0" width="92" height="62" rx="12" fill="#1E293B" stroke="#475569"/>
-    <text x="209" y="39" class="label">STT</text>
-
-    <path d="M286 31H334" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
-    <rect x="334" y="0" width="108" height="62" rx="12" fill="#1E293B" stroke="#475569"/>
-    <text x="367" y="39" class="label">LLM</text>
-
-    <path d="M454 31H502" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
-    <rect x="502" y="0" width="92" height="62" rx="12" fill="#1E293B" stroke="#475569"/>
-    <text x="527" y="39" class="label">TTS</text>
-
-    <path d="M606 31H654" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
-    <rect x="654" y="0" width="122" height="62" rx="12" fill="#1E293B" stroke="#475569"/>
-    <text x="687" y="39" class="label">audio</text>
+  <!-- brand -->
+  <g transform="translate(72 70)">
+    <rect width="64" height="64" rx="16" fill="url(#lg)"/>
+    <path d="M17 49 32 15 47 49" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M27 41.5v4.5M32 37v10M37 41.5v4.5" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/>
   </g>
+  <text x="156" y="118" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="44" font-weight="700" fill="#ffffff">Aice</text>
 
-  <text x="300" y="705" class="small">Rust • Ollama • Whisper • Piper • macOS arm64</text>
+  <text x="72" y="236" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="54" font-weight="700" fill="#ffffff">A private voice concierge</text>
+  <text x="72" y="302" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="54" font-weight="700" fill="#5fd8ff">in every room.</text>
+  <text x="72" y="364" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="24" fill="#b8cfda">A pod in each room, a voice backend on the property,</text>
+  <text x="72" y="398" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="24" fill="#b8cfda">and a staff desk where every request lands.</text>
+
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20" fill="#e6f6fb">
+    <rect x="72" y="446" width="104" height="40" rx="20" fill="#11384a"/>
+    <text x="124" y="472" text-anchor="middle">Hotels</text>
+    <rect x="188" y="446" width="148" height="40" rx="20" fill="#11384a"/>
+    <text x="262" y="472" text-anchor="middle">Care homes</text>
+    <rect x="348" y="446" width="100" height="40" rx="20" fill="#11384a"/>
+    <text x="398" y="472" text-anchor="middle">Wards</text>
+  </g>
+  <text x="72" y="574" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" fill="#7fa3b3">On-prem · Rust · Whisper · Ollama · Piper · Waveshare ESP32-S3 pod · Apache-2.0</text>
+
+  <!-- pod -->
+  <g transform="translate(760 150) scale(1.7)">
+    <circle cx="50" cy="50" r="47" fill="url(#pg)" stroke="#12404f" stroke-width="2"/>
+    <g fill="#00E5FF">
+      <circle cx="50.0" cy="17.0" r="3.6"/><circle cx="75.8" cy="29.4" r="3.6"/><circle cx="82.2" cy="57.3" r="3.6"/>
+      <circle cx="64.3" cy="79.7" r="3.6"/><circle cx="35.7" cy="79.7" r="3.6"/><circle cx="17.8" cy="57.3" r="3.6"/>
+      <circle cx="24.2" cy="29.4" r="3.6"/>
+    </g>
+    <circle cx="50" cy="50" r="19" fill="#041821" stroke="#12404f"/>
+    <g fill="#2b5a6c"><circle cx="50" cy="50" r="2"/><circle cx="43" cy="50" r="1.6"/><circle cx="57" cy="50" r="1.6"/><circle cx="50" cy="43" r="1.6"/><circle cx="50" cy="57" r="1.6"/></g>
+  </g>
+  <text x="845" y="350" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" fill="#7fa3b3">Room 204</text>
+
+  <!-- speech bubble -->
+  <rect x="930" y="120" width="290" height="58" rx="18" fill="#ffffff"/>
+  <text x="950" y="157" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20" fill="#0b2433">“Two more towels, please.”</text>
+
+  <!-- arrow to desk -->
+  <path d="M845 372 V420 H900" fill="none" stroke="#3B6BFF" stroke-width="3" stroke-dasharray="6 6"/>
+  <path d="M898 412 L912 420 L898 428 Z" fill="#3B6BFF"/>
+
+  <!-- desk card -->
+  <rect x="918" y="376" width="300" height="176" rx="14" fill="#ffffff"/>
+  <text x="938" y="408" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#0b2433">Staff desk · Requests</text>
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#1f2937">
+    <text x="938" y="442">204</text><text x="980" y="442">request_extra_towels</text>
+    <rect x="1150" y="428" width="50" height="20" rx="10" fill="#fef3c7"/><text x="1175" y="443" text-anchor="middle" fill="#b45309" font-size="13">open</text>
+    <text x="938" y="476">101</text><text x="980" y="476">book_taxi</text>
+    <rect x="1132" y="462" width="70" height="20" rx="10" fill="#fee2e2"/><text x="1167" y="477" text-anchor="middle" fill="#b91c1c" font-size="13">escalated</text>
+    <text x="938" y="510">305</text><text x="980" y="510">set_wake_up_call</text>
+    <rect x="1150" y="496" width="50" height="20" rx="10" fill="#dcfce7"/><text x="1175" y="511" text-anchor="middle" fill="#15803d" font-size="13">done</text>
+  </g>
+  <text x="938" y="540" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="12" fill="#6b7280">Illustration with sample data</text>
 </svg>

@@ -1,216 +1,119 @@
-# Aice: Local-First Voice AI Core
-[![CI](https://github.com/AncientiCe/aice/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/ci.yml) [![Release Build Check](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml) [![Latest Release](https://img.shields.io/github/v/release/AncientiCe/aice)](https://github.com/AncientiCe/aice/releases) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Aice social card](docs/assets/aice-social-card.svg)
+# Aice: a private voice concierge for every room
 
-Aice is a private, local voice AI system. **`aice-backend`** is the cross-platform (Windows, macOS, Linux) core that runs STT, LLM orchestration, memory, and backend-owned skills. Platform frontends (e.g. [`aice-macos`](https://github.com/AncientiCe/aice-macos)) talk to it over the local network.
+[![CI](https://github.com/AncientiCe/aice/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/ci.yml) [![Release Build Check](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml/badge.svg?branch=main)](https://github.com/AncientiCe/aice/actions/workflows/release-build-check.yml) [![Latest Release](https://img.shields.io/github/v/release/AncientiCe/aice)](https://github.com/AncientiCe/aice/releases) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE) ![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust) ![Pod](https://img.shields.io/badge/pod-Waveshare%20ESP32--S3--AUDIO-0b7285) ![Runs on-prem](https://img.shields.io/badge/runs-on--prem-2f9e44)
 
-No cloud lock-in is required for the runtime loop. You run it on your own machine.
+![Aice: a pod in each room sends requests to the staff desk](docs/assets/aice-social-card.svg)
 
-License: Apache-2.0 (see [LICENSE](LICENSE)).
+Aice puts a small voice pod in every room and a staff desk at reception. Guests ask for towels, a taxi or a late checkout in plain speech. The request lands on the desk as a ticket, and the pod confirms it was passed on. Guests can also ask everyday questions (weather, time, news, a recipe). Everything runs on one machine at the property: no cloud account, no audio leaving the building.
 
-## What is `aice-backend`
+**Hotels come first.** The same system serves care homes and hospital wards through separate packs with stricter defaults.
 
-`aice-backend` (see [apps/aice-backend](apps/aice-backend)) is a single cross-platform Rust service that exposes HTTP and WebSocket endpoints for frontends plus a UDP discovery responder so frontends can find it automatically on the local network. The discovery layer is deliberately broadcast-based (no mDNS/multicast) and [works on macOS, Linux, and Windows](apps/aice-backend/src/discovery_broadcast.rs) on the same broadcast domain.
+| | |
+|---|---|
+| **In the room** | A [Waveshare ESP32-S3-AUDIO-Board](docs/deployment/pod.md) pod: two mics, a speaker, a ring of seven lights and three buttons. Guests can talk over an answer to stop it or correct it. |
+| **At the desk** | A web [staff desk](docs/staff-desk.md) with requests (what the guest asked for and when), stays (check-in/out and memory consent), room devices and an audit log. It works on a phone too. Unhandled requests escalate on their own. |
+| **On the property** | One host runs the voice backend (Whisper → Ollama), the room bridge (speech detection, echo cancellation, Piper voice) and the desk. |
 
-It owns:
+![Staff desk: requests, stays and room devices](docs/assets/screenshots/staff-desk-light.png)
 
-- **STT** via Whisper (`core-stt`, `whisper-cli` model files).
-- **LLM orchestration** via Ollama (`core-llm`, `core-orchestrator`).
-- **Memory Palace** persistent memory (`palace-rs`) with aice-tagged drawers, per-turn recall + KG facts in answer composition, and Journal mirroring.
-- **Backend-owned skills** (weather, time, distance, smart-home, news, holidays, sports, horoscope, fuel prices) pulled from the external [`aice-skills`](https://github.com/AncientiCe/aice-skills) repo as a pinned Cargo git dependency.
-- **UDP broadcast discovery** so frontends find the backend with zero manual configuration.
-- **Prometheus metrics** for every code path (`core-observability`).
+<sub>The real `aice-hotels` desk, run locally with sample requests. It also has a [dark theme](docs/assets/screenshots/staff-desk-dark.png), a [phone layout](docs/assets/screenshots/staff-desk-mobile.png) and a [full-page view with the audit log](docs/assets/screenshots/staff-desk-full.png).</sub>
+
+## How it works
 
 ```mermaid
 flowchart LR
-    Frontend["Frontend (e.g. aice-macos)"] <-->|HTTP + WS| Backend["aice-backend (core)"]
-    Backend --> STT[Whisper STT]
-    Backend --> LLM[Ollama LLM]
-    Backend --> Skills["aice-skills (git dep)"]
-    Backend --> Memory["Memory Palace (palace-rs)"]
-    Frontend -.->|UDP discovery| Backend
+    Guest(["Guest in room 204"]) -- speech --> Pod["Room pod<br/>Waveshare ESP32-S3"]
+    Pod -- "WSS: mic + speaker reference" --> Bridge["Room bridge<br/>pod-gateway"]
+    Bridge -- "turn audio" --> Backend["Voice backend<br/>aice-backend"]
+    Backend --> STT["Whisper<br/>speech to text"]
+    Backend --> LLM["Ollama<br/>intent + answer"]
+    Backend -- "MCP tool call" --> Desk["Staff desk<br/>aice-hotels"]
+    Desk --> Staff(["Reception staff"])
+    Desk -. "optional" .-> PMS["Property's own MCP<br/>PMS, paging"]
+    Backend -- "answer text" --> Bridge
+    Bridge -- "Piper voice" --> Pod
 ```
 
-## Repositories in the ecosystem
+1. **The guest speaks.** The pod streams its microphone, plus what its own speaker is playing, to the room bridge over TLS.
+2. **The bridge finds the request.** It decides by audio energy where speech starts and ends, removes the pod's own voice from the mic, and sends the utterance to the backend as one turn.
+3. **The backend understands it.** Whisper transcribes it. The LLM decides whether this is a room request (towels, taxi, wake-up call…), a question for a skill (weather, time, news…), or conversation. No keyword rules: the LLM makes every routing decision.
+4. **Room requests become tickets.** The backend calls the desk's MCP tool. The room comes from the pod's device token, not from anything the guest said. Staff are paged, and a request nobody acknowledges escalates to the next tier.
+5. **The pod answers.** The bridge turns the answer into speech with Piper and plays it on the pod. If the guest talks over it, the answer stops and what they said becomes the next turn. The model still knows what it was saying.
 
-| Repo | Role | Link |
-|------|------|------|
-| `aice` (this repo) | Cross-platform core backend workspace (`apps/aice-backend`, `crates/core-*`). | you are here |
-| `aice-skills` | All skill crates and implementations. Consumed by `aice-backend` as a pinned Cargo git dependency. Point here for the **full skills list and implementation details**. | [AncientiCe/aice-skills](https://github.com/AncientiCe/aice-skills) |
-| `aice-macos` | Fully functional macOS frontend: mic capture, VAD, TTS, and deep macOS-ecosystem skills (timers, reminders, messages, screenshots, app switching, volume, media, shopping list). Auto-discovers the backend via UDP. | [AncientiCe/aice-macos](https://github.com/AncientiCe/aice-macos) |
+More: [How it works](docs/how-it-works.md) (guest journey, interruptions, privacy, help button) · [Software architecture](docs/software-architecture.md) (processes, crates, protocols, data, metrics).
 
-## Supported platforms
+## Status
 
-- **Backend (`aice-backend`)**: Windows, macOS, and Linux. Pure Rust; no platform-specific build steps for the core service.
-- **Frontends**: macOS today via [`aice-macos`](https://github.com/AncientiCe/aice-macos). Windows and Linux frontends are not in scope for this repo.
+Release [v0.4.0](https://github.com/AncientiCe/aice/releases/tag/v0.4.0) is ready for a **hotel dry run and pilot**.
 
-## Quick start (backend)
+**Tested on the Waveshare pod and a property host:** pod enrolment and room assignment from the desk, TLS between pod, bridge, backend and desk, spoken questions and answers, hotel requests landing on the desk, and talking over an answer mid-sentence. On that board the bridge removes 11–14 dB of echo. Over 27 s of answers the pod never interrupted itself. It stopped for normal speech within a second about 60% of the time. The button always stops an answer.
 
-Prerequisites (all platforms):
+**Not tested on hardware yet:** signed firmware updates, lost-token recovery and factory reset. Capacity is gated in CI with simulated rooms. Run [`room-loadtest`](docs/architecture/README.md#30-capacity-measurement-room-loadtest) on the real host before go-live.
 
-- Rust toolchain (`cargo`).
-- [Ollama](https://ollama.com) running locally for the LLM.
-- `whisper-cli` + a Whisper model file for STT.
-- Network access to GitHub: `aice-skills` and `palace-rs` are public git dependencies fetched over HTTPS.
+**Before care homes and wards:** a signed [DPIA](docs/compliance/dpia-template.md), and for wards a [clinical safety case](docs/compliance/clinical-safety-case.md) approved by a Clinical Safety Officer. Both are templates today. The databases are plain SQLite, so run them on an encrypted volume.
 
-Steps:
+Room settings (temperature, lights, curtains, TV, music) are sent to staff as requests. The pod does not switch anything itself.
 
-1. Create config:
+## One product, three packs
 
-   ```bash
-   cp config.example.json config.json
-   ```
+Each property runs one pack: the desk, its MCP tools and its defaults.
 
-2. Download required models:
+| Pack | For | Requests | Defaults |
+|------|-----|----------|----------|
+| `aice-hotels` | Hotels, serviced apartments | 27 tools: housekeeping, towels, pillows, room service, wake-up call, taxi, restaurant and spa bookings, late checkout, complaints, maintenance, lost items, room settings… | Memory consent at booking, kept after checkout; SLA 15 min |
+| `aice-care` | Care homes | Bathroom help, a drink, pain, a visitor, lights, distress, a fall | Distress and falls always escalate; SLA 1 min for falls; consent ticked by staff |
+| `aice-ward` | Hospital wards | Non-clinical only (`get_a_nurse` and similar); anything else is denied and escalated | Memory wiped at discharge; consent off by default |
 
-   ```bash
-   ./scripts/download-required-models.sh
-   ```
+Pack details: [aice-hotels](docs/skills/aice-hotels.md) · [aice-care](docs/skills/aice-care.md) · [aice-ward](docs/skills/aice-ward.md) · [what guests can say](docs/deployment/pod-voice-guide.md).
 
-   The script is a POSIX shell script. On Windows, run it from Git Bash or WSL, or download the models manually using the URLs inside the script. See [docs/setup/local-dev.md](docs/setup/local-dev.md) for platform-specific prerequisites.
+## Privacy and security
 
-3. Run quality gates:
+- **On-prem.** Speech-to-text, the LLM and the voice all run on the property host.
+- **Memory only with consent, only for that stay.** A room without an open, consented stay remembers nothing. At checkout, memory is kept, archived for N days, or wiped, as the property chooses.
+- **Locked down by default.** Staff log in with roles and CSRF protection, and five wrong passwords lock the account. Pods hold a device token issued by the desk. The backend uses a service token. All traffic uses TLS from a property-local CA. Every ticket, login, device and stay change is written to an append-only audit log.
+- **Privacy mute and help button.** A double tap mutes the pod (magenta ring). A long press calls staff without speaking, even if speech recognition is down.
 
-   ```bash
-   cargo aice-fmt
-   cargo aice-clippy
-   cargo aice-audit
-   cargo aice-test
-   ```
+Details: [How it works: privacy](docs/how-it-works.md#privacy) · [Security policy](SECURITY.md).
 
-4. Start the backend:
+## Install
 
-   ```bash
-   cargo aice-backend
-   ```
-
-   The service binds `0.0.0.0:8781` by default (override with `AICE_BACKEND_BIND`). See [apps/aice-backend/src/main.rs](apps/aice-backend/src/main.rs).
-
-### Pair with a frontend
-
-Once the backend is healthy, start a frontend so you have a voice loop. The reference frontend is the macOS app in [`AncientiCe/aice-macos`](https://github.com/AncientiCe/aice-macos) — it auto-discovers the backend via UDP and registers its macOS-local skills on activation. Follow that repo's README for frontend setup; do not duplicate it here.
-
-## Canonical cargo commands
-
-Defined in `.cargo/config.toml`:
-
-- `cargo aice-backend` &rarr; run the cross-platform core backend service.
-- `cargo aice-fmt` &rarr; `cargo fmt --all -- --check`.
-- `cargo aice-clippy` &rarr; `cargo clippy --workspace --all-targets -- -D warnings -D clippy::unwrap_used -D clippy::expect_used`.
-- `cargo aice-audit` &rarr; dependency audit.
-- `cargo aice-test` &rarr; full workspace test suite.
-
-- `cargo aice-gateway` &rarr; run the room bridge for pods (see [Property deployments](#property-deployments-hotels-care-homes-wards)).
-- `cargo aice-loadtest` &rarr; measure capacity with simulated pods.
-
-## Skills
-
-Skills are defined and implemented in the external [`aice-skills`](https://github.com/AncientiCe/aice-skills) repository and consumed by `aice-backend` via a pinned Cargo git dependency in [apps/aice-backend/Cargo.toml](apps/aice-backend/Cargo.toml). Backend-owned skills (e.g. weather, time, distance, smart-home) execute inside `aice-backend`; frontend-owned skills (e.g. timers, reminders, messages) execute in the connected frontend and are declared at activation time.
-
-- **Full skills list & status**: [docs/skills/README.md](docs/skills/README.md).
-- **Authoritative implementation**: [AncientiCe/aice-skills](https://github.com/AncientiCe/aice-skills).
-
-## Repository layout
-
-- `apps/aice-backend`: cross-platform core backend service (primary).
-- `crates/core-*`: runtime building blocks (`core-config`, `core-llm`, `core-stt`, `core-orchestrator`, `core-observability`, `core-runtime-protocol`).
-- `apps/pod-gateway`: room bridge between pods and the backend; `pod-firmware`: room pod firmware for the Waveshare ESP32-S3-AUDIO-Board (voice barge-in still to come: [Signal Pod](docs/hardware/signal-pod.md)); `apps/room-loadtest`: capacity measurement; `crates/core-tls`: property CA and TLS helpers.
-
-## Public repository safety
-
-- Never commit local runtime state or credentials (`config.json`, `.env*`, `memory.json`, `memory.sqlite`, `*.pem`, `*.key`).
-- Start from `config.example.json` and keep machine-local overrides out of git.
-- If a secret is committed by mistake, rotate it and remove it from git history before publishing tags/releases.
-
-## Observability
-
-Use metrics dashboards for latency tracking and SLO checks:
-
-- `timing-deep-dive`
-- `backend-timings`
-- `frontend-timings`
-
-Start a local Prometheus + Grafana stack on demand:
+Download a release archive for **Linux x86_64 or aarch64** from [Releases](https://github.com/AncientiCe/aice/releases). Each archive contains `aice-backend`, `pod-gateway`, `aice-hotels`, `aice-care`, `aice-ward` and `room-loadtest`.
 
 ```bash
-./scripts/observability.sh up
+shasum -a 256 -c aice-v0.4.0-linux-x86_64.tar.gz.sha256
+tar -xzf aice-v0.4.0-linux-x86_64.tar.gz
+./aice-hotels property.json
 ```
 
-- Grafana: `http://127.0.0.1:3000`
-- Prometheus: `http://127.0.0.1:9090`
+Then follow the [property pilot runbook](docs/runbooks/property-pilot.md): host, certificates, staff accounts, backend and bridge config, pods, alerts, capacity check, go-live checklist. Pods: [build, flash and provision](docs/deployment/pod.md).
 
-Runbook: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md).
+## Develop
 
-## Ops and docs
+You need Rust, [Ollama](https://ollama.com), `whisper-cli` with a Whisper model, and Piper for the pod voice. The [developer setup](docs/setup/local-dev.md) runs the whole stack (desk, backend, bridge) on one machine.
 
-- Local setup: [docs/setup/local-dev.md](docs/setup/local-dev.md) (currently macOS-focused; Windows and Linux users should follow the equivalent prereqs — Rust, Ollama, Whisper, optionally Piper — for their platform).
-- Architecture: [docs/architecture/README.md](docs/architecture/README.md).
-- Local observability: [docs/runbooks/local-observability.md](docs/runbooks/local-observability.md).
-- Changelog: [CHANGELOG.md](CHANGELOG.md).
-- Security policy: [SECURITY.md](SECURITY.md).
-- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md).
-- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+```bash
+cargo aice-fmt && cargo aice-clippy && cargo aice-audit && cargo aice-test   # quality gates
+cargo run -p aice-hotels -- property.json                                      # staff desk on :8791
+cargo aice-backend                                                             # voice backend on :8781
+cargo aice-gateway                                                             # room bridge for pods on :8765
+```
 
-## Property deployments (hotels, care homes, wards)
+Contributions follow [AGENTS.md](AGENTS.md) (test first, no mocks, metrics on every path, no keyword routing of speech) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-A pod in each room, a room bridge, the voice backend, and one property pack (`aice-hotels`, `aice-care`, or `aice-ward`) on one on-prem host:
+## Documentation
 
-- **Security:** staff logins with roles and an audit log, a service token for the backend, facilitator-issued device tokens for pods, and TLS from a property-local CA ([architecture 24–25](docs/architecture/README.md#24-property-security-desk-login-service-token-tls)).
-- **Memory:** private to each stay and only with the guest's or resident's consent; retention `keep`, `archive`, or `wipe_on_close` ([architecture 26](docs/architecture/README.md#26-stays-and-stay-scoped-memory)).
-- **Staff alerts:** paging tiers with SLA re-escalation, a help button that works without speech, and offline-pod alerts ([architecture 27](docs/architecture/README.md#27-staff-alerting-and-sla-re-escalation), [29](docs/architecture/README.md#29-help-button-degraded-mode)).
-- **Capacity:** admission control, a Whisper worker pool, LLM host failover, and `room-loadtest` ([architecture 28](docs/architecture/README.md#28-capacity-admission-control-worker-pools-and-llm-failover), [30](docs/architecture/README.md#30-capacity-measurement-room-loadtest)).
-- **Runbooks:** [pilot runbook](docs/runbooks/property-pilot.md), [pod deployment](docs/deployment/pod.md), [DPIA template](docs/compliance/dpia-template.md), [clinical safety starter](docs/compliance/clinical-safety-case.md).
+| | |
+|---|---|
+| [How it works](docs/how-it-works.md) | Guest journey, interruptions, memory, help button, alerts |
+| [Software architecture](docs/software-architecture.md) | Processes, ports, crates, protocols, data stores, observability |
+| [Staff desk](docs/staff-desk.md) | The back office: requests, stays, room devices, audit log, roles, alerts |
+| [Room pod](docs/deployment/pod.md) · [Signal Pod requirements](docs/hardware/signal-pod.md) | Hardware, flashing, provisioning, updates, barge-in measurements |
+| [Property pilot runbook](docs/runbooks/property-pilot.md) | Installing and running a pilot, training, rollback |
+| [Architecture reference](docs/architecture/README.md) | Every flow with diagrams, inputs, failure paths and metrics |
+| [Observability](docs/runbooks/local-observability.md) | Prometheus and Grafana, including the Guest Journey dashboard |
+| [Skills](docs/skills/README.md) | Skills the voice backend can call (from [aice-skills](https://github.com/AncientiCe/aice-skills)) |
+| [Changelog](CHANGELOG.md) | Release history |
 
-Pilot hotels first. Care homes and wards need a signed DPIA; wards also need a clinical safety case approved by a Clinical Safety Officer. The pod firmware runs on the Waveshare ESP32-S3-AUDIO-Board: enrolment, TLS, spoken turns, and hotel requests are tested on hardware; signed updates and spoken barge-in are not yet, and a guest pilot needs barge-in ([Signal Pod](docs/hardware/signal-pod.md)).
+## License
 
-- **`apps/pod-gateway`** (`cargo aice-gateway`): the room bridge between pods and `aice-backend` ([architecture 4](docs/architecture/README.md#4-room-bridge-pods--backend)).
-- **`pod-firmware`**: room pod firmware for the Waveshare ESP32-S3-AUDIO-Board ([pod deployment](docs/deployment/pod.md)). The board records while it speaks, but spoken barge-in is not implemented yet, so guests stop an answer with the button. Requirements for barge-in: [Signal Pod](docs/hardware/signal-pod.md).
-
-### Release v0.4.0
-
-Current binary release. macOS arm64, Linux x86_64 and Linux aarch64. Each archive contains `aice-backend`, `aice-hotels`, `aice-care`, `aice-ward`, `pod-gateway`, and `room-loadtest`.
-
-1. Download `aice-v0.4.0-<platform>.tar.gz` and its `.sha256` from the GitHub release page (`macos-arm64`, `linux-x86_64` or `linux-aarch64`).
-2. Verify checksum:
-
-   ```bash
-   shasum -a 256 -c aice-v0.4.0-macos-arm64.tar.gz.sha256
-   ```
-
-3. Extract and run one pack:
-
-   ```bash
-   tar -xzf aice-v0.4.0-macos-arm64.tar.gz
-   ./aice-hotels property.example.json
-   ```
-
-`aice-backend` still serves the voice runtime. Set `property.facilitator_url` to the facilitator's `/mcp` URL so hotel intents call it; off loopback this must be HTTPS ([pilot runbook](docs/runbooks/property-pilot.md)). Care listens on 8792 and ward on 8793.
-
-Release runbook: [docs/runbooks/release-v0.4.0.md](docs/runbooks/release-v0.4.0.md).
-
-### Release v0.1.0 (legacy)
-
-The `v0.1.0` binary release predates the cross-platform backend story and ships `pod-voice` artifacts only.
-
-- Distribution channel: GitHub Releases (no crates.io publishing for this release).
-- Official binary support matrix: macOS arm64.
-- Runtime compatibility target for `0.1.x`: preserve current `config.example.json` defaults unless a change is explicitly called out in release notes.
-- Firmware status: `pod-firmware` remains experimental in `v0.1.0` and is shipped as source + docs only (no firmware artifact).
-
-Install from release assets:
-
-1. Download `aice-v0.1.0-macos-arm64.tar.gz` and `aice-v0.1.0-macos-arm64.tar.gz.sha256` from the GitHub release page.
-2. Verify checksum:
-
-   ```bash
-   shasum -a 256 -c aice-v0.1.0-macos-arm64.tar.gz.sha256
-   ```
-
-3. Extract and run:
-
-   ```bash
-   tar -xzf aice-v0.1.0-macos-arm64.tar.gz
-   ./pod-voice
-   ```
-
-Release runbook: [docs/runbooks/release-v0.1.0.md](docs/runbooks/release-v0.1.0.md).
+Apache-2.0. See [LICENSE](LICENSE).

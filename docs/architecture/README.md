@@ -1,6 +1,8 @@
 # Architecture
 
-User-facing behaviour and pipeline flows for the local voice AI assistant.
+Every flow in Aice with its diagram, inputs, outputs, failure paths and metrics. Start with [How it works](../how-it-works.md) and [Software architecture](../software-architecture.md) for the overview.
+
+**The room product** (pods, room bridge, voice backend, staff desk) is sections 4 and 21–33, on top of the shared voice pipeline in sections 1–3, 6, 7, 18 and 19. Sections 8, 12–17 and 20 describe the desktop frontend runtime that `aice-backend` still supports for home use; it is not part of a property deployment.
 
 ---
 
@@ -106,7 +108,7 @@ sequenceDiagram
 
 **Notes:**
 - **Inputs:** pod messages `hello`, `identify`, `audio`, `ping`, `tap_activate`; config `pod_bind`, `pod_gateway.backend_url` (`ws://` or `wss://`), `pod_gateway.backend_ca_file`, `pod_gateway.tls` (serve pods over TLS), `pod_gateway.vad_start_level`, `pod_gateway.vad_end_silence_ms`, and `tts.piper_model_path`.
-- **Turn detection:** a turn opens after three frames above `vad_start_level` (mean absolute sample value) and includes the eight frames before it, so the first word is kept. It closes after `vad_end_silence_ms` of quiet audio or 15 s. Time is measured in audio samples, so buffered bursts are judged like live audio. The pod mic is off while it plays, so the bridge ignores audio until the answer has been sent.
+- **Turn detection:** a turn opens after three frames above `vad_start_level` (mean absolute sample value) and includes the eight frames before it, so the first word is kept. It closes after `vad_end_silence_ms` of quiet audio or 15 s. Time is measured in audio samples, so buffered bursts are judged like live audio. While an answer plays, a full-duplex pod keeps streaming and speech can interrupt it (section 32); a half-duplex pod's audio is ignored until the answer has been sent.
 - **Outputs:** `hello_ack`, `led` (`listening`, `thinking`, `speaking`), `audio` chunks of at most 2 KiB, `stop_audio`, `pong`, `error`. Audio is paced at playback speed with three chunks of lead, because the pod queues only six 2 KiB chunks (about 0.4 s); the pod returns to listening by itself when playback ends.
 - **Button:** `tap_activate` stops playback and cancels an open turn (`turn_cancel`); `help_button` (long press) calls staff without speech (section 29).
 - **Playback:** the bridge sends `playback_started` to the backend before it sends an answer to the pod, and `playback_finished` when the answer has been sent or a tap stops it, so the wake-word awake window runs from the end of playback (section 31).
@@ -298,7 +300,7 @@ sequenceDiagram
 
 ## 9. Cross-platform and quality
 
-- **Desktop:** `core-audio` uses cpal for capture (16 kHz mono i16); Aice home deployments are macOS-first (Mac mini recommended).
+- **Hosts:** the backend, bridge and packs are pure Rust and build on Linux and Windows; release archives include Linux x86_64 and aarch64.
 - **Pod gateway:** WebSocket server; reconnect is supported (new connection = new session); `Identify` message sets device_id for subsequent audio from that connection. Parse errors skip the message and continue.
 - **Quality gates:** Every change must pass `cargo fmt`, `cargo clippy`, `cargo audit`, `cargo test`.
 - **Observability:** JSON logs (tracing), metrics (voice_* counters/histograms), correlation IDs in logs for sessions/turns.
@@ -311,12 +313,12 @@ sequenceDiagram
 
 | Task | Doc |
 |------|-----|
-| Prerequisites, config, how to start everything | [Local development setup](../setup/local-dev.md) |
+| Prerequisites, config, how to start everything | [Developer setup](../setup/local-dev.md) |
+| Install and run a property pilot | [Property pilot runbook](../runbooks/property-pilot.md) |
 | Local Prometheus/Grafana dashboards and metrics scrape ops | [Local observability runbook](../runbooks/local-observability.md) |
 | Build and flash a room pod (push code to pod) | [Pod deployment](../deployment/pod.md) |
 | Wi‑Fi and gateway host/port for pods | [Wi‑Fi configuration](../network/wifi-configuration.md) |
-| Plan and implementation status | [Local voice AI plan](../local_voice_ai_plan.md) |
-| Cut and publish `v0.3.0` | [v0.3.0 release runbook](../runbooks/release-v0.3.0.md) |
+| Cut and publish `v0.4.0` | [v0.4.0 release runbook](../runbooks/release-v0.4.0.md) |
 
 Canonical commands (run from repo root): `cargo aice-fmt`, `cargo aice-clippy`, `cargo aice-audit`, `cargo aice-test`, `cargo aice-backend`.
 
@@ -623,7 +625,8 @@ flowchart LR
 - **Refusals:** the facilitator will not serve plain HTTP off loopback. A property backend (`property.facilitator_url` set) will not serve plain HTTP on a network bind unless `service.allow_plaintext_lan` is true.
 - **Audit:** every ticket creation and status change, login, logout, lockout, user change, pod enrolment/assignment/revocation, and stay transition is appended to `audit_events`; SQLite triggers reject updates and deletes.
 - **Failure paths:** bad or missing credentials → 401; wrong role → 403; bad CSRF → 403; locked account → 429; body over 256 KiB → 413; TLS handshake failure → connection dropped and `property_mcp_errors_total{kind="tls_handshake"}` / `backend_auth_rejections_total{reason="tls_handshake"}`.
-- **Metrics:** `property_auth_attempts_total{method,result}`, `property_audit_events_total{action}`, `backend_auth_rejections_total{reason}`.
+- **Desk page:** requests show a readable label, the guest's details from the tool arguments (room and extension excluded, HTML-escaped), and the time received in the host's local zone with its age; the audit log and device "last seen" use the same local times. On a phone-width screen each table row stacks into a card with its buttons on their own line.
+- **Metrics:** `property_auth_attempts_total{method,result}`, `property_audit_events_total{action}`, `backend_auth_rejections_total{reason}`, `property_desk_renders_total{pack,result}`, `property_desk_render_duration_seconds{pack}`.
 
 ---
 
@@ -655,7 +658,7 @@ sequenceDiagram
 - **Outputs:** A pending pod shows on the supervisor desk; after assignment the next enrol with the same nonce returns the device token once. A later enrol with a different nonce is refused (409) and audited.
 - **Backend:** `property.require_device_token` defaults to on whenever `property.facilitator_url` is set. The turn's `device_id` and `room` come from the token, overriding whatever the client sends.
 - **Lost token:** a pod that no longer has its token enrols with `lost_token: true`; the stored nonce proves it, the facilitator issues a new token, and the old one stops verifying (`device_token_rotated` in the audit log).
-- **Signed updates:** `firmware publish` signs an image with the property's ECDSA P-256 key and offers it to `rollout_percent` of pods by a stable hash of device id and version; `firmware rollout` raises the percentage. Pods fetch `GET /api/firmware/manifest?current=<version>` and `GET /api/firmware/<version>.bin` with their device token and install only a signature-verified image ([pod deployment](../deployment/m5stack-pod.md)).
+- **Signed updates:** `firmware publish` signs an image with the property's ECDSA P-256 key and offers it to `rollout_percent` of pods by a stable hash of device id and version; `firmware rollout` raises the percentage. Pods fetch `GET /api/firmware/manifest?current=<version>` and `GET /api/firmware/<version>.bin` with their device token and install only a signature-verified image ([pod deployment](../deployment/pod.md)).
 - **Failure paths:** missing/unknown token → 401; facilitator unreachable at connect with no recent verification → 503; facilitator unreachable mid-connection → the turn runs with memory off; revoked mid-connection → error event and the socket closes; more than 256 pods pending → 429; a rotation attempt with the wrong nonce → 409.
 - **Heartbeats:** every 30 s the backend reports the pods with an open turn stream (`POST /api/devices/heartbeat`). An active pod silent for `device_offline_after_secs` (default 120) gets an escalated `device_offline` ticket for its room (paged like any ticket) and shows `OFFLINE` on the desk; the next sign of life clears it and is audited as `device_online`.
 - **Metrics:** `fleet_provisioning_total{result}`, `fleet_devices{status}` (`pending`, `online`, `offline`, `revoked`), `fleet_heartbeat_missed_total`, `fleet_firmware_manifest_total{result}`, `fleet_firmware_downloads_total{version}`, `backend_device_auth_duration_seconds{result}`, `backend_auth_rejections_total{reason}`.
@@ -688,7 +691,7 @@ flowchart TD
 - **Privacy mute:** a double tap on the pod stops it sending audio (magenta LED); the long-press help button still works.
 - **Scoping:** home installs keep the shared palace. In a property, a turn without a stay (or any unauthenticated turn) has memory off. Continuing a stay is allowed only while its memory still exists and is not due for purge; continuing clears the old stay's purge date because the wing lives on.
 - **Purge:** deletes the wing's drawers, BM25 rows, closets, tunnels, and every knowledge-graph entity/triple in the `<wing>:` namespace, then confirms to the facilitator. Non-stay wings can never be purged.
-- **Encryption at rest:** the palace and property databases are local SQLite files. Until the palace supports an encrypted store, run them on an encrypted volume (BitLocker, FileVault, or LUKS); see the deployment runbook.
+- **Encryption at rest:** the palace and property databases are local SQLite files. Until the palace supports an encrypted store, run them on an encrypted volume (LUKS or BitLocker); see the deployment runbook.
 - **Failure paths:** a second open stay for a room → 409; continuing a purged or due stay → 409; unknown stay → 404; a failed purge stays due and is retried next pass (`memory_retention_purges_total{result="error"}`).
 - **Metrics:** `memory_stay_transitions_total{action}`, `memory_recall_scoped_total{scope}`, `memory_retention_purges_total{result}`.
 
