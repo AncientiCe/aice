@@ -8,7 +8,7 @@ What a room pod must do so a guest can interrupt Aice at any time by speaking, a
 
 A natural conversation lets the guest cut in when Aice gets something wrong ("no, the other room") or when they want to add something ("and a towel too"). That requires the pod to **listen while it speaks**.
 
-A pod that switches one audio port between capture and playback (as the earlier M5Stack ATOM Echo test bed did) hears nothing while it speaks. The backend's barge-in path ([architecture 2](../architecture/README.md#2-barge-in-interruptibility)) then never fires; only the button can stop an answer.
+A pod that switches one audio port between capture and playback (half duplex) hears nothing while it speaks. The backend's barge-in path ([architecture 2](../architecture/README.md#2-barge-in-interruptibility)) then never fires; only the button can stop an answer.
 
 ## Interrupt rule
 

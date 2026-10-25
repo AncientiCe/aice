@@ -8,8 +8,8 @@ Order matters. **Hotels first** (non-clinical, guests can phone reception); **ca
 
 | Item | Requirement |
 |------|-------------|
-| Machine | Mac mini (Apple silicon) or Linux x86_64 / aarch64 box; one host runs the pack, backend, and bridge for a pilot wing. |
-| Disk encryption | **Required.** FileVault, BitLocker, or LUKS on the volume that holds `property.sqlite`, the Memory Palace database, and `tls/`. The databases are plain SQLite files; the application does not encrypt them yet. |
+| Machine | Linux x86_64 or aarch64 box; one host runs the pack, backend, and bridge for a pilot wing. |
+| Disk encryption | **Required.** LUKS or BitLocker on the volume that holds `property.sqlite`, the Memory Palace database, and `tls/`. The databases are plain SQLite files; the application does not encrypt them yet. |
 | Network | Pods, desk PCs, and the host on one VLAN; no inbound access from the guest Wi-Fi or the internet. |
 | Accounts | A service account for the processes; staff never log in to the host. |
 | Time | NTP enabled (tokens, audit times, and SLA timers depend on it). |
@@ -23,7 +23,7 @@ Order matters. **Hotels first** (non-clinical, guests can phone reception); **ca
 5. Issue certificates for the backend and the room bridge: `tls issue backend.pem backend.key voice.hotel.local` and `tls issue bridge.pem bridge.key voice.hotel.local`.
 6. Backend `config.json`: `property.facilitator_url` = `https://desk.hotel.local:8791/mcp`, `property.service_token_file`, `property.ca_file` = `tls/ca.pem`, `service.tls` = the backend certificate, `stt.workers`, `service.max_concurrent_turns`, and `ollama_urls` from the capacity run (section 6).
 7. Bridge settings in the same `config.json`: `pod_bind`, `pod_gateway.tls` = the bridge certificate, `pod_gateway.backend_url` = `wss://voice.hotel.local:8781/turns/stream`, `pod_gateway.backend_ca_file` = `tls/ca.pem`, and `tts.piper_model_path`.
-8. Run all three as services (launchd or systemd) with restart on failure: `aice-hotels`, `aice-backend`, `pod-gateway`. Scrape their metrics endpoints with Prometheus ([local observability](local-observability.md)).
+8. Run all three as services (systemd) with restart on failure: `aice-hotels`, `aice-backend`, `pod-gateway`. Scrape their metrics endpoints with Prometheus ([local observability](local-observability.md)).
 
 ## 3. Pods
 

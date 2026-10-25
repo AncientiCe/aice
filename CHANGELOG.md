@@ -11,6 +11,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `aice-skills` and `palace-rs` are fetched over HTTPS (`https://github.com/AncientiCe/...`) instead of SSH, so the workspace builds without a GitHub SSH key. CI no longer needs the `AICE_SKILLS_READ_TOKEN` secret.
 - GitHub release notes are the tag's `CHANGELOG.md` section, copied verbatim, instead of generated notes. The Release workflow fails before building if the tagged `CHANGELOG.md` has no section for the tag.
 
+### Documentation
+
+- The README now describes the product: a Waveshare pod in every room, the on-prem voice backend, and the staff desk for hotels, care homes and wards, with real desk screenshots and what is and is not tested on hardware. New pages: [How it works](docs/how-it-works.md), [Software architecture](docs/software-architecture.md) and [Staff desk](docs/staff-desk.md). The developer setup, pod network guide and pilot runbook are platform-neutral and pod-first. The stale `docs/local_voice_ai_plan.md` is removed.
+
 ### Fixed
 
 - Release `.sha256` files named the archive as `dist/aice-...tar.gz`, so `shasum -a 256 -c` failed next to the downloaded archive. They now name the archive alone. (The `v0.4.0` checksum files were replaced on the release page.)

@@ -4,7 +4,7 @@ How to build, provision, update, and operate a room pod: a microphone and speake
 
 > **Talking over an answer works, with limits.** The pod keeps its mic on while it speaks and sends its speaker signal along; the bridge cancels the echo and stops the answer when the guest speaks ([architecture 32](../architecture/README.md#32-spoken-barge-in-full-duplex-pods)). The board's small speaker limits echo cancellation, so the guest may need to speak up a little; the button always stops an answer.
 
-> **Tested on hardware:** enrolment, room assignment, TLS to the facilitator and the bridge, spoken turns, and hotel requests reaching the desk. **Not yet tested on hardware:** signed updates, lost-token recovery, factory reset, and echo cancellation.
+> **Tested on hardware:** enrolment, room assignment, TLS to the facilitator and the bridge, spoken turns, hotel requests reaching the desk, and talking over an answer (11–14 dB of echo removed, no self-interruption over 27 s of answers, normal speech caught within a second about 60% of the time; see [Signal Pod](../hardware/signal-pod.md)). **Not yet tested on hardware:** signed updates, lost-token recovery, and factory reset.
 
 ## Hardware
 
