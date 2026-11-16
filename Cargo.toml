@@ -29,7 +29,7 @@ members = [
 # core-skills = { path = "../aice-skills" }
 
 # Local development: clone palace-rs as a sibling directory and uncomment
-# the patch below to use local sources instead of the git dependency.
-# [patch."https://github.com/AncientiCe/palace-rs.git"]
+# the patch below to use local sources instead of the crates.io release.
+# [patch.crates-io]
 # palace-rs = { path = "../palace-rs" }
 

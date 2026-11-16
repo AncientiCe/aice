@@ -123,7 +123,7 @@ flowchart TB
         PP["pod-protocol"]
     end
     EXT1["aice-skills (git)"]
-    EXT2["palace-rs (git)"]
+    EXT2["palace-rs (crates.io)"]
     H & C & W --> PF
     PF --> POL & TLS
     BE --> ORCH & STT & LLM & VAD & CFG & OBS & RP & TLS & PF
@@ -148,7 +148,7 @@ flowchart TB
 | `crates/core-runtime-protocol`, `pod-protocol` | Wire types for bridge ⇄ backend and pod ⇄ bridge |
 | `pod-firmware` | ESP32-S3 Arduino firmware (`waveshare_audio` PlatformIO env): codecs, full-duplex I²S, LEDs, buttons, enrolment, signed updates |
 | [`aice-skills`](https://github.com/AncientiCe/aice-skills) | Skill crates (weather, time, distance, news, sports, holidays, fuel, horoscope, smart home), pinned git dependency |
-| [`palace-rs`](https://github.com/AncientiCe/palace-rs) | Memory Palace: SQLite store, BM25 and embedding recall, knowledge graph, per-wing purge |
+| [`palace-rs`](https://github.com/AncientiCe/palace-rs) | Memory Palace: SQLite store, BM25 and embedding recall, knowledge graph, per-wing purge; crates.io release |
 
 ## Data
 

@@ -151,6 +151,7 @@ const PALACE_KG_QUERY_DURATION_SECONDS: &str = "palace_kg_query_duration_seconds
 const PALACE_KG_ADD_TOTAL: &str = "palace_kg_add_total";
 const PALACE_KG_ADD_DURATION_SECONDS: &str = "palace_kg_add_duration_seconds";
 const PALACE_ERRORS_TOTAL: &str = "palace_errors_total";
+const PALACE_RECALL_HITS_TOTAL: &str = "palace_recall_hits_total";
 const PROPERTY_REQUESTS_TOTAL: &str = "property_requests_total";
 const PROPERTY_MCP_ERRORS_TOTAL: &str = "property_mcp_errors_total";
 const PROPERTY_MCP_DURATION_SECONDS: &str = "property_mcp_duration_seconds";
@@ -368,6 +369,7 @@ pub fn register_metrics() {
     counter!(PALACE_KG_ADD_TOTAL, 0, "result" => "unknown");
     histogram!(PALACE_KG_ADD_DURATION_SECONDS, 0.0_f64);
     counter!(PALACE_ERRORS_TOTAL, 0, "operation" => "unknown");
+    counter!(PALACE_RECALL_HITS_TOTAL, 0, "outcome" => "unknown");
     counter!(
         PROPERTY_REQUESTS_TOTAL,
         0,
@@ -1171,6 +1173,12 @@ pub fn record_palace_kg_add(result: &str, duration: Duration) {
 
 pub fn record_palace_error(operation: &str) {
     counter!(PALACE_ERRORS_TOTAL, 1, "operation" => operation.to_string());
+}
+
+/// Palace search hits per recall, by whether they cleared the similarity
+/// cut-off (`kept`) or not (`below_cut_off`).
+pub fn record_palace_recall_hits(outcome: &str, count: u64) {
+    counter!(PALACE_RECALL_HITS_TOTAL, count, "outcome" => outcome.to_string());
 }
 
 pub fn record_property_request(pack: &str, tool: &str, status: &str) {

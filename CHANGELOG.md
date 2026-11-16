@@ -8,8 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Memory Palace moves from `palace-rs` `v0.18.0` (git tag) to `0.20.0` from crates.io. Search now understands relative time ("what did I ask for yesterday?"). Existing palaces keep their embedding model; new palaces start on the smaller `minilm-l6-v2-q8`. palace-rs also adds a bonus for hits that share a source; every voice turn shares the source `voice_turn`, so aice's `memory.palace_recall_min_similarity` cut-off ignores that bonus and recall keeps its current meaning. New metric: `palace_recall_hits_total{outcome}` (`kept`, `below_cut_off`).
 - Staff desk: requests show a readable label and the guest's details from the voice request ("Book taxi · destination: the airport · time: 06:00"), plus when they arrived. The audit log and device "last seen" show local times instead of epoch milliseconds. On a phone each row stacks into a card with its buttons visible. New metrics: `property_desk_renders_total{pack,result}` and `property_desk_render_duration_seconds{pack}`.
-- `aice-skills` and `palace-rs` are fetched over HTTPS (`https://github.com/AncientiCe/...`) instead of SSH, so the workspace builds without a GitHub SSH key. CI no longer needs the `AICE_SKILLS_READ_TOKEN` secret.
+- `aice-skills` is fetched over HTTPS (`https://github.com/AncientiCe/...`) instead of SSH, so the workspace builds without a GitHub SSH key. CI no longer needs the `AICE_SKILLS_READ_TOKEN` secret.
 - GitHub release notes are the tag's `CHANGELOG.md` section, copied verbatim, instead of generated notes. The Release workflow fails before building if the tagged `CHANGELOG.md` has no section for the tag.
 
 ### Documentation
@@ -19,6 +20,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Fixed
 
 - Release `.sha256` files named the archive as `dist/aice-...tar.gz`, so `shasum -a 256 -c` failed next to the downloaded archive. They now name the archive alone. (The `v0.4.0` checksum files were replaced on the release page.)
+
+### Security
+
+- Bundled SQLite patched for RUSTSEC-2026-0459: `rusqlite` 0.32 → 0.41 (`libsqlite3-sys` 0.39) in `property-facilitator`, `palace-rs` and `aice-skills`' journal store (pinned at `3cbeea3`). Cargo links one SQLite per build, so all three move together.
+- `openssl` 0.10.76 → 0.10.82 (RUSTSEC-2026-0463, -0473, -0474, -0475), `quinn-udp` 0.5.15 → 0.5.16 (RUSTSEC-2026-0538), `rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486), and `hyper` 1.8.1 → 1.11.1, which drops the unmaintained `pin-utils` (RUSTSEC-2026-0441). `cargo audit --deny warnings` passes again.
 
 ## [v0.4.0] - 2026-10-24
 

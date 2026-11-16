@@ -5,6 +5,4 @@ edition = "2021"
 description = "Voice activity detection"
 
 [dependencies]
-thiserror = "1.0"
 core-config = { path = "../core-config" }
-core-observability = { path = "../core-observability" }

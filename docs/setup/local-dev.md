@@ -7,7 +7,7 @@ Build Aice from source and run the property stack on one machine: the staff desk
 | Tool | Why | Notes |
 |------|-----|-------|
 | Rust stable (`rustup`) | Builds the workspace | `cargo install cargo-audit` for `cargo aice-audit` |
-| Git with HTTPS access to GitHub | `aice-skills` and `palace-rs` are public git dependencies | No SSH key needed |
+| Git with HTTPS access to GitHub | `aice-skills` is a public git dependency (`palace-rs` comes from crates.io) | No SSH key needed |
 | CMake and a C/C++ compiler | `whisper-rs` builds whisper.cpp | Visual Studio Build Tools on Windows |
 | [Ollama](https://ollama.com) | LLM for classification and answers | Default model `qwen2.5:7b` |
 | `whisper-cli` + a Whisper model | Speech to text | Set `WHISPER_CLI_BIN` if it is not on `PATH` |

@@ -45,7 +45,7 @@ pub use metrics::{
     record_model_preload, record_model_preload_duration, record_news_summary_chunk,
     record_news_summary_duration, record_palace_add_memory, record_palace_error,
     record_palace_ingest, record_palace_kg_add, record_palace_kg_query, record_palace_open,
-    record_palace_search, record_palace_wake_up, record_pod_audio_frame,
+    record_palace_recall_hits, record_palace_search, record_palace_wake_up, record_pod_audio_frame,
     record_pod_bridge_backend_wait, record_pod_bridge_barge_in, record_pod_bridge_barge_in_latency,
     record_pod_bridge_synthesis_duration, record_pod_bridge_turn, record_pod_bridge_turn_duration,
     record_pod_connection, record_pod_disconnect, record_pod_egress_queue_drop,
@@ -161,6 +161,7 @@ mod tests {
         super::record_property_ticket_ack_duration("care", "report_fall", Duration::from_secs(30));
         super::record_memory_recall_scoped("stay");
         super::record_memory_retention_purge("purged");
+        super::record_palace_recall_hits("below_cut_off", 2);
         super::record_backend_device_auth_duration("accepted", Duration::from_millis(2));
         record_property_audit_event("ticket_status");
 
@@ -284,6 +285,7 @@ mod tests {
                         && payload.contains("property_ticket_ack_duration_seconds")
                         && payload.contains("memory_recall_scoped_total")
                         && payload.contains("memory_retention_purges_total")
+                        && payload.contains("palace_recall_hits_total")
                         && payload.contains("backend_device_auth_duration_seconds")
                     {
                         break;

@@ -22,9 +22,9 @@ use core_observability::{
     record_dictionary_skill, record_email_skill, record_journal_skill, record_meeting_notes_skill,
     record_memory_recall_scoped, record_model_preload, record_model_preload_duration,
     record_palace_add_memory, record_palace_error, record_palace_ingest, record_palace_kg_add,
-    record_palace_kg_query, record_palace_open, record_palace_search, record_palace_wake_up,
-    record_screen_ocr_skill, record_translate_skill, record_unit_conversion_skill,
-    slow_turn_threshold, TurnTrace,
+    record_palace_kg_query, record_palace_open, record_palace_recall_hits, record_palace_search,
+    record_palace_wake_up, record_screen_ocr_skill, record_translate_skill,
+    record_unit_conversion_skill, slow_turn_threshold, TurnTrace,
 };
 use core_orchestrator::{
     intent_classifier_few_shots_for_skills,
@@ -67,7 +67,11 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
+use palace::{
+    knowledge_graph::Triple,
+    palace::{Palace, PalaceSearchResult},
+    store::SearchResult,
+};
 use property_facilitator::PropertyClient;
 use serde_json::{json, Value};
 use skill_chain::EffectiveCapabilities;
@@ -2536,20 +2540,11 @@ fn build_palace_memory_context(
         Vec::new()
     } else {
         let search_started = Instant::now();
-        let searched = match wing {
-            Some(wing) => {
-                palace.search_filtered(transcript, Some(wing), None, settings.recall_results)
-            }
-            None => palace.search(transcript, settings.recall_results),
-        };
-        match searched {
+        match palace.search_with_provenance(transcript, wing, None, settings.recall_results) {
             Ok(results) => {
                 record_palace_search("success", search_started.elapsed());
                 record_backend_turn_stage_duration("palace_recall", search_started.elapsed());
-                results
-                    .into_iter()
-                    .filter(|result| result.similarity >= settings.recall_min_similarity)
-                    .collect()
+                recall_hits(results, settings.recall_min_similarity)
             }
             Err(error) => {
                 record_palace_search("error", search_started.elapsed());
@@ -2598,6 +2593,25 @@ fn build_palace_memory_context(
         &kg_facts,
         settings.recall_max_chars,
     ))
+}
+
+/// Recall hits that clear the configured similarity cut-off.
+///
+/// palace-rs adds a bonus to hits that share a source with other hits. Every
+/// voice turn is filed under the same source, so that bonus reflects how many
+/// turns matched, not whether this one is relevant: the cut-off is applied to
+/// the score without it. Other bonuses (such as a "yesterday" time match)
+/// still count.
+fn recall_hits(results: Vec<PalaceSearchResult>, min_similarity: f64) -> Vec<SearchResult> {
+    let searched = results.len();
+    let hits: Vec<SearchResult> = results
+        .into_iter()
+        .filter(|result| result.combined - result.source_boost >= min_similarity)
+        .map(|result| result.drawer)
+        .collect();
+    record_palace_recall_hits("kept", hits.len() as u64);
+    record_palace_recall_hits("below_cut_off", (searched - hits.len()) as u64);
+    hits
 }
 
 fn compose_palace_memory_context(
@@ -4248,8 +4262,8 @@ mod tests {
         classifier_num_ctx_for_host, compose_distance_answer, compose_frontend_skill_error_outcome,
         compose_frontend_skill_success_echo, compose_palace_memory_context, compose_time_answer,
         compose_weather_answer, journal_room_from_sentiment, parse_extracted_kg_triples,
-        parse_focus_entities, parse_validated_intent, persist_kg_triples, speak_skill_failure,
-        BackendEngineDecision, MemoryScope, CLASSIFIER_MAX_OUTPUT_TOKENS,
+        parse_focus_entities, parse_validated_intent, persist_kg_triples, recall_hits,
+        speak_skill_failure, BackendEngineDecision, MemoryScope, CLASSIFIER_MAX_OUTPUT_TOKENS,
         FRONTEND_CLASSIFIER_SKILLS, SKILL_FAILED_REPLY,
     };
     use core_orchestrator::intent_classifier_few_shots;
@@ -4259,7 +4273,11 @@ mod tests {
         NewsHeadline, NewsHeadlinesResult, SportsEvent, SportsLiveResult, TimeResult,
         WeatherResult,
     };
-    use palace::{knowledge_graph::Triple, palace::Palace, store::SearchResult};
+    use palace::{
+        knowledge_graph::Triple,
+        palace::{Palace, PalaceSearchResult},
+        store::SearchResult,
+    };
     use serde_json::json;
     use std::time::SystemTime;
 
@@ -4289,6 +4307,47 @@ mod tests {
             filed_at: "2026-05-03T00:00:00Z".to_string(),
             similarity,
         }
+    }
+
+    fn scored_hit(
+        id: &str,
+        combined: f64,
+        source_boost: f64,
+        date_boost: f64,
+    ) -> PalaceSearchResult {
+        let mut drawer = sample_search_result(id, combined);
+        drawer.id = id.to_string();
+        PalaceSearchResult {
+            drawer,
+            cosine: 0.0,
+            bm25: 0.0,
+            coding_boost: 0.0,
+            preference_match: 0.0,
+            date_boost,
+            source_boost,
+            mined_discount: 0.0,
+            combined,
+            intent: None,
+            rerank_score: None,
+        }
+    }
+
+    #[test]
+    fn recall_cut_off_ignores_the_bonus_for_sharing_a_source_with_other_turns() {
+        // Every voice turn is filed under the same source, so palace-rs lifts
+        // each hit by a share of the best other turn. That says nothing about
+        // whether this turn is relevant, so it must not carry it past the
+        // cut-off. A time phrase match ("yesterday") still counts.
+        let hits = recall_hits(
+            vec![
+                scored_hit("lifted_by_other_turns", 0.32, 0.05, 0.0),
+                scored_hit("relevant_turn", 0.35, 0.0, 0.0),
+                scored_hit("asked_about_yesterday", 0.31, 0.0, 0.05),
+            ],
+            0.3,
+        );
+        let ids: Vec<&str> = hits.iter().map(|hit| hit.id.as_str()).collect();
+        assert_eq!(ids, vec!["relevant_turn", "asked_about_yesterday"]);
     }
 
     fn sample_triple() -> Triple {

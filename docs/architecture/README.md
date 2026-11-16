@@ -210,7 +210,9 @@ sequenceDiagram
     Core->>LLM: classify intent without palace context
     par memory context
         Core->>Palace: wake_up
-        Core->>Palace: search transcript
+        Core->>Palace: search_with_provenance transcript
+        Palace-->>Core: hits with score breakdown
+        Core->>Core: keep hits above min similarity, same-source bonus excluded
         Core->>LLM: kg_focus_entities
         LLM-->>Core: entity list
         Core->>Palace: kg_query per entity
@@ -236,8 +238,9 @@ sequenceDiagram
 ```
 
 **Notes:**
-- **Inputs:** Config `memory.palace_db_path`, `memory.palace_identity_path`, `memory.palace_recall_results`, `memory.palace_recall_min_similarity`, `memory.palace_recall_max_chars`, `memory.palace_journal_mirror_enabled`, and `memory.palace_kg_enabled`; `palace-rs` crate (library `palace`, tag `v0.18.0`) embedded via git dependency (`default-features = false`, no CLI). Default data directory `~/.palace`; an install that only has the pre-rename `~/.mempalace` keeps using it.
-- **Outputs:** Per-turn memory context injected into answer composition for open dialogue, backend-owned skills, and frontend skill finalization; persistent SQLite-backed drawers tagged `added_by = "aice"`; optional Journal add mirroring into `wing = "journal"`; knowledge-graph triples extracted from spoken outcomes. Metrics: `palace_open_total`, `palace_wake_up_total/duration`, `palace_search_total/duration`, `palace_ingest_total/duration`, `palace_add_memory_total/duration`, `palace_kg_query_total/duration`, `palace_kg_add_total/duration`, `palace_errors_total{operation}`.
+- **Inputs:** Config `memory.palace_db_path`, `memory.palace_identity_path`, `memory.palace_recall_results`, `memory.palace_recall_min_similarity`, `memory.palace_recall_max_chars`, `memory.palace_journal_mirror_enabled`, and `memory.palace_kg_enabled`; `palace-rs` crate `0.20` from crates.io (library `palace`, `default-features = false`, no CLI). Default data directory `~/.palace`; an install that only has the pre-rename `~/.mempalace` keeps using it. A palace keeps the embedding model it was created with; new palaces start on `minilm-l6-v2-q8`.
+- **Recall cut-off:** palace-rs scores a hit higher when other hits share its source file. Every voice turn is filed under the source `voice_turn`, so that bonus only says how many turns matched; `memory.palace_recall_min_similarity` is compared against the score without it (`combined - source_boost`). Other bonuses, such as a relative-time match ("yesterday", "last week"), still count.
+- **Outputs:** Per-turn memory context injected into answer composition for open dialogue, backend-owned skills, and frontend skill finalization; persistent SQLite-backed drawers tagged `added_by = "aice"`; optional Journal add mirroring into `wing = "journal"`; knowledge-graph triples extracted from spoken outcomes. Metrics: `palace_open_total`, `palace_wake_up_total/duration`, `palace_search_total/duration`, `palace_ingest_total/duration`, `palace_add_memory_total/duration`, `palace_kg_query_total/duration`, `palace_kg_add_total/duration`, `palace_errors_total{operation}`, `palace_recall_hits_total{outcome="kept"|"below_cut_off"}`.
 - **Failure paths:** Palace open failure falls back to in-memory instance (logged + metered). Wake-up, recall, KG query, ingest, Journal mirroring, or KG extraction errors are logged and metered but do not fail the voice turn.
 - **Threading:** All Palace calls are synchronous (`rusqlite`); wrapped in `tokio::task::spawn_blocking` to avoid blocking the async runtime.
 
