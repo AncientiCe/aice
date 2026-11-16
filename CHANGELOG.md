@@ -20,6 +20,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Fixed
 
 - Release `.sha256` files named the archive as `dist/aice-...tar.gz`, so `shasum -a 256 -c` failed next to the downloaded archive. They now name the archive alone. (The `v0.4.0` checksum files were replaced on the release page.)
+- Release Build Check and the Release workflow's macOS arm64 job run on `macos-15`. GitHub retired the `macos-14` runner, so both jobs were cancelled before they started.
 
 ### Security
 
