@@ -23,7 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
-chrono = "0.4"
+jiff = "1"
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 core-config = { path = "../../crates/core-config" }
@@ -36,9 +36,9 @@ core-vad = { path = "../../crates/core-vad" }
 property-facilitator = { path = "../../crates/property-facilitator" }
 thiserror = "1.0"
 core-stt = { path = "../../crates/core-stt", features = ["whisper"] }
-core-skills = { git = "https://github.com/AncientiCe/aice-skills.git", rev = "3cbeea3e2cae5550fe39c75d81f9a7a870ad5178", default-features = false, features = ["core-common", "hotel"] }
-skill-chain = { git = "https://github.com/AncientiCe/aice-skills.git", rev = "3cbeea3e2cae5550fe39c75d81f9a7a870ad5178" }
-palace = { version = "0.20.0", package = "palace-rs", default-features = false }
+core-skills = { git = "https://github.com/AncientiCe/aice-skills.git", rev = "eb758717b980c0533b6c06c73c6f1d0e699fdeb6", default-features = false, features = ["core-common", "hotel"] }
+skill-chain = { git = "https://github.com/AncientiCe/aice-skills.git", rev = "eb758717b980c0533b6c06c73c6f1d0e699fdeb6" }
+palace = { git = "https://github.com/AncientiCe/palace-rs.git", rev = "4d814f1ff1ae91b2226742acaa508f0e20e7bc17", package = "palace-rs", default-features = false }
 
 [dev-dependencies]
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

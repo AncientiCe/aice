@@ -1,6 +1,9 @@
 //! Server-rendered staff desk pages.
 
-use chrono::{DateTime, FixedOffset, Local, SecondsFormat, Utc};
+use jiff::{
+    tz::{Offset, TimeZone},
+    Timestamp, ZonedDateTime,
+};
 use serde_json::Value;
 
 use crate::auth::Role;
@@ -145,20 +148,29 @@ fn detail_value(value: &Value) -> String {
     }
 }
 
-fn local_time(millis: i64, offset: FixedOffset) -> Option<DateTime<FixedOffset>> {
-    DateTime::from_timestamp_millis(millis).map(|at| at.with_timezone(&offset))
+fn local_time(millis: i64, offset: Offset) -> Option<ZonedDateTime> {
+    Timestamp::from_millisecond(millis)
+        .ok()
+        .map(|at| at.to_zoned_datetime(TimeZone::fixed(offset)))
+}
+
+/// RFC 3339 to the second, with `Z` for UTC and `+hh:mm` otherwise.
+fn rfc3339_secs(at: &ZonedDateTime) -> String {
+    if at.offset().seconds() == 0 {
+        at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
+    } else {
+        at.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
+    }
 }
 
 /// The clock time for today, otherwise the date and time ("25 Oct 14:05").
-fn format_time(at_millis: i64, now_millis: i64, offset: FixedOffset) -> String {
+fn format_time(at_millis: i64, now_millis: i64, offset: Offset) -> String {
     match (
         local_time(at_millis, offset),
         local_time(now_millis, offset),
     ) {
-        (Some(at), Some(now)) if at.date_naive() == now.date_naive() => {
-            at.format("%H:%M").to_string()
-        }
-        (Some(at), _) => at.format("%-d %b %H:%M").to_string(),
+        (Some(at), Some(now)) if at.date() == now.date() => at.strftime("%H:%M").to_string(),
+        (Some(at), _) => at.strftime("%-d %b %H:%M").to_string(),
         (None, _) => at_millis.to_string(),
     }
 }
@@ -177,21 +189,21 @@ fn format_age(at_millis: i64, now_millis: i64) -> String {
 /// The property host's clock: the desk shows times in its local zone.
 struct Clock {
     now_millis: i64,
-    offset: FixedOffset,
+    offset: Offset,
 }
 
 impl Clock {
     fn now() -> Self {
         Self {
-            now_millis: Utc::now().timestamp_millis(),
-            offset: *Local::now().offset(),
+            now_millis: Timestamp::now().as_millisecond(),
+            offset: ZonedDateTime::now().offset(),
         }
     }
 
     /// A `<time>` element with the instant and the readable local time.
     fn time(&self, at_millis: i64) -> String {
         let datetime = local_time(at_millis, self.offset)
-            .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true))
+            .map(|at| rfc3339_secs(&at))
             .unwrap_or_default();
         format!(
             "<time datetime=\"{datetime}\">{}</time>",
@@ -433,7 +445,7 @@ pub(crate) fn escape_html(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use chrono::FixedOffset;
+    use jiff::tz::Offset;
 
     use super::{
         escape_html, format_age, format_time, page_shell, request_details, status_badge,
@@ -443,8 +455,8 @@ mod tests {
     // 2026-10-25 14:05:00 UTC
     const AT: i64 = 1_792_937_100_000;
 
-    fn utc() -> FixedOffset {
-        FixedOffset::east_opt(0).unwrap_or_else(|| panic!("utc offset"))
+    fn utc() -> Offset {
+        Offset::UTC
     }
 
     #[test]
@@ -481,7 +493,7 @@ mod tests {
     fn format_time_shows_the_clock_today_and_the_date_otherwise() {
         assert_eq!(format_time(AT, AT + 60_000, utc()), "14:05");
         assert_eq!(format_time(AT, AT + 86_400_000, utc()), "25 Oct 14:05");
-        let two_hours_ahead = FixedOffset::east_opt(7_200).unwrap_or_else(|| panic!("offset"));
+        let two_hours_ahead = Offset::from_seconds(7_200).unwrap_or(Offset::UTC);
         assert_eq!(format_time(AT, AT, two_hours_ahead), "16:05");
     }
 

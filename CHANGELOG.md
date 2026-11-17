@@ -26,6 +26,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Security
 
+- `chrono` and `chrono-tz` are gone from the dependency tree (RUSTSEC-2026-0543 and RUSTSEC-2026-0555: unmaintained, no fixed upgrade). Dates and times use `jiff` 1 in `aice-backend` and `property-facilitator`; `aice-skills` and `palace-rs` made the same move. Until a `palace-rs` 0.21 release is on crates.io, the backend takes `palace-rs` from git at `4d814f1` and `aice-skills` from `eb75871` (the previous pin `3cbeea3` plus the jiff move, so the rusqlite 0.41 fix stays). `palace-rs` 0.21 stores timestamps in the same text format as before, so existing palaces keep reading correctly.
 - Bundled SQLite patched for RUSTSEC-2026-0459: `rusqlite` 0.32 → 0.41 (`libsqlite3-sys` 0.39) in `property-facilitator`, `palace-rs` and `aice-skills`' journal store (pinned at `3cbeea3`). Cargo links one SQLite per build, so all three move together.
 - `openssl` 0.10.76 → 0.10.82 (RUSTSEC-2026-0463, -0473, -0474, -0475), `quinn-udp` 0.5.15 → 0.5.16 (RUSTSEC-2026-0538), `rustix` 1.1.4 → 1.1.6 (RUSTSEC-2026-0486), and `hyper` 1.8.1 → 1.11.1, which drops the unmaintained `pin-utils` (RUSTSEC-2026-0441). `cargo audit --deny warnings` passes again.
 

@@ -7,7 +7,6 @@ pub mod memory_scope;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{Datelike, NaiveDate, Utc};
 use core_config::{Config, WakeWordConfig};
 use core_llm::CradleLlmStream;
 use core_observability::{
@@ -67,6 +66,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use jiff::{civil::Date, tz::TimeZone, Timestamp};
 use palace::{
     knowledge_graph::Triple,
     palace::{Palace, PalaceSearchResult},
@@ -2991,10 +2991,10 @@ fn compose_journal_answer(result: &JournalResult) -> String {
     result.to_prompt_context()
 }
 
-fn parse_naive_date(input: Option<String>) -> Option<NaiveDate> {
+fn parse_naive_date(input: Option<String>) -> Option<Date> {
     input
-        .and_then(|value| NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok())
-        .or_else(|| Some(Utc::now().date_naive()))
+        .and_then(|value| value.trim().parse::<Date>().ok())
+        .or_else(|| Some(Timestamp::now().to_zoned_datetime(TimeZone::UTC).date()))
 }
 
 fn infer_country_code(resolved_location: Option<&ResolvedLocation>) -> Option<String> {
@@ -3325,7 +3325,7 @@ impl BackendEngine for AiceBackendEngine {
                 };
                 let skill_started = Instant::now();
                 let parsed_date = parse_naive_date(date);
-                let holiday_year = year.or_else(|| parsed_date.map(|value| value.year()));
+                let holiday_year = year.or_else(|| parsed_date.map(|value| i32::from(value.year())));
                 let skill_query = HolidayQuery {
                     holiday_name: name,
                     date: parsed_date,
@@ -4326,6 +4326,7 @@ mod tests {
             date_boost,
             source_boost,
             mined_discount: 0.0,
+            repeat_discount: 0.0,
             combined,
             intent: None,
             rerank_score: None,
