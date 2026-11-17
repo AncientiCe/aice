@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-11-17
+
 ### Changed
 
 - Memory Palace moves from `palace-rs` `v0.18.0` (git tag) to `0.20.0` from crates.io. Search now understands relative time ("what did I ask for yesterday?"). Existing palaces keep their embedding model; new palaces start on the smaller `minilm-l6-v2-q8`. palace-rs also adds a bonus for hits that share a source; every voice turn shares the source `voice_turn`, so aice's `memory.palace_recall_min_similarity` cut-off ignores that bonus and recall keeps its current meaning. New metric: `palace_recall_hits_total{outcome}` (`kept`, `below_cut_off`).
